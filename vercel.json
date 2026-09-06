@@ -4,6 +4,8 @@
   "outputDirectory": "vercel-static/dist",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/proxy?path=api/$1" },
-    { "source": "/launch", "destination": "/index.html" }
+    { "source": "/launch", "destination": "/index.html" },
+    { "source": "/sarthak", "destination": "/index.html" },
+    { "source": "/suggestions", "destination": "/index.html" }
   ]
 }
