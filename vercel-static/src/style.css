@@ -1470,10 +1470,9 @@ select:focus {
 }
 .meeting-add {
   display: grid;
-  grid-template-columns: minmax(120px, 1.3fr) 105px 122px 96px minmax(
-      120px,
-      1fr
-    ) auto;
+  grid-template-columns:
+    minmax(120px, 1.3fr) 105px 122px 96px minmax(120px, 1fr)
+    auto;
   gap: 6px;
   margin-bottom: 10px;
 }
@@ -1834,5 +1833,84 @@ select:focus {
   }
   .v3 .row-editor .time-picker {
     grid-column: 1/-1;
+  }
+}
+
+.v3 .reddit-routines {
+  margin-top: 16px;
+  cursor: grab;
+}
+.v3 .v3-grid.no-sidebar {
+  grid-template-columns: minmax(0, 1fr);
+}
+.v3 .reddit-routines.is-dragging {
+  opacity: 0.42;
+  cursor: grabbing;
+}
+.v3 .reddit-routines-head {
+  display: grid;
+  grid-template-columns: 20px 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.v3 .drag-handle {
+  color: #a2a2af;
+  font-size: 18px;
+  letter-spacing: -3px;
+  user-select: none;
+}
+.v3 .reddit-routines-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.v3 .reddit-routines-toggle > span:first-child {
+  display: grid;
+  gap: 2px;
+}
+.v3 .reddit-routines-toggle .eyebrow {
+  margin: 0;
+}
+.v3 .reddit-routines-toggle h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.v3 .reddit-routines-toggle small {
+  color: #8d8d99;
+  font-size: 11px;
+}
+.v3 .reddit-routines .routine-group-items {
+  margin-top: 12px;
+  padding-left: 34px;
+}
+.v3 .reddit-drop-target {
+  display: none;
+  min-height: 54px;
+  margin-top: 16px;
+  place-items: center;
+  border: 1.5px dashed #aeb9fb;
+  border-radius: 16px;
+  color: #6574d8;
+  font-size: 12px;
+  font-weight: 700;
+}
+.v3 .reddit-drop-target.is-visible {
+  display: grid;
+}
+@media (max-width: 720px) {
+  .v3 .reddit-routines-head {
+    grid-template-columns: 16px 24px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .v3 .reddit-routines .routine-group-items {
+    padding-left: 0;
   }
 }

@@ -1457,6 +1457,8 @@ function SarthakV3({
     [editRoutine, setEditRoutine] = useState<string | null>(null),
     [editMeeting, setEditMeeting] = useState<string | null>(null),
     [redditExpanded, setRedditExpanded] = useState(false),
+    [redditSlot, setRedditSlot] = useState<"top" | "bottom">("bottom"),
+    [redditDragging, setRedditDragging] = useState(false),
     [undo, setUndo] = useState<{ label: string; run: () => void } | null>(null),
     [saving, setSaving] = useState(false),
     [clock, setClock] = useState(indiaNow());
@@ -2030,6 +2032,68 @@ function SarthakV3({
       </article>
     );
   };
+  const RedditRoutineCard = () =>
+    redditRoutines.length ? (
+      <article
+        className={`card reddit-routines ${redditDragging ? "is-dragging" : ""}`}
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", "reddit-routines");
+          setRedditDragging(true);
+        }}
+        onDragEnd={() => setRedditDragging(false)}
+      >
+        <div className="reddit-routines-head">
+          <span className="drag-handle" aria-hidden="true">
+            ⠿
+          </span>
+          <WorkIcon title="Reddit posts" type="reddit" />
+          <button
+            className="reddit-routines-toggle"
+            onClick={() => setRedditExpanded((expanded) => !expanded)}
+            aria-expanded={redditExpanded}
+          >
+            <span>
+              <p className="eyebrow">EVERY DAY</p>
+              <h3>Reddit posts</h3>
+              <small>
+                {redditRoutines.length} routines · {redditRoutines[0].time}
+                {redditRoutines.length > 1
+                  ? `, ${redditRoutines[redditRoutines.length - 1].time}`
+                  : ""}
+              </small>
+            </span>
+            <span className="routine-group-count">{redditRoutines.length}</span>
+            <span className="routine-group-chevron" aria-hidden="true">
+              {redditExpanded ? "−" : "+"}
+            </span>
+          </button>
+        </div>
+        {redditExpanded && (
+          <div className="routine-group-items">
+            {redditRoutines.map((routine) => (
+              <RoutineRow key={routine.id} routine={routine} />
+            ))}
+          </div>
+        )}
+      </article>
+    ) : null;
+  const RedditDropTarget = ({ slot }: { slot: "top" | "bottom" }) => (
+    <div
+      className={`reddit-drop-target ${redditDragging ? "is-visible" : ""}`}
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        if (event.dataTransfer.getData("text/plain") === "reddit-routines") {
+          setRedditSlot(slot);
+        }
+        setRedditDragging(false);
+      }}
+    >
+      Drop Reddit posts here
+    </div>
+  );
   return (
     <section className="page founder v3">
       <header className="page-head founder-head">
@@ -2131,7 +2195,9 @@ function SarthakV3({
           </div>
         )}
       </section>
-      <div className="v3-grid">
+      {redditSlot === "bottom" && <RedditDropTarget slot="top" />}
+      {redditSlot === "top" && <RedditRoutineCard />}
+      <div className={`v3-grid ${otherRoutines.length ? "" : "no-sidebar"}`}>
         <div>
           <article className="card actionable">
             <div className="card-title">
@@ -2391,57 +2457,23 @@ function SarthakV3({
             </small>
           </article>
         </div>
-        <article className="card routines">
-          <div className="card-title">
-            <div>
-              <p className="eyebrow">EVERY DAY</p>
-              <h3>Routines</h3>
+        {otherRoutines.length > 0 && (
+          <article className="card routines">
+            <div className="card-title">
+              <div>
+                <p className="eyebrow">EVERY DAY</p>
+                <h3>Routines</h3>
+              </div>
+              <span>IST</span>
             </div>
-            <span>IST</span>
-          </div>
-          {redditRoutines.length > 0 && (
-            <section className="routine-group">
-              <button
-                className="routine-group-toggle"
-                onClick={() => setRedditExpanded((expanded) => !expanded)}
-                aria-expanded={redditExpanded}
-              >
-                <span className="work-icon" aria-hidden="true">
-                  <img src={markUrl("reddit")} alt="" />
-                </span>
-                <span>
-                  <b>Reddit posts</b>
-                  <small>
-                    {redditRoutines.length} routines · {redditRoutines[0].time}
-                    {redditRoutines.length > 1
-                      ? `, ${redditRoutines[redditRoutines.length - 1].time}`
-                      : ""}
-                  </small>
-                </span>
-                <span className="routine-group-count">
-                  {redditRoutines.length}
-                </span>
-                <span className="routine-group-chevron" aria-hidden="true">
-                  {redditExpanded ? "−" : "+"}
-                </span>
-              </button>
-              {redditExpanded && (
-                <div className="routine-group-items">
-                  {redditRoutines.map((routine) => (
-                    <RoutineRow key={routine.id} routine={routine} />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-          {otherRoutines.map((routine) => (
-            <RoutineRow key={routine.id} routine={routine} />
-          ))}
-          {!activeRoutines.length && (
-            <p className="empty">No active routines left today.</p>
-          )}
-        </article>
+            {otherRoutines.map((routine) => (
+              <RoutineRow key={routine.id} routine={routine} />
+            ))}
+          </article>
+        )}
       </div>
+      {redditSlot === "top" && <RedditDropTarget slot="bottom" />}
+      {redditSlot === "bottom" && <RedditRoutineCard />}
       <details className="completed-today">
         <summary>
           Completed today{" "}
