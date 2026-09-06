@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "buildCommand": "echo 'Using the Sparkeefy Launch Control origin'",
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/proxy?path=$1" }
+  ]
+}
