@@ -1836,30 +1836,38 @@ select:focus {
   }
 }
 
-.v3 .reddit-routines {
-  margin-top: 16px;
-  cursor: grab;
+.v3 .movable-routine-group {
+  position: relative;
+  z-index: 2;
+  transition:
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
+  will-change: transform;
 }
-.v3 .v3-grid.no-sidebar {
-  grid-template-columns: minmax(0, 1fr);
+.v3 .movable-routine-group.is-dragging {
+  z-index: 10;
+  opacity: 0.92;
+  box-shadow: 0 16px 40px rgba(29, 31, 53, 0.18);
 }
-.v3 .reddit-routines.is-dragging {
-  opacity: 0.42;
-  cursor: grabbing;
-}
-.v3 .reddit-routines-head {
-  display: grid;
+.v3 .movable-routine-group .routine-group-toggle {
   grid-template-columns: 20px 24px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
 }
-.v3 .drag-handle {
+.v3 .movable-routine-group .drag-handle {
+  width: 20px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: #a2a2af;
+  cursor: grab;
   font-size: 18px;
   letter-spacing: -3px;
-  user-select: none;
+  touch-action: none;
 }
-.v3 .reddit-routines-toggle {
+.v3 .movable-routine-group.is-dragging .drag-handle {
+  cursor: grabbing;
+}
+.v3 .reddit-group-toggle {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
@@ -1872,45 +1880,18 @@ select:focus {
   text-align: left;
   cursor: pointer;
 }
-.v3 .reddit-routines-toggle > span:first-child {
+.v3 .reddit-group-toggle > span:first-child {
   display: grid;
-  gap: 2px;
+  gap: 3px;
+  min-width: 0;
 }
-.v3 .reddit-routines-toggle .eyebrow {
-  margin: 0;
-}
-.v3 .reddit-routines-toggle h3 {
-  margin: 0;
-  font-size: 16px;
-}
-.v3 .reddit-routines-toggle small {
-  color: #8d8d99;
-  font-size: 11px;
-}
-.v3 .reddit-routines .routine-group-items {
-  margin-top: 12px;
-  padding-left: 34px;
-}
-.v3 .reddit-drop-target {
-  display: none;
-  min-height: 54px;
-  margin-top: 16px;
-  place-items: center;
-  border: 1.5px dashed #aeb9fb;
-  border-radius: 16px;
-  color: #6574d8;
+.v3 .reddit-group-toggle b {
   font-size: 12px;
-  font-weight: 700;
 }
-.v3 .reddit-drop-target.is-visible {
-  display: grid;
+.v3 .reddit-group-toggle small {
+  color: #8d8d99;
+  font-size: 10px;
 }
-@media (max-width: 720px) {
-  .v3 .reddit-routines-head {
-    grid-template-columns: 16px 24px minmax(0, 1fr);
-    gap: 8px;
-  }
-  .v3 .reddit-routines .routine-group-items {
-    padding-left: 0;
-  }
+.v3 .movable-routine-group .routine-group-items {
+  padding-left: 8px;
 }

@@ -1457,8 +1457,14 @@ function SarthakV3({
     [editRoutine, setEditRoutine] = useState<string | null>(null),
     [editMeeting, setEditMeeting] = useState<string | null>(null),
     [redditExpanded, setRedditExpanded] = useState(false),
-    [redditSlot, setRedditSlot] = useState<"top" | "bottom">("bottom"),
-    [redditDragging, setRedditDragging] = useState(false),
+    [redditOffset, setRedditOffset] = useState({ x: 0, y: 0 }),
+    [redditDrag, setRedditDrag] = useState<{
+      pointerId: number;
+      startX: number;
+      startY: number;
+      originX: number;
+      originY: number;
+    } | null>(null),
     [undo, setUndo] = useState<{ label: string; run: () => void } | null>(null),
     [saving, setSaving] = useState(false),
     [clock, setClock] = useState(indiaNow());
@@ -1472,6 +1478,25 @@ function SarthakV3({
     const timer = window.setInterval(() => setClock(indiaNow()), 30000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("sparkeefy:reddit-offset");
+      if (saved) {
+        const value = JSON.parse(saved);
+        if (Number.isFinite(value.x) && Number.isFinite(value.y)) {
+          setRedditOffset({ x: value.x, y: value.y });
+        }
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "sparkeefy:reddit-offset",
+        JSON.stringify(redditOffset),
+      );
+    } catch {}
+  }, [redditOffset]);
   const hour = Number(clock.slice(0, 2)),
     greeting =
       hour < 5
@@ -2032,31 +2057,54 @@ function SarthakV3({
       </article>
     );
   };
-  const RedditRoutineCard = () =>
+  const RedditRoutineGroup = () =>
     redditRoutines.length ? (
-      <article
-        className={`card reddit-routines ${redditDragging ? "is-dragging" : ""}`}
-        draggable
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = "move";
-          event.dataTransfer.setData("text/plain", "reddit-routines");
-          setRedditDragging(true);
+      <section
+        className={`routine-group movable-routine-group ${redditDrag ? "is-dragging" : ""}`}
+        style={{
+          transform: `translate(${redditOffset.x}px, ${redditOffset.y}px)`,
         }}
-        onDragEnd={() => setRedditDragging(false)}
       >
-        <div className="reddit-routines-head">
-          <span className="drag-handle" aria-hidden="true">
-            ⠿
-          </span>
-          <WorkIcon title="Reddit posts" type="reddit" />
+        <div className="routine-group-toggle">
           <button
-            className="reddit-routines-toggle"
+            className="drag-handle"
+            aria-label="Move Reddit posts"
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setRedditDrag({
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+                originX: redditOffset.x,
+                originY: redditOffset.y,
+              });
+            }}
+            onPointerMove={(event) => {
+              if (!redditDrag || redditDrag.pointerId !== event.pointerId)
+                return;
+              setRedditOffset({
+                x: redditDrag.originX + event.clientX - redditDrag.startX,
+                y: redditDrag.originY + event.clientY - redditDrag.startY,
+              });
+            }}
+            onPointerUp={(event) => {
+              if (redditDrag?.pointerId === event.pointerId)
+                setRedditDrag(null);
+            }}
+          >
+            ⠿
+          </button>
+          <span className="work-icon" aria-hidden="true">
+            <img src={markUrl("reddit")} alt="" />
+          </span>
+          <button
+            className="reddit-group-toggle"
             onClick={() => setRedditExpanded((expanded) => !expanded)}
             aria-expanded={redditExpanded}
           >
             <span>
-              <p className="eyebrow">EVERY DAY</p>
-              <h3>Reddit posts</h3>
+              <b>Reddit posts</b>
               <small>
                 {redditRoutines.length} routines · {redditRoutines[0].time}
                 {redditRoutines.length > 1
@@ -2077,23 +2125,8 @@ function SarthakV3({
             ))}
           </div>
         )}
-      </article>
+      </section>
     ) : null;
-  const RedditDropTarget = ({ slot }: { slot: "top" | "bottom" }) => (
-    <div
-      className={`reddit-drop-target ${redditDragging ? "is-visible" : ""}`}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault();
-        if (event.dataTransfer.getData("text/plain") === "reddit-routines") {
-          setRedditSlot(slot);
-        }
-        setRedditDragging(false);
-      }}
-    >
-      Drop Reddit posts here
-    </div>
-  );
   return (
     <section className="page founder v3">
       <header className="page-head founder-head">
@@ -2195,9 +2228,7 @@ function SarthakV3({
           </div>
         )}
       </section>
-      {redditSlot === "bottom" && <RedditDropTarget slot="top" />}
-      {redditSlot === "top" && <RedditRoutineCard />}
-      <div className={`v3-grid ${otherRoutines.length ? "" : "no-sidebar"}`}>
+      <div className="v3-grid">
         <div>
           <article className="card actionable">
             <div className="card-title">
@@ -2457,23 +2488,23 @@ function SarthakV3({
             </small>
           </article>
         </div>
-        {otherRoutines.length > 0 && (
-          <article className="card routines">
-            <div className="card-title">
-              <div>
-                <p className="eyebrow">EVERY DAY</p>
-                <h3>Routines</h3>
-              </div>
-              <span>IST</span>
+        <article className="card routines">
+          <div className="card-title">
+            <div>
+              <p className="eyebrow">EVERY DAY</p>
+              <h3>Routines</h3>
             </div>
-            {otherRoutines.map((routine) => (
-              <RoutineRow key={routine.id} routine={routine} />
-            ))}
-          </article>
-        )}
+            <span>IST</span>
+          </div>
+          <RedditRoutineGroup />
+          {otherRoutines.map((routine) => (
+            <RoutineRow key={routine.id} routine={routine} />
+          ))}
+          {!activeRoutines.length && (
+            <p className="empty">No active routines left today.</p>
+          )}
+        </article>
       </div>
-      {redditSlot === "top" && <RedditDropTarget slot="bottom" />}
-      {redditSlot === "bottom" && <RedditRoutineCard />}
       <details className="completed-today">
         <summary>
           Completed today{" "}
