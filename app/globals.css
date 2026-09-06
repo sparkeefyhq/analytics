@@ -166,4 +166,21 @@ body {
   .editor-field { @apply block; }
   .editor-field > span { @apply mb-2 block text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground; }
   .editor-field input { @apply h-9 rounded-xl bg-white; }
+  .login-scene { @apply relative grid min-h-screen overflow-hidden bg-[#030718] px-5 py-8 text-white; background-image: linear-gradient(90deg, rgba(2, 5, 20, .3), rgba(2, 5, 20, .05)), url('/login-hero.png'); background-size: cover; background-position: center; }
+  .login-vignette { @apply pointer-events-none absolute inset-0; background: radial-gradient(circle at 25% 45%, transparent 0%, rgba(0,0,0,.05) 36%, rgba(0,0,0,.45) 100%); }
+  .login-shell { @apply relative z-10 mx-auto flex w-full max-w-[1180px] flex-col justify-center py-8 md:pl-4; }
+  .login-brand { @apply mb-10 flex items-center gap-2.5 text-sm font-semibold tracking-[-.02em]; }
+  .login-mark { @apply grid size-9 place-items-center rounded-xl border border-white/15 bg-white/10 text-[#9cb0ff] shadow-lg backdrop-blur-md; }
+  .login-card { @apply w-full max-w-[410px] rounded-[28px] border border-white/15 bg-[#0c1030]/80 p-6 shadow-[0_24px_100px_rgba(0,0,0,.5)] backdrop-blur-xl sm:p-8; }
+  .login-lock { @apply mb-5 grid size-10 place-items-center rounded-[14px] border border-[#a9b5ff]/25 bg-[#7689ff]/15 text-[#c4ccff]; }
+  .login-kicker { @apply text-[10px] font-semibold uppercase tracking-[.14em] text-[#afbbff]; }
+  .login-card h1 { @apply mt-2 text-[30px] font-semibold tracking-[-.05em] text-white; }
+  .login-copy { @apply mt-2.5 max-w-[300px] text-sm leading-6 text-[#c1c7e6]; }
+  .login-field { @apply block; }
+  .login-field > span:first-child { @apply mb-1.5 block text-[11px] font-semibold text-[#d7dcf5]; }
+  .login-field input { @apply h-11 border-white/15 bg-[#080b25]/80 text-sm text-white placeholder:text-[#747a9d] focus-visible:border-[#9cabff] focus-visible:ring-[#778bff]/30; }
+  .login-password-toggle { @apply absolute right-0 top-0 grid h-11 w-11 place-items-center text-[#969fc8] transition hover:text-white; }
+  .login-submit { @apply h-11 w-full rounded-xl bg-[#91a0ff] text-[#10142d] hover:bg-[#b0baff]; }
+  .login-footnote { @apply mt-5 text-center text-[11px] leading-5 text-[#8991ba]; }
+  .login-caption { @apply absolute bottom-7 right-7 z-10 hidden text-[10px] font-semibold tracking-[.17em] text-[#d2c5ff]/65 sm:block; }
 }

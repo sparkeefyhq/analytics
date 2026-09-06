@@ -1,0 +1,7 @@
+import { clearSessionCookie } from '@/lib/auth';
+
+export const runtime = 'edge';
+
+export async function POST() {
+  return Response.json({ ok: true }, { headers: { 'Set-Cookie': clearSessionCookie(), 'Cache-Control': 'no-store' } });
+}

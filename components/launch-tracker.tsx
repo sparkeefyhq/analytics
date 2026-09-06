@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { LoginScreen } from '@/components/login-screen';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -24,7 +25,7 @@ import type { TrackerData, TrackerMetric, TrackerPhase } from '@/lib/tracker-typ
 import { metricPassed, phaseProgress, phaseReady } from '@/lib/tracker-types';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
-type TrackerResponse = TrackerData & { viewerEmail?: string | null; canEdit?: boolean };
+type TrackerResponse = TrackerData & { authenticated: true; viewerEmail?: string | null; canEdit?: boolean };
 
 function phaseUsers(phase: TrackerPhase) {
   return phase.userMin === phase.userMax ? `${phase.userMax}` : `${phase.userMin}–${phase.userMax}`;
@@ -62,6 +63,7 @@ function MetricStatus({ metric }: { metric: TrackerMetric }) {
 
 export function LaunchTracker() {
   const [data, setData] = useState<TrackerResponse | null>(null);
+  const [needsLogin, setNeedsLogin] = useState(false);
   const [selectedId, setSelectedId] = useState('phase-0');
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<TrackerPhase | null>(null);
@@ -72,7 +74,13 @@ export function LaunchTracker() {
   async function load() {
     try {
       const response = await fetch('/api/tracker');
+      if (response.status === 401) {
+        setNeedsLogin(true);
+        setData(null);
+        return;
+      }
       if (!response.ok) throw new Error('Could not load launch data.');
+      setNeedsLogin(false);
       setData(await response.json() as TrackerResponse);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not load launch data.');
@@ -80,6 +88,14 @@ export function LaunchTracker() {
   }
 
   useEffect(() => { void load(); }, []);
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    setData(null);
+    setNeedsLogin(true);
+  }
+
+  if (needsLogin) return <LoginScreen onAuthenticated={() => void load()} />;
 
   const phase = data?.phases.find((item) => item.id === selectedId) ?? data?.phases[0];
   const canEdit = data?.canEdit === true;
@@ -119,6 +135,7 @@ export function LaunchTracker() {
     if (!data) return;
     const numeric = value === '' && field === 'actual' ? null : Number(value);
     setData({
+      ...data,
       phases: data.phases.map((item) => ({
         ...item,
         metrics: item.metrics.map((metric) => metric.id === id ? { ...metric, [field]: numeric } : metric),
@@ -175,6 +192,7 @@ export function LaunchTracker() {
               {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : saveState === 'saved' ? 'Saved' : 'Shared tracker'}
             </div>
             <span className={`hidden rounded-full px-2.5 py-1.5 text-[11px] font-semibold sm:inline-flex ${canEdit ? 'bg-[#eaf7ef] text-[#277551]' : 'bg-black/[0.045] text-muted-foreground'}`}>{canEdit ? 'Editor' : 'View only'}</span>
+            <button className="hidden text-[11px] font-medium text-muted-foreground transition hover:text-foreground sm:inline-block" onClick={() => void logout()}>Sign out</button>
             <div className="hidden text-right sm:block"><p className="text-xs font-semibold">{overallCompleted} of {data.phases.length} phases</p><p className="text-[10px] text-muted-foreground">completed</p></div>
           </div>
         </div>

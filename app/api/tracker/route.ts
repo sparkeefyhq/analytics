@@ -1,11 +1,10 @@
 import { env } from 'cloudflare:workers';
+import { trackerAccess } from '@/lib/auth';
 import type { TrackerCheck, TrackerData, TrackerMetric, TrackerPhase } from '@/lib/tracker-types';
 import { metricPassed } from '@/lib/tracker-types';
 
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
-
-const EDITOR_EMAIL = 'sarthakverma0802@gmail.com';
 
 type SeedMetric = [string, number, string?, ('gte' | 'lte' | 'eq')?];
 
@@ -184,20 +183,14 @@ async function loadTracker(): Promise<TrackerData> {
   return { phases };
 }
 
-function viewerEmail(request: Request) {
-  return request.headers.get('oai-authenticated-user-email')?.trim().toLowerCase() ?? null;
-}
-
-function canEdit(request: Request) {
-  return viewerEmail(request) === EDITOR_EMAIL;
-}
-
 async function trackerResponse(request: Request) {
-  return { ...(await loadTracker()), viewerEmail: viewerEmail(request), canEdit: canEdit(request) };
+  return { ...(await loadTracker()), ...(await trackerAccess(request)) };
 }
 
 export async function GET(request: Request) {
   try {
+    const access = await trackerAccess(request);
+    if (!access.authenticated) return Response.json({ authenticated: false }, { status: 401, headers: { 'Cache-Control': 'no-store' } });
     return Response.json(await trackerResponse(request));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to load tracker.' }, { status: 500 });
@@ -206,7 +199,8 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    if (!canEdit(request)) {
+    const access = await trackerAccess(request);
+    if (!access.canEdit) {
       return Response.json({ error: 'This account has view-only access.' }, { status: 403 });
     }
     await ensureDatabase();
