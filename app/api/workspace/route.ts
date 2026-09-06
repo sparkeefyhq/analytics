@@ -80,7 +80,7 @@ async function ensureWorkspace() {
 
   // Earlier builds accidentally stored this one-off item as a recurring routine.
   // Move it once, preserving its scheduled time and keeping the routine record inactive.
-  const misplaced = await db.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all' AND active = 1")
+  const misplaced = await db.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all'")
     .bind(EDITOR_EMAIL).all<Record<string, unknown>>();
   if (misplaced.results.length) {
     const timestamp = now();
@@ -90,6 +90,8 @@ async function ensureWorkspace() {
         (id, owner_email, title, description, due_date, due_time, priority, category, status, link, position, created_at, updated_at)
         VALUES (?, ?, ?, '', ?, ?, 'medium', 'Founder', 'open', '', 0, ?, ?)`)
         .bind(`migrated-${String(routine.id)}`, EDITOR_EMAIL, String(routine.title), date, String(routine.time), timestamp, timestamp),
+      db.prepare('DELETE FROM routine_occurrences WHERE routine_id = ? AND owner_email = ? AND date = ?')
+        .bind(String(routine.id), EDITOR_EMAIL, date),
       db.prepare('UPDATE routines SET active = 0, updated_at = ? WHERE id = ?').bind(timestamp, String(routine.id)),
     ]));
   }
