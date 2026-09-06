@@ -2770,9 +2770,11 @@ function Launch({
           ? `${m.actual}/${m.actualDenominator || 0}`
           : `${m.actual}`;
   const metricPercent = (m: Metric) =>
-    m.actual === null || !m.actualDenominator
+    m.actual === null || m.actualDenominator === null
       ? null
-      : Math.round((m.actual / m.actualDenominator) * 100);
+      : m.actualDenominator > 0
+        ? Math.round((m.actual / m.actualDenominator) * 100)
+        : 0;
   const unmetRequirements = phaseZero
     ? data.phase0Unmet || []
     : [
