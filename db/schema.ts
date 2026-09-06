@@ -48,7 +48,7 @@ export const checks = sqliteTable(
 
 export const routines = sqliteTable('routines', {
   id: text('id').primaryKey(), ownerEmail: text('owner_email').notNull(), title: text('title').notNull(),
-  time: text('time').notNull(), position: integer('position').notNull(), active: integer('active', { mode: 'boolean' }).notNull().default(true),
+  time: text('time').notNull(), iconType: text('icon_type'), iconSource: text('icon_source').notNull().default('inferred'), link: text('link').notNull().default(''), position: integer('position').notNull(), active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
 });
 
@@ -61,7 +61,7 @@ export const routineOccurrences = sqliteTable('routine_occurrences', {
 export const founderTasks = sqliteTable('founder_tasks', {
   id: text('id').primaryKey(), ownerEmail: text('owner_email').notNull(), title: text('title').notNull(), description: text('description').notNull().default(''),
   dueDate: text('due_date'), dueTime: text('due_time'), priority: text('priority').notNull().default('medium'), category: text('category').notNull().default('General'),
-  status: text('status').notNull().default('open'), link: text('link').notNull().default(''), position: integer('position').notNull().default(0),
+  status: text('status').notNull().default('open'), link: text('link').notNull().default(''), iconType: text('icon_type'), iconSource: text('icon_source').notNull().default('inferred'), position: integer('position').notNull().default(0),
   createdAt: text('created_at').notNull(), completedAt: text('completed_at'), deletedAt: text('deleted_at'), updatedAt: text('updated_at').notNull(),
 }, (table) => [index('idx_founder_tasks_owner_status_due').on(table.ownerEmail, table.status, table.dueDate)]);
 
@@ -88,3 +88,13 @@ export const suggestionReplies = sqliteTable('suggestion_replies', {
 export const suggestionVotes = sqliteTable('suggestion_votes', {
   suggestionId: text('suggestion_id').notNull(), authorEmail: text('author_email').notNull(), createdAt: text('created_at').notNull(),
 });
+
+export const founderSettings = sqliteTable('founder_settings', {
+  ownerEmail: text('owner_email').primaryKey(), launchDate: text('launch_date'), updatedAt: text('updated_at').notNull(),
+});
+
+export const founderMeetings = sqliteTable('founder_meetings', {
+  id: text('id').primaryKey(), ownerEmail: text('owner_email').notNull(), title: text('title').notNull(), category: text('category').notNull().default('Other'),
+  contact: text('contact').notNull().default(''), scheduledDate: text('scheduled_date').notNull(), scheduledTime: text('scheduled_time').notNull(), meetingLink: text('meeting_link').notNull().default(''), description: text('description').notNull().default(''), status: text('status').notNull().default('scheduled'),
+  preparationGoal: text('preparation_goal').notNull().default(''), talkingPoints: text('talking_points').notNull().default(''), questions: text('questions').notNull().default(''), desiredNextStep: text('desired_next_step').notNull().default(''), outcome: text('outcome').notNull().default(''), nextStep: text('next_step').notNull().default(''), followUpDate: text('follow_up_date'), privateNotes: text('private_notes').notNull().default(''), deletedAt: text('deleted_at'), createdAt: text('created_at').notNull(), updatedAt: text('updated_at').notNull(),
+}, (table) => [index('idx_founder_meetings_owner_date').on(table.ownerEmail, table.scheduledDate, table.scheduledTime)]);
