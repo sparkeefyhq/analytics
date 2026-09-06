@@ -1485,7 +1485,6 @@ function SarthakV3({
     todayTasks = activeTasks.filter(
       (t) => !t.due_date || t.due_date <= data.date,
     ),
-    upcoming = activeTasks.filter((t) => t.due_date && t.due_date > data.date),
     activeRoutines = routines.filter((r) => r.status === "pending"),
     completedTasks = tasks.filter((t) => t.status === "complete"),
     finishedRoutines = routines.filter((r) => r.status !== "pending"),
@@ -1504,7 +1503,6 @@ function SarthakV3({
       `${b.due_date && b.due_date < data.date ? "0" : "1"}-${b.due_time || "99:99"}-${b.priority === "high" ? "0" : b.priority === "medium" ? "1" : "2"}-${b.position || 0}`,
     );
   todayTasks.sort(timed);
-  upcoming.sort((a, b) => (a.due_date || "").localeCompare(b.due_date || ""));
   const focus = pickTodaysFocus(
       [...todayTasks, ...activeRoutines, ...todayMeetings],
       data.date,
@@ -2135,20 +2133,6 @@ function SarthakV3({
       </section>
       <div className="v3-grid">
         <div>
-          <article className="card actionable upcoming">
-            <div className="card-title">
-              <div>
-                <p className="eyebrow">UPCOMING</p>
-                <h3>Upcoming</h3>
-              </div>
-              <span>{upcoming.length}</span>
-            </div>
-            {upcoming.length ? (
-              upcoming.map((task) => <TaskRow key={task.id} task={task} />)
-            ) : (
-              <p className="empty">Nothing scheduled after today.</p>
-            )}
-          </article>
           <article className="card actionable">
             <div className="card-title">
               <div>
