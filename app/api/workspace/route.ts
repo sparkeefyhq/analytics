@@ -63,6 +63,11 @@ async function ensureWorkspace() {
     )`),
   ]);
 
+  const taskColumns = await db.prepare('PRAGMA table_info(founder_tasks)').all<{ name: string }>();
+  if (!taskColumns.results.some((column) => column.name === 'deleted_at')) {
+    await db.prepare('ALTER TABLE founder_tasks ADD COLUMN deleted_at TEXT').run();
+  }
+
   const count = await db.prepare('SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?').bind(EDITOR_EMAIL).first<{ count: number }>();
   if ((count?.count ?? 0) === 0) {
     const timestamp = now();
@@ -71,6 +76,22 @@ async function ensureWorkspace() {
       db.prepare('INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)').bind('reddit-evening', EDITOR_EMAIL, 'Evening Reddit post', '19:00', 1, timestamp, timestamp),
       db.prepare('INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)').bind('reddit-night', EDITOR_EMAIL, 'Night Reddit post', '22:00', 2, timestamp, timestamp),
     ]);
+  }
+
+  // Earlier builds accidentally stored this one-off item as a recurring routine.
+  // Move it once, preserving its scheduled time and keeping the routine record inactive.
+  const misplaced = await db.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all' AND active = 1")
+    .bind(EDITOR_EMAIL).all<Record<string, unknown>>();
+  if (misplaced.results.length) {
+    const timestamp = now();
+    const date = indiaDate();
+    await db.batch(misplaced.results.flatMap((routine) => [
+      db.prepare(`INSERT OR IGNORE INTO founder_tasks
+        (id, owner_email, title, description, due_date, due_time, priority, category, status, link, position, created_at, updated_at)
+        VALUES (?, ?, ?, '', ?, ?, 'medium', 'Founder', 'open', '', 0, ?, ?)`)
+        .bind(`migrated-${String(routine.id)}`, EDITOR_EMAIL, String(routine.title), date, String(routine.time), timestamp, timestamp),
+      db.prepare('UPDATE routines SET active = 0, updated_at = ? WHERE id = ?').bind(timestamp, String(routine.id)),
+    ]));
   }
 }
 
@@ -96,7 +117,8 @@ async function founderData(access: Access) {
   const db = database();
   const [routines, tasks, diary, diaryHistory] = await Promise.all([
     db.prepare('SELECT * FROM routine_occurrences WHERE owner_email = ? AND date = ? ORDER BY time').bind(EDITOR_EMAIL, date).all(),
-    db.prepare(`SELECT * FROM founder_tasks WHERE owner_email = ? ORDER BY CASE status WHEN 'complete' THEN 1 ELSE 0 END, due_date IS NULL, due_date, position, created_at DESC`).bind(EDITOR_EMAIL).all(),
+    db.prepare(`SELECT * FROM founder_tasks WHERE owner_email = ? AND deleted_at IS NULL
+      ORDER BY CASE status WHEN 'complete' THEN 1 ELSE 0 END, due_date IS NULL, due_date, due_time IS NULL, due_time, position, created_at DESC`).bind(EDITOR_EMAIL).all(),
     db.prepare('SELECT * FROM diary_entries WHERE owner_email = ? AND entry_date = ?').bind(EDITOR_EMAIL, date).first(),
     db.prepare('SELECT entry_date, mood, finished_at FROM diary_entries WHERE owner_email = ? ORDER BY entry_date DESC LIMIT 14').bind(EDITOR_EMAIL).all(),
   ]);
@@ -144,13 +166,23 @@ export async function POST(request: Request) {
       await db.prepare(`INSERT INTO founder_tasks (id, owner_email, title, description, due_date, due_time, priority, category, status, link, position, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 0, ?, ?)`)
         .bind(id('task'), EDITOR_EMAIL, String(p.title ?? '').trim(), String(p.description ?? ''), p.dueDate ? String(p.dueDate) : null, p.dueTime ? String(p.dueTime) : null, String(p.priority ?? 'medium'), String(p.category ?? 'General'), String(p.link ?? ''), timestamp, timestamp).run();
+    } else if (body.action === 'task_reorder') {
+      const order = Array.isArray(body.patch?.order) ? body.patch.order.map(String) : [];
+      if (order.length) {
+        await db.batch(order.map((taskId, position) => db.prepare(`UPDATE founder_tasks
+          SET position = ?, updated_at = ?
+          WHERE id = ? AND owner_email = ? AND deleted_at IS NULL`)
+          .bind(position, timestamp, taskId, EDITOR_EMAIL)));
+      }
     } else if (body.action === 'task_update' && body.id) {
       const p = body.patch ?? {};
       const status = String(p.status ?? 'open');
       await db.prepare(`UPDATE founder_tasks SET title=?, description=?, due_date=?, due_time=?, priority=?, category=?, status=?, link=?, completed_at=?, updated_at=? WHERE id=? AND owner_email=?`)
         .bind(String(p.title ?? ''), String(p.description ?? ''), p.dueDate ? String(p.dueDate) : null, p.dueTime ? String(p.dueTime) : null, String(p.priority ?? 'medium'), String(p.category ?? 'General'), status, String(p.link ?? ''), status === 'complete' ? timestamp : null, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === 'task_delete' && body.id) {
-      await db.prepare('DELETE FROM founder_tasks WHERE id = ? AND owner_email = ?').bind(body.id, EDITOR_EMAIL).run();
+      await db.prepare('UPDATE founder_tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND owner_email = ?').bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
+    } else if (body.action === 'task_restore' && body.id) {
+      await db.prepare('UPDATE founder_tasks SET deleted_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?').bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === 'routine_create') {
       const p = body.patch ?? {};
       const next = await db.prepare('SELECT COALESCE(MAX(position), -1) AS position FROM routines WHERE owner_email = ?').bind(EDITOR_EMAIL).first<{ position: number }>();
@@ -159,7 +191,7 @@ export async function POST(request: Request) {
     } else if (body.action === 'routine_update' && body.id) {
       const p = body.patch ?? {};
       await db.prepare('UPDATE routine_occurrences SET status=?, note=?, updated_at=?, completed_at=? WHERE id=? AND owner_email=?')
-        .bind(String(p.status ?? 'pending'), String(p.note ?? ''), timestamp, p.status === 'completed' ? timestamp : null, body.id, EDITOR_EMAIL).run();
+        .bind(String(p.status ?? 'pending'), String(p.note ?? ''), timestamp, p.status === 'completed' || p.status === 'skipped' ? timestamp : null, body.id, EDITOR_EMAIL).run();
     } else if (body.action === 'routine_edit' && body.id) {
       const p = body.patch ?? {};
       await db.prepare('UPDATE routines SET title=?, time=?, updated_at=? WHERE id=? AND owner_email=?').bind(String(p.title ?? ''), String(p.time ?? ''), timestamp, body.id, EDITOR_EMAIL).run();

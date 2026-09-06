@@ -62,7 +62,7 @@ export const founderTasks = sqliteTable('founder_tasks', {
   id: text('id').primaryKey(), ownerEmail: text('owner_email').notNull(), title: text('title').notNull(), description: text('description').notNull().default(''),
   dueDate: text('due_date'), dueTime: text('due_time'), priority: text('priority').notNull().default('medium'), category: text('category').notNull().default('General'),
   status: text('status').notNull().default('open'), link: text('link').notNull().default(''), position: integer('position').notNull().default(0),
-  createdAt: text('created_at').notNull(), completedAt: text('completed_at'), updatedAt: text('updated_at').notNull(),
+  createdAt: text('created_at').notNull(), completedAt: text('completed_at'), deletedAt: text('deleted_at'), updatedAt: text('updated_at').notNull(),
 }, (table) => [index('idx_founder_tasks_owner_status_due').on(table.ownerEmail, table.status, table.dueDate)]);
 
 export const diaryEntries = sqliteTable('diary_entries', {
