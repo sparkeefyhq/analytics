@@ -196,7 +196,19 @@ export async function POST(request: Request) {
         .bind(String(p.status ?? 'pending'), String(p.note ?? ''), timestamp, p.status === 'completed' || p.status === 'skipped' ? timestamp : null, body.id, EDITOR_EMAIL).run();
     } else if (body.action === 'routine_edit' && body.id) {
       const p = body.patch ?? {};
-      await db.prepare('UPDATE routines SET title=?, time=?, updated_at=? WHERE id=? AND owner_email=?').bind(String(p.title ?? ''), String(p.time ?? ''), timestamp, body.id, EDITOR_EMAIL).run();
+      const date = indiaDate();
+      await db.batch([
+        db.prepare('UPDATE routines SET title=?, time=?, updated_at=? WHERE id=? AND owner_email=?').bind(String(p.title ?? ''), String(p.time ?? ''), timestamp, body.id, EDITOR_EMAIL),
+        db.prepare('UPDATE routine_occurrences SET title=?, time=?, updated_at=? WHERE routine_id=? AND owner_email=? AND date=?').bind(String(p.title ?? ''), String(p.time ?? ''), timestamp, body.id, EDITOR_EMAIL, date),
+      ]);
+    } else if (body.action === 'routine_delete' && body.id) {
+      const date = indiaDate();
+      await db.batch([
+        db.prepare('UPDATE routines SET active=0, updated_at=? WHERE id=? AND owner_email=?').bind(timestamp, body.id, EDITOR_EMAIL),
+        db.prepare('DELETE FROM routine_occurrences WHERE routine_id=? AND owner_email=? AND date=?').bind(body.id, EDITOR_EMAIL, date),
+      ]);
+    } else if (body.action === 'routine_restore' && body.id) {
+      await db.prepare('UPDATE routines SET active=1, updated_at=? WHERE id=? AND owner_email=?').bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === 'diary_save') {
       const p = body.patch ?? {};
       const entryDate = String(p.entryDate ?? indiaDate());
