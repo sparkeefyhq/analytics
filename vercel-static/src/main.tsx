@@ -11,6 +11,52 @@ type Metric = {
   unit: string;
   comparator: "gte" | "lte" | "eq";
   category: string;
+  valueType?: "number" | "fraction" | "percent";
+  targetDenominator?: number | null;
+  actualDenominator?: number | null;
+  minimumDenominator?: number | null;
+  definition?: string;
+};
+type ReleaseGate = {
+  id: string;
+  phaseId: string;
+  position: number;
+  name: string;
+  actual: number;
+};
+type CohortParticipant = {
+  id: string;
+  phaseId: string;
+  participantId: string;
+  status: string;
+  ageBand: string;
+  relationshipState: string;
+  recruitmentSource: string;
+  closeFriendOrTeammate: boolean;
+  situationCategory: string;
+  onboardingCompleted: boolean;
+  meaningfulActivation: boolean;
+  independentlyActivated: boolean;
+  firstAnswerUseful: "yes" | "no" | "not-rated";
+  genuineRequestCount: number;
+  usefulnessResponseCount: number;
+  reminderTestCount: number;
+  reminderTested: boolean;
+  reminderDeliveryResult: string;
+  reminderDestinationResult: string;
+  returnSource: string;
+  founderExplainedProduct: boolean;
+  founderHelpedOnboarding: boolean;
+  founderSuggestedSituation: boolean;
+  founderHelpedRequest: boolean;
+  founderSolvedProblem: boolean;
+  founderPromptedReturn: boolean;
+  trustConcern: boolean;
+  productIssue: boolean;
+  evidenceNote: string;
+  notionReferenceUrl: string;
+  createdAt: string;
+  updatedAt: string;
 };
 type Check = { id: string; label: string; completed: boolean };
 type Phase = {
@@ -35,6 +81,9 @@ type Tracker = {
   canEdit: boolean;
   viewerEmail: string | null;
   authenticated: true;
+  cohortEvidence?: CohortParticipant[];
+  releaseGates?: ReleaseGate[];
+  phase0Unmet?: string[];
 };
 type Routine = {
   id: string;
@@ -140,11 +189,27 @@ const titleCase = (value: string) =>
   value.replace(/\b\w/g, (l) => l.toUpperCase());
 const passes = (m: Metric) =>
   m.actual !== null &&
-  (m.comparator === "lte"
-    ? m.actual <= m.target
-    : m.comparator === "eq"
-      ? m.actual === m.target
-      : m.actual >= m.target);
+  (m.valueType === "percent"
+    ? Boolean(
+        m.actualDenominator &&
+        (!m.minimumDenominator ||
+          m.actualDenominator >= m.minimumDenominator) &&
+        (m.actual / m.actualDenominator) * 100 >= m.target,
+      )
+    : m.valueType === "fraction"
+      ? Boolean(
+          m.actualDenominator &&
+          (!m.minimumDenominator ||
+            m.actualDenominator >= m.minimumDenominator) &&
+          (!m.targetDenominator ||
+            m.actualDenominator >= m.targetDenominator) &&
+          m.actual >= m.target,
+        )
+      : m.comparator === "lte"
+        ? m.actual <= m.target
+        : m.comparator === "eq"
+          ? m.actual === m.target
+          : m.actual >= m.target);
 const ready = (p: Phase) =>
   p.metrics.every(passes) && p.checks.every((c) => c.completed);
 const blankDiary: Diary = {
@@ -2706,13 +2771,86 @@ function Launch({
 }) {
   const [selected, setSelected] = useState("phase-0"),
     phase = data.phases.find((p) => p.id === selected) || data.phases[0],
-    [local, setLocal] = useState<Phase>(phase);
+    [local, setLocal] = useState<Phase>(phase),
+    [cohortSearch, setCohortSearch] = useState(""),
+    [cohortFilter, setCohortFilter] = useState("all"),
+    [cohortDraft, setCohortDraft] = useState<CohortParticipant | null>(null),
+    [showAdvanceConfirm, setShowAdvanceConfirm] = useState(false);
   useEffect(() => setLocal(phase), [phase]);
   const progress =
       local.metrics.filter(passes).length +
       local.checks.filter((c) => c.completed).length,
     total = local.metrics.length + local.checks.length;
-  const update = (m: Metric, k: "target" | "actual", v: string) =>
+  const phaseZero = local.id === "phase-0";
+  const participants = data.cohortEvidence || [];
+  const releaseGates = data.releaseGates || [];
+  const filteredParticipants = participants.filter(
+    (participant) =>
+      participant.participantId
+        .toLowerCase()
+        .includes(cohortSearch.toLowerCase()) &&
+      (cohortFilter === "all" || cohortFilter === "issues"
+        ? cohortFilter !== "issues" ||
+          participant.productIssue ||
+          participant.trustConcern
+        : cohortFilter === "activated"
+          ? participant.meaningfulActivation
+          : cohortFilter === "independent"
+            ? participant.independentlyActivated
+            : participant.status === cohortFilter),
+  );
+  const cohortSummary = {
+    independent: participants.filter((person) => person.independentlyActivated)
+      .length,
+    assisted: participants.filter(
+      (person) => person.meaningfulActivation && !person.independentlyActivated,
+    ).length,
+    inactive: participants.filter(
+      (person) => !person.meaningfulActivation && person.status !== "dropped",
+    ).length,
+    issues: participants.filter(
+      (person) => person.productIssue || person.trustConcern,
+    ).length,
+  };
+  const newParticipant = (): CohortParticipant => ({
+    id: "",
+    phaseId: "phase-0",
+    participantId: `P0-${String(participants.length + 1).padStart(3, "0")}`,
+    status: "invited",
+    ageBand: "other",
+    relationshipState: "other",
+    recruitmentSource: "",
+    closeFriendOrTeammate: false,
+    situationCategory: "other",
+    onboardingCompleted: false,
+    meaningfulActivation: false,
+    independentlyActivated: false,
+    firstAnswerUseful: "not-rated",
+    genuineRequestCount: 0,
+    usefulnessResponseCount: 0,
+    reminderTestCount: 0,
+    reminderTested: false,
+    reminderDeliveryResult: "not-tested",
+    reminderDestinationResult: "not-tested",
+    returnSource: "unknown",
+    founderExplainedProduct: false,
+    founderHelpedOnboarding: false,
+    founderSuggestedSituation: false,
+    founderHelpedRequest: false,
+    founderSolvedProblem: false,
+    founderPromptedReturn: false,
+    trustConcern: false,
+    productIssue: false,
+    evidenceNote: "",
+    notionReferenceUrl: "",
+    createdAt: "",
+    updatedAt: "",
+  });
+  const update = (
+    m: Metric,
+    k: "target" | "actual" | "actualDenominator",
+    v: string,
+  ) =>
     setLocal({
       ...local,
       metrics: local.metrics.map((x) =>
@@ -2721,6 +2859,25 @@ function Launch({
           : x,
       ),
     });
+  const metricActual = (m: Metric) =>
+    m.actual === null
+      ? "—"
+      : m.valueType === "percent"
+        ? `${m.actual}/${m.actualDenominator || 0} · ${m.actualDenominator ? Math.round((m.actual / m.actualDenominator) * 100) : 0}%`
+        : m.valueType === "fraction"
+          ? `${m.actual}/${m.actualDenominator || 0}`
+          : `${m.actual}`;
+  const unmetRequirements = phaseZero
+    ? data.phase0Unmet || []
+    : [
+        ...local.metrics
+          .filter((metric) => !passes(metric))
+          .map((metric) => metric.name),
+        ...local.checks
+          .filter((check) => !check.completed)
+          .map((check) => check.label),
+      ];
+  const phaseCanAdvance = unmetRequirements.length === 0;
   return (
     <section className="page launch">
       <header className="page-head">
@@ -2761,10 +2918,10 @@ function Launch({
             <h2>{local.name}</h2>
             <p>{local.objective}</p>
           </div>
-          <b className={ready(local) ? "pass-badge" : "active-badge"}>
+          <b className={phaseCanAdvance ? "pass-badge" : "active-badge"}>
             {local.status === "complete"
               ? "Complete"
-              : ready(local)
+              : phaseCanAdvance
                 ? "Ready to advance"
                 : "In progress"}
           </b>
@@ -2788,6 +2945,49 @@ function Launch({
           </div>
         </div>
       </article>
+      {phaseZero && (
+        <section className="phase-zero-brief">
+          <div>
+            <p className="eyebrow">CORE QUESTION</p>
+            <h3>
+              Can target users independently complete a real Wingman situation,
+              receive useful help, trust the experience and use a basic reminder
+              without a critical product failure?
+            </h3>
+            <p>
+              Passing earns permission to test organic product pull in Phase 1.
+              It does not prove retention, demand or product-market fit.
+            </p>
+          </div>
+          <div className="phase-zero-wedge">
+            <b>Indian men aged 18–28</b>
+            <span>
+              At least 8 participants must not be close friends or teammates.
+              Internal activity is excluded.
+            </span>
+          </div>
+          <details>
+            <summary>Phase 0 configuration</summary>
+            <div className="config-grid">
+              <span>
+                <b>Enabled</b>AI Wingman V3 · person context & memory ·
+                user-created reminders · usefulness feedback · analytics · crash
+                logging
+              </span>
+              <span>
+                <b>Disabled</b>Monetization · Spark Meter · Situation Pass ·
+                referrals · marketing or re-engagement notifications ·
+                gamification · paid acquisition
+              </span>
+              <span>
+                <b>Reminder rule</b>Explicit user-created reminders only.
+                Neutral private copy; reminder opens are{" "}
+                <em>reminder-assisted</em>, never organic.
+              </span>
+            </div>
+          </details>
+        </section>
+      )}
       <article className="card metrics">
         <div className="card-title">
           <div>
@@ -2809,34 +3009,69 @@ function Launch({
                 <b>{m.name}</b>
                 <small>{m.category}</small>
               </span>
-              <input
-                disabled={!data.canEdit}
-                type="number"
-                value={m.target}
-                onChange={(e) => update(m, "target", e.target.value)}
-                onBlur={() =>
-                  void save(
-                    "metric",
-                    { target: m.target, actual: m.actual },
-                    m.id,
-                  )
-                }
-              />
-              <input
-                disabled={!data.canEdit}
-                type="number"
-                placeholder="—"
-                value={m.actual ?? ""}
-                onChange={(e) => update(m, "actual", e.target.value)}
-                onBlur={() => {
-                  const cur = local.metrics.find((x) => x.id === m.id) || m;
-                  void save(
-                    "metric",
-                    { target: cur.target, actual: cur.actual },
-                    m.id,
-                  );
-                }}
-              />
+              <div className="metric-target">
+                <b>
+                  {m.valueType === "percent"
+                    ? `≥ ${m.target}%`
+                    : `≥ ${m.target}${m.targetDenominator ? `/${m.targetDenominator}` : ""}`}
+                </b>
+                {m.minimumDenominator ? (
+                  <small>min n={m.minimumDenominator}</small>
+                ) : (
+                  <small>{m.unit}</small>
+                )}
+              </div>
+              <div className="metric-actual">
+                <input
+                  disabled={!data.canEdit}
+                  type="number"
+                  min="0"
+                  placeholder="—"
+                  value={m.actual ?? ""}
+                  onChange={(e) => update(m, "actual", e.target.value)}
+                  onBlur={() => {
+                    const cur = local.metrics.find((x) => x.id === m.id) || m;
+                    void save(
+                      "metric",
+                      {
+                        target: cur.target,
+                        actual: cur.actual,
+                        actualDenominator: cur.actualDenominator,
+                      },
+                      m.id,
+                    );
+                  }}
+                />
+                {m.valueType !== "number" && (
+                  <>
+                    <span>/</span>
+                    <input
+                      disabled={!data.canEdit}
+                      type="number"
+                      min="0"
+                      placeholder="n"
+                      value={m.actualDenominator ?? ""}
+                      onChange={(e) =>
+                        update(m, "actualDenominator", e.target.value)
+                      }
+                      onBlur={() => {
+                        const cur =
+                          local.metrics.find((x) => x.id === m.id) || m;
+                        void save(
+                          "metric",
+                          {
+                            target: cur.target,
+                            actual: cur.actual,
+                            actualDenominator: cur.actualDenominator,
+                          },
+                          m.id,
+                        );
+                      }}
+                    />
+                  </>
+                )}
+                <small>{metricActual(m)}</small>
+              </div>
               <b
                 className={
                   m.actual === null ? "pending" : passes(m) ? "pass" : "fail"
@@ -2844,10 +3079,105 @@ function Launch({
               >
                 {m.actual === null ? "—" : passes(m) ? "✓" : "×"}
               </b>
+              {m.definition && (
+                <p className="metric-definition">{m.definition}</p>
+              )}
             </div>
           ))}
         </div>
       </article>
+      {phaseZero && (
+        <>
+          <article className="card evidence-snapshot">
+            <div className="card-title">
+              <div>
+                <p className="eyebrow">EVIDENCE SNAPSHOT</p>
+                <h3>Minimum evidence before Phase 1</h3>
+              </div>
+              <span>Private cohort data</span>
+            </div>
+            <div className="evidence-stats">
+              <span>
+                <b>
+                  {participants.filter((p) => p.status !== "dropped").length}/10
+                </b>
+                eligible participants
+              </span>
+              <span>
+                <b>
+                  {participants.filter((p) => p.meaningfulActivation).length}/8
+                </b>
+                meaningful situations
+              </span>
+              <span>
+                <b>
+                  {participants.reduce((n, p) => n + p.genuineRequestCount, 0)}
+                  /50
+                </b>
+                genuine requests
+              </span>
+              <span>
+                <b>
+                  {participants.reduce(
+                    (n, p) => n + p.usefulnessResponseCount,
+                    0,
+                  )}
+                  /30
+                </b>
+                usefulness responses
+              </span>
+              <span>
+                <b>
+                  {participants.reduce((n, p) => n + p.reminderTestCount, 0)}/20
+                </b>
+                reminder tests
+              </span>
+            </div>
+          </article>
+          <article className="card trust-gates">
+            <div className="card-title">
+              <div>
+                <p className="eyebrow">TRUST & RELEASE GATES</p>
+                <h3>Hard-zero requirements</h3>
+                <p>
+                  One incident or unresolved blocker prevents advancement. These
+                  are never averaged into a score.
+                </p>
+              </div>
+              <span>
+                {releaseGates.filter((gate) => gate.actual !== 0).length
+                  ? "Blocked"
+                  : "All clear"}
+              </span>
+            </div>
+            <div className="gate-list">
+              {releaseGates.map((gate) => (
+                <label key={gate.id}>
+                  <span>{gate.name}</span>
+                  <input
+                    disabled={!data.canEdit}
+                    type="number"
+                    min="0"
+                    defaultValue={gate.actual}
+                    onBlur={(event) =>
+                      void save(
+                        "release_gate",
+                        { actual: Number(event.target.value) },
+                        gate.id,
+                      )
+                    }
+                  />
+                  <b className={gate.actual === 0 ? "pass" : "fail"}>
+                    {gate.actual === 0
+                      ? "0 · clear"
+                      : `${gate.actual} · blocking`}
+                  </b>
+                </label>
+              ))}
+            </div>
+          </article>
+        </>
+      )}
       <div className="launch-bottom">
         <article className="card checklist">
           <div className="card-title">
@@ -2870,28 +3200,517 @@ function Launch({
             </label>
           ))}
         </article>
-        <article className={`advance-card ${ready(local) ? "ready" : ""}`}>
+        <article className={`advance-card ${phaseCanAdvance ? "ready" : ""}`}>
           <h3>
-            {ready(local)
+            {phaseCanAdvance
               ? "This phase earned the next cohort."
               : "Keep improving this phase."}
           </h3>
           <p>
-            {ready(local)
-              ? "Every quantitative and qualitative gate is complete."
-              : `${total - progress} gates remain. Fix the product and update the evidence.`}
+            {phaseCanAdvance ? (
+              "Every required metric, evidence threshold, hard-zero gate and accomplishment is complete."
+            ) : (
+              <>
+                <b>{unmetRequirements.length} exact requirements remain.</b>
+                <span className="unmet-list">
+                  {unmetRequirements.slice(0, 5).join(" · ")}
+                  {unmetRequirements.length > 5 ? " · …" : ""}
+                </span>
+              </>
+            )}
           </p>
           <button
             disabled={
-              !data.canEdit || !ready(local) || local.status === "complete"
+              !data.canEdit || !phaseCanAdvance || local.status === "complete"
             }
             className="primary"
-            onClick={() => void save("advance", undefined, local.id)}
+            onClick={() => setShowAdvanceConfirm(true)}
           >
             {local.status === "complete" ? "Phase complete" : "Advance phase →"}
           </button>
         </article>
       </div>
+      {phaseZero && data.canEdit && (
+        <article className="card cohort-evidence">
+          <div className="card-title">
+            <div>
+              <p className="eyebrow">PRIVATE COHORT EVIDENCE</p>
+              <h3>Anonymous participant evidence</h3>
+              <p>
+                Only Sarthak can view or edit this data. Do not add names,
+                contact details, stories or screenshots.
+              </p>
+            </div>
+            <button
+              className="outline"
+              onClick={() => setCohortDraft(newParticipant())}
+            >
+              Add participant
+            </button>
+          </div>
+          <div className="cohort-summary">
+            <span>
+              <b>{cohortSummary.independent}</b>independently activated
+            </span>
+            <span>
+              <b>{cohortSummary.assisted}</b>assisted activation
+            </span>
+            <span>
+              <b>{cohortSummary.inactive}</b>not activated
+            </span>
+            <span className={cohortSummary.issues ? "warn" : ""}>
+              <b>{cohortSummary.issues}</b>unresolved issues
+            </span>
+          </div>
+          <div className="cohort-controls">
+            <input
+              placeholder="Search P0-001…"
+              value={cohortSearch}
+              onChange={(event) => setCohortSearch(event.target.value)}
+            />
+            <select
+              value={cohortFilter}
+              onChange={(event) => setCohortFilter(event.target.value)}
+            >
+              <option value="all">All participants</option>
+              <option value="invited">Invited</option>
+              <option value="activated">Activated</option>
+              <option value="independent">Independent</option>
+              <option value="issues">Issues</option>
+            </select>
+          </div>
+          {filteredParticipants.length ? (
+            <div className="cohort-table">
+              <div className="cohort-row cohort-head">
+                <span>ID</span>
+                <span>Status</span>
+                <span>Activation</span>
+                <span>Requests</span>
+                <span>Reminder</span>
+                <span>Issues</span>
+                <span />
+              </div>
+              {filteredParticipants.map((participant) => (
+                <div className="cohort-row" key={participant.id}>
+                  <b>{participant.participantId}</b>
+                  <span>{participant.status}</span>
+                  <span>
+                    {participant.independentlyActivated
+                      ? "Independent"
+                      : participant.meaningfulActivation
+                        ? "Assisted"
+                        : "Not activated"}
+                  </span>
+                  <span>{participant.genuineRequestCount}</span>
+                  <span>
+                    {participant.reminderTestCount
+                      ? `${participant.reminderTestCount} tested`
+                      : "Not tested"}
+                  </span>
+                  <span
+                    className={
+                      participant.productIssue || participant.trustConcern
+                        ? "fail"
+                        : "pass"
+                    }
+                  >
+                    {participant.productIssue || participant.trustConcern
+                      ? "Review"
+                      : "Clear"}
+                  </span>
+                  <button
+                    className="text-button"
+                    onClick={() => setCohortDraft({ ...participant })}
+                  >
+                    Edit
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="cohort-empty">
+              <b>No anonymous participants yet.</b>
+              <span>
+                Add P0-001 when you recruit the first eligible participant.
+              </span>
+            </div>
+          )}
+          {cohortDraft && (
+            <div className="cohort-editor">
+              <div className="card-title">
+                <div>
+                  <p className="eyebrow">
+                    {cohortDraft.id ? "EDIT PARTICIPANT" : "ADD PARTICIPANT"}
+                  </p>
+                  <h3>{cohortDraft.participantId}</h3>
+                </div>
+                <button
+                  className="text-button"
+                  onClick={() => setCohortDraft(null)}
+                >
+                  Close
+                </button>
+              </div>
+              <div className="cohort-form">
+                <label>
+                  Anonymous ID
+                  <input
+                    value={cohortDraft.participantId}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        participantId: event.target.value.toUpperCase(),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Status
+                  <select
+                    value={cohortDraft.status}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        status: event.target.value,
+                      })
+                    }
+                  >
+                    {[
+                      "invited",
+                      "onboarded",
+                      "activated",
+                      "completed",
+                      "dropped",
+                    ].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Age band
+                  <select
+                    value={cohortDraft.ageBand}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        ageBand: event.target.value,
+                      })
+                    }
+                  >
+                    {["18–20", "21–24", "25–28", "other"].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Relationship state
+                  <select
+                    value={cohortDraft.relationshipState}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        relationshipState: event.target.value,
+                      })
+                    }
+                  >
+                    {[
+                      "relationship",
+                      "talking-stage",
+                      "dating",
+                      "conflict",
+                      "breakup",
+                      "other",
+                    ].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Recruitment source
+                  <input
+                    value={cohortDraft.recruitmentSource}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        recruitmentSource: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Situation category
+                  <select
+                    value={cohortDraft.situationCategory}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        situationCategory: event.target.value,
+                      })
+                    }
+                  >
+                    {["reply-help", "repair", "planning", "other"].map(
+                      (value) => (
+                        <option key={value}>{value}</option>
+                      ),
+                    )}
+                  </select>
+                </label>
+                <label>
+                  Genuine requests
+                  <input
+                    type="number"
+                    min="0"
+                    value={cohortDraft.genuineRequestCount}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        genuineRequestCount: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Usefulness responses
+                  <input
+                    type="number"
+                    min="0"
+                    value={cohortDraft.usefulnessResponseCount}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        usefulnessResponseCount: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Reminder tests
+                  <input
+                    type="number"
+                    min="0"
+                    value={cohortDraft.reminderTestCount}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        reminderTestCount: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  Return source
+                  <select
+                    value={cohortDraft.returnSource}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        returnSource: event.target.value,
+                      })
+                    }
+                  >
+                    {[
+                      "organic",
+                      "reminder-assisted",
+                      "founder-prompted",
+                      "referral",
+                      "internal-test",
+                      "unknown",
+                    ].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  First answer useful
+                  <select
+                    value={cohortDraft.firstAnswerUseful}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        firstAnswerUseful: event.target
+                          .value as CohortParticipant["firstAnswerUseful"],
+                      })
+                    }
+                  >
+                    {["not-rated", "yes", "no"].map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Notion reference URL
+                  <input
+                    placeholder="https://www.notion.so/..."
+                    value={cohortDraft.notionReferenceUrl}
+                    onChange={(event) =>
+                      setCohortDraft({
+                        ...cohortDraft,
+                        notionReferenceUrl: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+              </div>
+              <div className="cohort-toggles">
+                {[
+                  ["Close friend or teammate", "closeFriendOrTeammate"],
+                  ["Onboarding completed", "onboardingCompleted"],
+                  ["Meaningful activation", "meaningfulActivation"],
+                  ["Independently activated", "independentlyActivated"],
+                  ["Reminder tested", "reminderTested"],
+                  ["Trust concern", "trustConcern"],
+                  ["Product issue", "productIssue"],
+                  ["Founder explained product", "founderExplainedProduct"],
+                  ["Founder helped onboarding", "founderHelpedOnboarding"],
+                  ["Founder suggested situation", "founderSuggestedSituation"],
+                  ["Founder helped formulate request", "founderHelpedRequest"],
+                  ["Founder solved product problem", "founderSolvedProblem"],
+                  ["Founder prompted return", "founderPromptedReturn"] as const,
+                ].map(([label, key]) => (
+                  <label key={key}>
+                    <input
+                      type="checkbox"
+                      checked={cohortDraft[key]}
+                      onChange={(event) =>
+                        setCohortDraft({
+                          ...cohortDraft,
+                          [key]: event.target.checked,
+                        })
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              <label className="evidence-note">
+                Sanitized evidence note
+                <textarea
+                  maxLength={280}
+                  placeholder="No names, message content or relationship story."
+                  value={cohortDraft.evidenceNote}
+                  onChange={(event) =>
+                    setCohortDraft({
+                      ...cohortDraft,
+                      evidenceNote: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <div className="cohort-actions">
+                <button
+                  className="primary"
+                  onClick={() =>
+                    void save(
+                      cohortDraft.id ? "cohort_update" : "cohort_create",
+                      cohortDraft as unknown as Record<string, unknown>,
+                      cohortDraft.id || undefined,
+                    ).then(() => setCohortDraft(null))
+                  }
+                >
+                  Save participant
+                </button>
+                {cohortDraft.id && (
+                  <button
+                    className="text-button danger"
+                    onClick={() => {
+                      if (confirm(`Delete ${cohortDraft.participantId}?`))
+                        void save(
+                          "cohort_delete",
+                          undefined,
+                          cohortDraft.id,
+                        ).then(() => setCohortDraft(null));
+                    }}
+                  >
+                    Delete participant
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </article>
+      )}
+      {phaseZero && (
+        <section className="phase-zero-reference">
+          <details>
+            <summary>Diagnostic signals — not advancement gates</summary>
+            <p>
+              Answer latency · reminder open and completion rates · sessions per
+              participant · requests per activated participant · permission
+              acceptance · situation category · relationship state · founder
+              interventions · return source · second-situation attempts ·
+              feedback themes · confusion points.
+            </p>
+            <em>These help diagnose Phase 0. They cannot pass or fail it.</em>
+          </details>
+          <details>
+            <summary>Founder operating rules</summary>
+            <p>
+              Sarthak may recruit users and explain why Sparkeefy exists. He
+              must not tell participants what to ask, write their situation,
+              navigate every screen, ask them to return, manufacture a second
+              situation or count internal testing.
+            </p>
+            <b>
+              Founder-recruited is acceptable. Founder-operated is not
+              independent evidence.
+            </b>
+          </details>
+          <details>
+            <summary>Analytics event reference</summary>
+            <p>
+              <b>Onboarding:</b> onboarding_started · onboarding_completed ·
+              onboarding_abandoned
+              <br />
+              <b>Wingman:</b> wingman_opened · situation_submitted ·
+              response_started · response_completed · response_failed ·
+              response_rated · person_context_created · person_context_retrieved
+              <br />
+              <b>Reminders:</b> reminder_created · reminder_edited ·
+              reminder_scheduled · reminder_delivered · reminder_opened ·
+              reminder_completed · reminder_dismissed · reminder_deleted ·
+              notification_permission_requested · notification_permission_result
+              <br />
+              <b>Attribution:</b> session_started · return_source_classified ·
+              founder_intervention_recorded
+            </p>
+            <em>
+              Return source values: organic, reminder-assisted,
+              founder-prompted, referral, internal-test, unknown. Unknown never
+              defaults to organic. This is a measurement contract; it does not
+              claim unverified mobile instrumentation.
+            </em>
+          </details>
+        </section>
+      )}
+      {showAdvanceConfirm && (
+        <div className="confirm-modal" role="dialog" aria-modal="true">
+          <div>
+            <p className="eyebrow">CONFIRM ADVANCEMENT</p>
+            <h3>Advance Phase 0?</h3>
+            <p>
+              Phase 0 confirms release readiness only. It does not confirm
+              retention, product-market fit or readiness to scale acquisition.
+            </p>
+            <div>
+              <button
+                className="outline"
+                onClick={() => setShowAdvanceConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  setShowAdvanceConfirm(false);
+                  void save("advance", { confirmed: true }, local.id);
+                }}
+              >
+                Confirm advance
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -3263,10 +4082,16 @@ function App() {
     id?: string,
   ) {
     if (!tracker) return;
-    const payload =
-      action === "metric" || action === "check"
-        ? { action, id, patch }
-        : { action, phaseId: id };
+    const payload = [
+      "metric",
+      "check",
+      "release_gate",
+      "cohort_create",
+      "cohort_update",
+      "cohort_delete",
+    ].includes(action)
+      ? { action, id, patch }
+      : { action, phaseId: id, patch };
     const r = await fetch("/api/tracker", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

@@ -1,243 +1,867 @@
-import { env } from 'cloudflare:workers';
-import { trackerAccess } from '@/lib/auth';
-import type { TrackerCheck, TrackerData, TrackerMetric, TrackerPhase } from '@/lib/tracker-types';
-import { metricPassed } from '@/lib/tracker-types';
+import { env } from "cloudflare:workers";
+import { trackerAccess } from "@/lib/auth";
+import type {
+  CohortParticipant,
+  ReleaseGate,
+  TrackerCheck,
+  TrackerData,
+  TrackerMetric,
+  TrackerPhase,
+} from "@/lib/tracker-types";
+import { metricPassed } from "@/lib/tracker-types";
 
-export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
+export const runtime = "edge";
+export const dynamic = "force-dynamic";
 
-type SeedMetric = [string, number, string?, ('gte' | 'lte' | 'eq')?];
+type SeedMetric = {
+  name: string;
+  target: number;
+  category: string;
+  valueType: "number" | "fraction" | "percent";
+  targetDenominator?: number;
+  minimumDenominator?: number;
+  definition: string;
+};
 
-const phaseSeeds = [
+const phase0Metrics: SeedMetric[] = [
   {
-    id: 'phase-0', position: 0, name: 'Power-user release candidate',
-    objective: 'Prove the complete Android journey works and Wingman delivers trustworthy value.',
-    userMin: 10, userMax: 15, durationMin: 3, durationMax: 5, status: 'active',
-    features: ['Wingman V3', 'Analytics verified', 'Essential notifications only', 'Spark Meter hidden'],
-    metrics: [
-      ['Onboarding completion', 80], ['Activation', 70], ['D1 meaningful retention', 40],
-      ['Returned on another day', 40], ['First-answer usefulness', 75], ['Successful AI responses', 98],
-      ['Crash-free sessions', 99], ['Context leakage incidents', 0, 'count', 'eq'],
-    ] as SeedMetric[],
-    checks: ['Full Android journey tested end-to-end', 'No critical privacy or safety failures', 'All release-blocking bugs fixed'],
+    name: "Onboarding completion",
+    target: 10,
+    targetDenominator: 12,
+    minimumDenominator: 12,
+    category: "Activation",
+    valueType: "fraction",
+    definition:
+      "Eligible participants who complete onboarding and reach Wingman.",
   },
   {
-    id: 'phase-1', position: 1, name: 'Organic Wingman baseline',
-    objective: 'Learn whether users return to Wingman naturally, without proactive retention nudges.',
-    userMin: 30, userMax: 30, durationMin: 7, durationMax: 7, status: 'locked',
-    features: ['Wingman V3', 'Person-specific memory', 'No proactive notifications', 'Spark Meter hidden'],
-    metrics: [
-      ['Onboarding completion', 80], ['Activation', 70], ['D1 meaningful retention', 40],
-      ['D7 exact meaningful retention', 20], ['W1 meaningful retention', 45],
-      ['Second-situation rate', 30], ['First-answer usefulness', 75], ['Memory correctness', 90],
-    ] as SeedMetric[],
-    checks: ['At least 8 user interviews completed', 'No founder reminders counted as organic return', 'No critical trust, privacy or safety failures'],
+    name: "Meaningful activation",
+    target: 8,
+    targetDenominator: 12,
+    minimumDenominator: 12,
+    category: "Activation",
+    valueType: "fraction",
+    definition:
+      "Participants who submit a genuine personal situation and receive a usable Wingman response.",
   },
   {
-    id: 'phase-2', position: 2, name: 'Notification MVP',
-    objective: 'Prove that contextual follow-ups create meaningful usage without masking weak organic pull.',
-    userMin: 70, userMax: 70, durationMin: 14, durationMax: 14, status: 'locked',
-    features: ['Wingman V3', 'Consent-based follow-ups', 'Notification holdout group', 'Spark Meter hidden'],
-    metrics: [
-      ['Activation', 70], ['D1 meaningful retention', 40], ['D7 exact meaningful retention', 20],
-      ['Control W1 retention', 40], ['Overall W1 retention', 45], ['W2 meaningful retention', 35],
-      ['Second-situation rate', 35], ['3+ active days in 14 days', 25],
-      ['Notification → meaningful session', 30], ['Retention lift vs control', 8, 'pp'],
-      ['Notification disable rate', 5, '%', 'lte'], ['Negative notification feedback', 5, '%', 'lte'],
-    ] as SeedMetric[],
-    checks: ['Eligible users split into control and notification groups', 'Notifications reveal no sensitive lock-screen context', 'Every notification deep-links to the relevant situation'],
+    name: "Independent activation",
+    target: 6,
+    category: "Activation",
+    valueType: "number",
+    definition: "Participants who activate without live founder navigation.",
   },
   {
-    id: 'phase-3', position: 3, name: 'Spark Meter beta',
-    objective: 'Test whether Spark Meter turns reactive Wingman usage into an ongoing relationship loop.',
-    userMin: 150, userMax: 150, durationMin: 21, durationMax: 21, status: 'locked',
-    features: ['Spark Meter beta for 50–75 eligible users', 'Weekly Spark Plan', 'Proven contextual notifications', 'Matched holdout group'],
-    metrics: [
-      ['Activation', 70], ['D1 meaningful retention', 40], ['D7 exact meaningful retention', 20],
-      ['W1 meaningful retention', 45], ['W2 meaningful retention', 35], ['W3 meaningful retention', 30],
-      ['Second-situation rate', 35], ['3+ active days in 14 days', 30], ['Spark Meter view rate', 60],
-      ['State comprehension', 85], ['Perceived accuracy / usefulness', 70], ['Weekly plan creation', 50],
-      ['Recommended action started', 40], ['Recommended action completed', 25],
-      ['Spark → Wingman session', 30], ['Retention lift vs holdout', 8, 'pp'],
-      ['Negative Spark Meter feedback', 5, '%', 'lte'],
-    ] as SeedMetric[],
-    checks: ['Spark Meter shown only when enough context exists', 'No fake scientific relationship score shown', 'Zero harmful high-confidence relationship claims'],
+    name: "First-answer usefulness",
+    target: 75,
+    minimumDenominator: 30,
+    category: "Value",
+    valueType: "percent",
+    definition: "First responses rated useful or very useful.",
   },
   {
-    id: 'phase-4', position: 4, name: 'Complete Sparkeefy loop',
-    objective: 'Validate the complete loop across Wingman, Memory, Spark Meter, Weekly Plan and follow-ups.',
-    userMin: 250, userMax: 250, durationMin: 30, durationMax: 30, status: 'locked',
-    features: ['Wingman + Memory', 'Spark Meter', 'Weekly Spark Plan', 'Contextual notifications'],
-    metrics: [
-      ['Onboarding completion', 80], ['Activation', 70], ['D1 meaningful retention', 40],
-      ['D7 exact meaningful retention', 20], ['W1 meaningful retention', 45], ['W2 meaningful retention', 35],
-      ['W4 meaningful retention', 28], ['Second-situation rate', 40], ['3+ active days in 14 days', 30],
-      ['Problem-to-Wingman rate', 50], ['Organic share of repeat sessions', 60],
-      ['Memory differentiation', 60], ['Very disappointed if removed', 40],
-      ['Crash-free sessions', 99.5], ['Successful Wingman responses', 99],
-      ['Critical context / privacy incidents', 0, 'count', 'eq'],
-    ] as SeedMetric[],
-    checks: ['At least 40 qualified PMF survey responses', 'Retention reviewed by acquisition source', 'No critical trust, privacy or safety failures'],
+    name: "Wingman response success",
+    target: 95,
+    minimumDenominator: 50,
+    category: "Reliability",
+    valueType: "percent",
+    definition:
+      "Genuine requests returning a complete, renderable response without an error.",
   },
   {
-    id: 'phase-5', position: 5, name: 'Android soft launch',
-    objective: 'Check whether product pull survives beyond founder-connected and hand-picked testers.',
-    userMin: 1000, userMax: 1000, durationMin: 4, durationMax: 6, durationUnit: 'weeks', status: 'locked',
-    features: ['Complete Sparkeefy loop', 'Controlled communities', 'Channel cohort tracking', 'No broad paid marketing'],
-    metrics: [
-      ['Onboarding completion', 75], ['Activation', 65], ['D1 meaningful retention', 35],
-      ['D7 exact meaningful retention', 18], ['W1 meaningful retention', 40], ['W2 meaningful retention', 30],
-      ['W4 meaningful retention', 25], ['Second-situation rate', 35], ['Problem-to-Wingman rate', 40],
-      ['Organic share of repeat sessions', 60], ['Referral / invite intent', 15],
-    ] as SeedMetric[],
-    checks: ['Success holds across at least two acquisition channels', 'No meaningful retention decline across cohorts', 'Paid acquisition remains paused until W4 matures'],
+    name: "Reminder delivery reliability",
+    target: 19,
+    targetDenominator: 20,
+    minimumDenominator: 20,
+    category: "Reliability",
+    valueType: "fraction",
+    definition:
+      "Controlled reminders delivered within the accepted delivery window.",
   },
-] as const;
+  {
+    name: "Reminder destination accuracy",
+    target: 20,
+    targetDenominator: 20,
+    minimumDenominator: 20,
+    category: "Reliability",
+    valueType: "fraction",
+    definition: "Reminder opens reaching the correct screen or context.",
+  },
+  {
+    name: "Analytics coverage",
+    target: 100,
+    minimumDenominator: 1,
+    category: "Measurement",
+    valueType: "percent",
+    definition:
+      "Required events verified with the correct participant, timestamp, source and properties.",
+  },
+];
+const phase0Checks = [
+  "Release-candidate build frozen",
+  "Full Android onboarding-to-Wingman journey tested",
+  "Minimum eligible cohort reached",
+  "Minimum 50 genuine Wingman requests reached",
+  "Minimum 30 usefulness ratings reached",
+  "Minimum 20 reminder tests completed",
+  "Required analytics independently verified",
+  "Internal activity excluded from evidence",
+  "Founder assistance recorded for every participant",
+  "No critical context leakage",
+  "No critical privacy or safety incident",
+  "No sensitive notification exposure",
+  "No open release-blocking bugs",
+];
+const phase0Gates = [
+  "Cross-person context leakage",
+  "Cross-user data leakage",
+  "Sensitive notification exposure",
+  "Critical privacy incidents",
+  "Critical safety incidents",
+  "Open P0 bugs",
+  "Open release-blocking P1 bugs",
+  "Reproducible core-journey crashes",
+  "Missing critical analytics events",
+];
 
 function db() {
-  if (!env.DB) throw new Error('Database binding is unavailable.');
+  if (!env.DB) throw new Error("Database binding is unavailable.");
   return env.DB;
+}
+const now = () => new Date().toISOString();
+const asNumber = (value: unknown, fallback = 0) =>
+  Number.isFinite(Number(value)) ? Number(value) : fallback;
+const asBool = (value: unknown) =>
+  value === true || value === 1 || value === "1";
+const allowed = <T extends readonly string[]>(
+  value: unknown,
+  values: T,
+  fallback: T[number],
+) =>
+  typeof value === "string" && (values as readonly string[]).includes(value)
+    ? (value as T[number])
+    : fallback;
+const safeUrl = (value: unknown) => {
+  if (!value) return "";
+  try {
+    const url = new URL(String(value));
+    return url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+};
+
+async function addMetricColumn(
+  database: D1Database,
+  name: string,
+  definition: string,
+) {
+  const result = await database
+    .prepare("PRAGMA table_info(metrics)")
+    .all<{ name: string }>();
+  if (!result.results.some((column) => column.name === name))
+    await database
+      .prepare(`ALTER TABLE metrics ADD COLUMN ${definition}`)
+      .run();
 }
 
 async function ensureDatabase() {
   const database = db();
   await database.batch([
-    database.prepare(`CREATE TABLE IF NOT EXISTS phases (
-      id TEXT PRIMARY KEY, position INTEGER NOT NULL, name TEXT NOT NULL, objective TEXT NOT NULL,
-      user_min INTEGER NOT NULL, user_max INTEGER NOT NULL, duration_min INTEGER NOT NULL,
-      duration_max INTEGER NOT NULL, duration_unit TEXT NOT NULL DEFAULT 'days', actual_users INTEGER NOT NULL DEFAULT 0,
-      elapsed_days INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'locked', features TEXT NOT NULL,
-      notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
-    )`),
-    database.prepare(`CREATE TABLE IF NOT EXISTS metrics (
-      id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, position INTEGER NOT NULL, category TEXT NOT NULL,
-      name TEXT NOT NULL, target REAL NOT NULL, actual REAL, unit TEXT NOT NULL DEFAULT '%',
-      comparator TEXT NOT NULL DEFAULT 'gte'
-    )`),
-    database.prepare(`CREATE TABLE IF NOT EXISTS checks (
-      id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, position INTEGER NOT NULL, label TEXT NOT NULL,
-      completed INTEGER NOT NULL DEFAULT 0
-    )`),
-    database.prepare('CREATE INDEX IF NOT EXISTS idx_metrics_phase_position ON metrics(phase_id, position)'),
-    database.prepare('CREATE INDEX IF NOT EXISTS idx_checks_phase_position ON checks(phase_id, position)'),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS phases (id TEXT PRIMARY KEY, position INTEGER NOT NULL, name TEXT NOT NULL, objective TEXT NOT NULL, user_min INTEGER NOT NULL, user_max INTEGER NOT NULL, duration_min INTEGER NOT NULL, duration_max INTEGER NOT NULL, duration_unit TEXT NOT NULL DEFAULT 'days', actual_users INTEGER NOT NULL DEFAULT 0, elapsed_days INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'locked', features TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS metrics (id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, position INTEGER NOT NULL, category TEXT NOT NULL, name TEXT NOT NULL, target REAL NOT NULL, actual REAL, unit TEXT NOT NULL DEFAULT '%', comparator TEXT NOT NULL DEFAULT 'gte')`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS checks (id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, position INTEGER NOT NULL, label TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0)`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS release_gates (id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, position INTEGER NOT NULL, name TEXT NOT NULL, actual INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS cohort_evidence (id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, participant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'invited', age_band TEXT NOT NULL DEFAULT 'other', relationship_state TEXT NOT NULL DEFAULT 'other', recruitment_source TEXT NOT NULL DEFAULT '', close_friend_or_teammate INTEGER NOT NULL DEFAULT 0, situation_category TEXT NOT NULL DEFAULT 'other', onboarding_completed INTEGER NOT NULL DEFAULT 0, meaningful_activation INTEGER NOT NULL DEFAULT 0, independently_activated INTEGER NOT NULL DEFAULT 0, first_answer_useful TEXT NOT NULL DEFAULT 'not-rated', genuine_request_count INTEGER NOT NULL DEFAULT 0, usefulness_response_count INTEGER NOT NULL DEFAULT 0, reminder_test_count INTEGER NOT NULL DEFAULT 0, reminder_tested INTEGER NOT NULL DEFAULT 0, reminder_delivery_result TEXT NOT NULL DEFAULT 'not-tested', reminder_destination_result TEXT NOT NULL DEFAULT 'not-tested', return_source TEXT NOT NULL DEFAULT 'unknown', founder_explained_product INTEGER NOT NULL DEFAULT 0, founder_helped_onboarding INTEGER NOT NULL DEFAULT 0, founder_suggested_situation INTEGER NOT NULL DEFAULT 0, founder_helped_request INTEGER NOT NULL DEFAULT 0, founder_solved_problem INTEGER NOT NULL DEFAULT 0, founder_prompted_return INTEGER NOT NULL DEFAULT 0, trust_concern INTEGER NOT NULL DEFAULT 0, product_issue INTEGER NOT NULL DEFAULT 0, evidence_note TEXT NOT NULL DEFAULT '', notion_reference_url TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    ),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS idx_metrics_phase_position ON metrics(phase_id, position)",
+    ),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS idx_checks_phase_position ON checks(phase_id, position)",
+    ),
+    database.prepare(
+      "CREATE INDEX IF NOT EXISTS idx_release_gates_phase_position ON release_gates(phase_id, position)",
+    ),
+    database.prepare(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_cohort_evidence_phase_participant ON cohort_evidence(phase_id, participant_id)",
+    ),
   ]);
-
-  const existing = await database.prepare('SELECT COUNT(*) AS count FROM phases').first<{ count: number }>();
-  if ((existing?.count ?? 0) > 0) return;
-
-  const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [];
-  for (const phase of phaseSeeds) {
-    statements.push(database.prepare(`INSERT INTO phases
-      (id, position, name, objective, user_min, user_max, duration_min, duration_max, duration_unit, actual_users, elapsed_days, status, features, notes, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, '', ?)`)
-      .bind(phase.id, phase.position, phase.name, phase.objective, phase.userMin, phase.userMax, phase.durationMin, phase.durationMax, 'durationUnit' in phase ? phase.durationUnit : 'days', phase.status, JSON.stringify(phase.features), now));
-    phase.metrics.forEach(([name, target, unit = '%', comparator = 'gte'], index) => {
-      const category = /retention|situation|active days|Problem-to|Organic share/i.test(name)
-        ? 'Retention'
-        : /notification/i.test(name)
-          ? 'Notifications'
-          : /Spark|plan|action|comprehension|accuracy/i.test(name)
-            ? 'Spark Meter'
-            : /crash|successful|leakage|incident/i.test(name)
-              ? 'Reliability'
-              : 'Activation & quality';
-      statements.push(database.prepare(`INSERT INTO metrics
-        (id, phase_id, position, category, name, target, actual, unit, comparator)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
-        .bind(`${phase.id}-metric-${index}`, phase.id, index, category, name, target, unit, comparator));
-    });
-    phase.checks.forEach((label, index) => {
-      statements.push(database.prepare(`INSERT INTO checks
-        (id, phase_id, position, label, completed) VALUES (?, ?, ?, ?, 0)`)
-        .bind(`${phase.id}-check-${index}`, phase.id, index, label));
-    });
+  await addMetricColumn(
+    database,
+    "value_type",
+    "value_type TEXT NOT NULL DEFAULT 'number'",
+  );
+  await addMetricColumn(
+    database,
+    "target_denominator",
+    "target_denominator INTEGER",
+  );
+  await addMetricColumn(
+    database,
+    "actual_denominator",
+    "actual_denominator INTEGER",
+  );
+  await addMetricColumn(
+    database,
+    "minimum_denominator",
+    "minimum_denominator INTEGER",
+  );
+  await addMetricColumn(
+    database,
+    "definition",
+    "definition TEXT NOT NULL DEFAULT ''",
+  );
+  const phase = await database
+    .prepare("SELECT id FROM phases WHERE id = 'phase-0'")
+    .first();
+  if (!phase)
+    throw new Error(
+      "Existing launch phases are required before applying Phase 0.",
+    );
+  const timestamp = now();
+  await database
+    .prepare(
+      `UPDATE phases SET name=?, objective=?, user_min=10, user_max=15, duration_min=3, duration_max=5, duration_unit='days', status=CASE WHEN status='complete' THEN status ELSE 'active' END, features=?, updated_at=? WHERE id='phase-0'`,
+    )
+    .bind(
+      "Phase 0 — Power-User Release Candidate",
+      "Validate that Android V3 is reliable, understandable, useful, private, safe and measurable enough to test with real users.",
+      JSON.stringify([
+        "AI Wingman V3",
+        "Person-specific context and memory",
+        "Basic user-created reminders",
+        "Usefulness feedback",
+        "Required analytics",
+      ]),
+      timestamp,
+    )
+    .run();
+  const marker = await database
+    .prepare(
+      "SELECT id FROM metrics WHERE phase_id='phase-0' AND name='Independent activation'",
+    )
+    .first();
+  if (!marker) {
+    const statements: D1PreparedStatement[] = [
+      database.prepare("DELETE FROM metrics WHERE phase_id='phase-0'"),
+      database.prepare("DELETE FROM checks WHERE phase_id='phase-0'"),
+    ];
+    phase0Metrics.forEach((metric, position) =>
+      statements.push(
+        database
+          .prepare(
+            `INSERT INTO metrics (id,phase_id,position,category,name,target,actual,unit,comparator,value_type,target_denominator,actual_denominator,minimum_denominator,definition) VALUES (?, 'phase-0', ?, ?, ?, ?, NULL, ?, 'gte', ?, ?, NULL, ?, ?)`,
+          )
+          .bind(
+            `phase-0-metric-${position}`,
+            position,
+            metric.category,
+            metric.name,
+            metric.target,
+            metric.valueType === "percent"
+              ? "%"
+              : metric.valueType === "fraction"
+                ? "fraction"
+                : "count",
+            metric.valueType,
+            metric.targetDenominator ?? null,
+            metric.minimumDenominator ?? null,
+            metric.definition,
+          ),
+      ),
+    );
+    phase0Checks.forEach((label, position) =>
+      statements.push(
+        database
+          .prepare(
+            "INSERT INTO checks (id,phase_id,position,label,completed) VALUES (?, 'phase-0', ?, ?, 0)",
+          )
+          .bind(`phase-0-check-${position}`, position, label),
+      ),
+    );
+    await database.batch(statements);
   }
-  await database.batch(statements);
+  const gateCount = await database
+    .prepare(
+      "SELECT COUNT(*) AS count FROM release_gates WHERE phase_id='phase-0'",
+    )
+    .first<{ count: number }>();
+  if (!gateCount?.count)
+    await database.batch(
+      phase0Gates.map((name, position) =>
+        database
+          .prepare(
+            "INSERT INTO release_gates (id,phase_id,position,name,actual,updated_at) VALUES (?, ?, ?, ?, 0, ?)",
+          )
+          .bind(
+            `phase-0-gate-${position}`,
+            "phase-0",
+            position,
+            name,
+            timestamp,
+          ),
+      ),
+    );
 }
 
+function metricFromRow(row: Record<string, unknown>): TrackerMetric {
+  return {
+    id: String(row.id),
+    phaseId: String(row.phase_id),
+    position: asNumber(row.position),
+    category: String(row.category),
+    name: String(row.name),
+    target: asNumber(row.target),
+    actual: row.actual === null ? null : asNumber(row.actual),
+    unit: String(row.unit),
+    comparator: String(row.comparator) as TrackerMetric["comparator"],
+    valueType: allowed(
+      row.value_type,
+      ["number", "fraction", "percent"] as const,
+      "number",
+    ),
+    targetDenominator:
+      row.target_denominator === null ? null : asNumber(row.target_denominator),
+    actualDenominator:
+      row.actual_denominator === null ? null : asNumber(row.actual_denominator),
+    minimumDenominator:
+      row.minimum_denominator === null
+        ? null
+        : asNumber(row.minimum_denominator),
+    definition: String(row.definition || ""),
+  };
+}
 async function loadTracker(): Promise<TrackerData> {
   await ensureDatabase();
   const database = db();
-  const [phaseResult, metricResult, checkResult] = await Promise.all([
-    database.prepare('SELECT * FROM phases ORDER BY position').all(),
-    database.prepare('SELECT * FROM metrics ORDER BY phase_id, position').all(),
-    database.prepare('SELECT * FROM checks ORDER BY phase_id, position').all(),
+  const [phaseRows, metricRows, checkRows] = await Promise.all([
+    database.prepare("SELECT * FROM phases ORDER BY position").all(),
+    database.prepare("SELECT * FROM metrics ORDER BY phase_id,position").all(),
+    database.prepare("SELECT * FROM checks ORDER BY phase_id,position").all(),
   ]);
-  const allMetrics = metricResult.results.map((row) => ({
-    id: String(row.id), phaseId: String(row.phase_id), position: Number(row.position), category: String(row.category),
-    name: String(row.name), target: Number(row.target), actual: row.actual === null ? null : Number(row.actual),
-    unit: String(row.unit), comparator: String(row.comparator) as TrackerMetric['comparator'],
+  const metrics = metricRows.results.map((row) =>
+    metricFromRow(row as Record<string, unknown>),
+  );
+  const checks = checkRows.results.map((row) => ({
+    id: String(row.id),
+    phaseId: String(row.phase_id),
+    position: asNumber(row.position),
+    label: String(row.label),
+    completed: asBool(row.completed),
   }));
-  const allChecks = checkResult.results.map((row) => ({
-    id: String(row.id), phaseId: String(row.phase_id), position: Number(row.position), label: String(row.label), completed: Boolean(row.completed),
-  }));
-  const phases = phaseResult.results.map((row) => ({
-    id: String(row.id), position: Number(row.position), name: String(row.name), objective: String(row.objective),
-    userMin: Number(row.user_min), userMax: Number(row.user_max), durationMin: Number(row.duration_min), durationMax: Number(row.duration_max),
-    durationUnit: String(row.duration_unit), actualUsers: Number(row.actual_users), elapsedDays: Number(row.elapsed_days),
-    status: String(row.status) as TrackerPhase['status'], features: JSON.parse(String(row.features)) as string[], notes: String(row.notes),
-    updatedAt: String(row.updated_at), metrics: allMetrics.filter((metric) => metric.phaseId === row.id),
-    checks: allChecks.filter((item) => item.phaseId === row.id),
-  }));
-  return { phases };
+  return {
+    phases: phaseRows.results.map((row) => ({
+      id: String(row.id),
+      position: asNumber(row.position),
+      name: String(row.name),
+      objective: String(row.objective),
+      userMin: asNumber(row.user_min),
+      userMax: asNumber(row.user_max),
+      durationMin: asNumber(row.duration_min),
+      durationMax: asNumber(row.duration_max),
+      durationUnit: String(row.duration_unit),
+      actualUsers: asNumber(row.actual_users),
+      elapsedDays: asNumber(row.elapsed_days),
+      status: String(row.status) as TrackerPhase["status"],
+      features: JSON.parse(String(row.features)) as string[],
+      notes: String(row.notes),
+      updatedAt: String(row.updated_at),
+      metrics: metrics.filter((metric) => metric.phaseId === row.id),
+      checks: checks.filter((check) => check.phaseId === row.id),
+    })),
+  };
 }
 
-async function trackerResponse(request: Request) {
-  return { ...(await loadTracker()), ...(await trackerAccess(request)) };
+function participantFromRow(row: Record<string, unknown>): CohortParticipant {
+  const b = (name: string) => asBool(row[name]);
+  return {
+    id: String(row.id),
+    phaseId: String(row.phase_id),
+    participantId: String(row.participant_id),
+    status: String(row.status),
+    ageBand: String(row.age_band),
+    relationshipState: String(row.relationship_state),
+    recruitmentSource: String(row.recruitment_source),
+    closeFriendOrTeammate: b("close_friend_or_teammate"),
+    situationCategory: String(row.situation_category),
+    onboardingCompleted: b("onboarding_completed"),
+    meaningfulActivation: b("meaningful_activation"),
+    independentlyActivated: b("independently_activated"),
+    firstAnswerUseful: allowed(
+      row.first_answer_useful,
+      ["yes", "no", "not-rated"] as const,
+      "not-rated",
+    ),
+    genuineRequestCount: asNumber(row.genuine_request_count),
+    usefulnessResponseCount: asNumber(row.usefulness_response_count),
+    reminderTestCount: asNumber(row.reminder_test_count),
+    reminderTested: b("reminder_tested"),
+    reminderDeliveryResult: String(row.reminder_delivery_result),
+    reminderDestinationResult: String(row.reminder_destination_result),
+    returnSource: String(row.return_source),
+    founderExplainedProduct: b("founder_explained_product"),
+    founderHelpedOnboarding: b("founder_helped_onboarding"),
+    founderSuggestedSituation: b("founder_suggested_situation"),
+    founderHelpedRequest: b("founder_helped_request"),
+    founderSolvedProblem: b("founder_solved_problem"),
+    founderPromptedReturn: b("founder_prompted_return"),
+    trustConcern: b("trust_concern"),
+    productIssue: b("product_issue"),
+    evidenceNote: String(row.evidence_note),
+    notionReferenceUrl: String(row.notion_reference_url),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
+async function loadPrivatePhase0() {
+  const database = db();
+  const [people, gateRows] = await Promise.all([
+    database
+      .prepare(
+        "SELECT * FROM cohort_evidence WHERE phase_id='phase-0' ORDER BY participant_id",
+      )
+      .all(),
+    database
+      .prepare(
+        "SELECT * FROM release_gates WHERE phase_id='phase-0' ORDER BY position",
+      )
+      .all(),
+  ]);
+  return {
+    participants: people.results.map((row) =>
+      participantFromRow(row as Record<string, unknown>),
+    ),
+    gates: gateRows.results.map((row) => ({
+      id: String(row.id),
+      phaseId: String(row.phase_id),
+      position: asNumber(row.position),
+      name: String(row.name),
+      actual: asNumber(row.actual),
+    })) as ReleaseGate[],
+  };
+}
+function phase0Unmet(
+  phase: TrackerPhase,
+  participants: CohortParticipant[],
+  gates: ReleaseGate[],
+) {
+  const unmet = phase.metrics
+    .filter((metric) => !metricPassed(metric))
+    .map((metric) => `${metric.name} has not passed`);
+  unmet.push(
+    ...phase.checks
+      .filter((check) => !check.completed)
+      .map((check) => check.label),
+  );
+  const eligible = participants.filter((person) => person.status !== "dropped");
+  const requests = participants.reduce(
+    (sum, person) => sum + person.genuineRequestCount,
+    0,
+  );
+  const ratings = participants.reduce(
+    (sum, person) => sum + person.usefulnessResponseCount,
+    0,
+  );
+  const reminders = participants.reduce(
+    (sum, person) => sum + person.reminderTestCount,
+    0,
+  );
+  if (eligible.length < 10) unmet.push("Minimum 10 eligible participants");
+  if (eligible.filter((person) => !person.closeFriendOrTeammate).length < 8)
+    unmet.push("At least 8 participants not close friends or teammates");
+  if (participants.filter((person) => person.meaningfulActivation).length < 8)
+    unmet.push("Minimum 8 meaningful Wingman situations");
+  if (requests < 50) unmet.push("Minimum 50 genuine Wingman requests");
+  if (ratings < 30) unmet.push("Minimum 30 usefulness responses");
+  if (reminders < 20) unmet.push("Minimum 20 controlled reminder tests");
+  if (participants.filter((person) => person.independentlyActivated).length < 6)
+    unmet.push("Minimum 6 independently activated participants");
+  gates
+    .filter((gate) => gate.actual !== 0)
+    .forEach((gate) => unmet.push(`${gate.name} must equal zero`));
+  if (participants.some((person) => person.productIssue))
+    unmet.push("No release-blocking issue remains");
+  return unmet;
+}
+async function trackerResponse(request: Request) {
+  const [tracker, access] = await Promise.all([
+    loadTracker(),
+    trackerAccess(request),
+  ]);
+  if (!access.canEdit) return { ...tracker, ...access };
+  const privateData = await loadPrivatePhase0();
+  const phase = tracker.phases.find((item) => item.id === "phase-0");
+  return {
+    ...tracker,
+    ...access,
+    cohortEvidence: privateData.participants,
+    releaseGates: privateData.gates,
+    phase0Unmet: phase
+      ? phase0Unmet(phase, privateData.participants, privateData.gates)
+      : [],
+  };
+}
+
+function validateParticipant(
+  patch: Record<string, unknown>,
+  existing?: CohortParticipant,
+) {
+  const participantId = String(
+    patch.participantId ?? existing?.participantId ?? "",
+  )
+    .trim()
+    .toUpperCase();
+  if (!/^P0-\d{3}$/.test(participantId))
+    throw new Error("Participant ID must use the P0-001 format.");
+  const note = String(
+    patch.evidenceNote ?? existing?.evidenceNote ?? "",
+  ).trim();
+  if (note.length > 280)
+    throw new Error("Sanitized evidence notes are limited to 280 characters.");
+  const get = (key: keyof CohortParticipant) => patch[key] ?? existing?.[key];
+  return {
+    participantId,
+    status: allowed(
+      get("status"),
+      ["invited", "onboarded", "activated", "completed", "dropped"] as const,
+      "invited",
+    ),
+    ageBand: allowed(
+      get("ageBand"),
+      ["18–20", "21–24", "25–28", "other"] as const,
+      "other",
+    ),
+    relationshipState: allowed(
+      get("relationshipState"),
+      [
+        "relationship",
+        "talking-stage",
+        "dating",
+        "conflict",
+        "breakup",
+        "other",
+      ] as const,
+      "other",
+    ),
+    recruitmentSource: String(get("recruitmentSource") || "").slice(0, 80),
+    closeFriendOrTeammate: asBool(get("closeFriendOrTeammate")),
+    situationCategory: allowed(
+      get("situationCategory"),
+      ["reply-help", "repair", "planning", "other"] as const,
+      "other",
+    ),
+    onboardingCompleted: asBool(get("onboardingCompleted")),
+    meaningfulActivation: asBool(get("meaningfulActivation")),
+    independentlyActivated: asBool(get("independentlyActivated")),
+    firstAnswerUseful: allowed(
+      get("firstAnswerUseful"),
+      ["yes", "no", "not-rated"] as const,
+      "not-rated",
+    ),
+    genuineRequestCount: Math.max(
+      0,
+      Math.min(999, asNumber(get("genuineRequestCount"))),
+    ),
+    usefulnessResponseCount: Math.max(
+      0,
+      Math.min(999, asNumber(get("usefulnessResponseCount"))),
+    ),
+    reminderTestCount: Math.max(
+      0,
+      Math.min(999, asNumber(get("reminderTestCount"))),
+    ),
+    reminderTested: asBool(get("reminderTested")),
+    reminderDeliveryResult: allowed(
+      get("reminderDeliveryResult"),
+      ["not-tested", "delivered", "failed"] as const,
+      "not-tested",
+    ),
+    reminderDestinationResult: allowed(
+      get("reminderDestinationResult"),
+      ["not-tested", "correct", "incorrect"] as const,
+      "not-tested",
+    ),
+    returnSource: allowed(
+      get("returnSource"),
+      [
+        "organic",
+        "reminder-assisted",
+        "founder-prompted",
+        "referral",
+        "internal-test",
+        "unknown",
+      ] as const,
+      "unknown",
+    ),
+    founderExplainedProduct: asBool(get("founderExplainedProduct")),
+    founderHelpedOnboarding: asBool(get("founderHelpedOnboarding")),
+    founderSuggestedSituation: asBool(get("founderSuggestedSituation")),
+    founderHelpedRequest: asBool(get("founderHelpedRequest")),
+    founderSolvedProblem: asBool(get("founderSolvedProblem")),
+    founderPromptedReturn: asBool(get("founderPromptedReturn")),
+    trustConcern: asBool(get("trustConcern")),
+    productIssue: asBool(get("productIssue")),
+    evidenceNote: note,
+    notionReferenceUrl: safeUrl(get("notionReferenceUrl")),
+  };
+}
+
+const bindParticipant = (
+  statement: D1PreparedStatement,
+  id: string,
+  person: ReturnType<typeof validateParticipant>,
+  timestamp: string,
+) =>
+  statement.bind(
+    id,
+    person.participantId,
+    person.status,
+    person.ageBand,
+    person.relationshipState,
+    person.recruitmentSource,
+    person.closeFriendOrTeammate ? 1 : 0,
+    person.situationCategory,
+    person.onboardingCompleted ? 1 : 0,
+    person.meaningfulActivation ? 1 : 0,
+    person.independentlyActivated ? 1 : 0,
+    person.firstAnswerUseful,
+    person.genuineRequestCount,
+    person.usefulnessResponseCount,
+    person.reminderTestCount,
+    person.reminderTested ? 1 : 0,
+    person.reminderDeliveryResult,
+    person.reminderDestinationResult,
+    person.returnSource,
+    person.founderExplainedProduct ? 1 : 0,
+    person.founderHelpedOnboarding ? 1 : 0,
+    person.founderSuggestedSituation ? 1 : 0,
+    person.founderHelpedRequest ? 1 : 0,
+    person.founderSolvedProblem ? 1 : 0,
+    person.founderPromptedReturn ? 1 : 0,
+    person.trustConcern ? 1 : 0,
+    person.productIssue ? 1 : 0,
+    person.evidenceNote,
+    person.notionReferenceUrl,
+    timestamp,
+    timestamp,
+  );
 
 export async function GET(request: Request) {
   try {
     const access = await trackerAccess(request);
-    if (!access.authenticated) return Response.json({ authenticated: false }, { status: 401, headers: { 'Cache-Control': 'no-store' } });
-    return Response.json(await trackerResponse(request));
+    if (!access.authenticated)
+      return Response.json(
+        { authenticated: false },
+        { status: 401, headers: { "Cache-Control": "no-store" } },
+      );
+    if (
+      new URL(request.url).searchParams.get("private") === "cohort" &&
+      !access.canEdit
+    )
+      return Response.json(
+        { error: "Private cohort evidence is restricted to the editor." },
+        { status: 403, headers: { "Cache-Control": "no-store" } },
+      );
+    return Response.json(await trackerResponse(request), {
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : 'Unable to load tracker.' }, { status: 500 });
+    return Response.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Unable to load tracker.",
+      },
+      { status: 500 },
+    );
   }
 }
 
 export async function PATCH(request: Request) {
   try {
     const access = await trackerAccess(request);
-    if (!access.canEdit) {
-      return Response.json({ error: 'This account has view-only access.' }, { status: 403 });
-    }
+    if (!access.canEdit)
+      return Response.json(
+        { error: "This account has view-only access." },
+        { status: 403 },
+      );
     await ensureDatabase();
-    const body = await request.json() as { action: string; id?: string; phaseId?: string; patch?: Record<string, unknown> };
+    const body = (await request.json()) as {
+      action: string;
+      id?: string;
+      phaseId?: string;
+      patch?: Record<string, unknown>;
+    };
     const database = db();
-    const now = new Date().toISOString();
-
-    if (body.action === 'phase' && body.id && body.patch) {
-      const patch = body.patch;
-      await database.prepare(`UPDATE phases SET name = ?, objective = ?, user_min = ?, user_max = ?, duration_min = ?,
-        duration_max = ?, duration_unit = ?, actual_users = ?, elapsed_days = ?, features = ?, notes = ?, updated_at = ? WHERE id = ?`)
-        .bind(String(patch.name), String(patch.objective), Number(patch.userMin), Number(patch.userMax), Number(patch.durationMin),
-          Number(patch.durationMax), String(patch.durationUnit), Number(patch.actualUsers), Number(patch.elapsedDays),
-          JSON.stringify(patch.features), String(patch.notes ?? ''), now, body.id).run();
-    } else if (body.action === 'metric' && body.id && body.patch) {
-      const actual = body.patch.actual === null || body.patch.actual === '' ? null : Number(body.patch.actual);
-      await database.prepare('UPDATE metrics SET target = ?, actual = ? WHERE id = ?')
-        .bind(Number(body.patch.target), actual, body.id).run();
-    } else if (body.action === 'check' && body.id && body.patch) {
-      await database.prepare('UPDATE checks SET completed = ? WHERE id = ?')
-        .bind(body.patch.completed ? 1 : 0, body.id).run();
-    } else if (body.action === 'advance' && body.phaseId) {
+    const timestamp = now();
+    if (body.action === "metric" && body.id && body.patch) {
+      const actual =
+        body.patch.actual === null || body.patch.actual === ""
+          ? null
+          : Math.max(0, asNumber(body.patch.actual));
+      const denominator =
+        body.patch.actualDenominator === null ||
+        body.patch.actualDenominator === ""
+          ? null
+          : Math.max(0, asNumber(body.patch.actualDenominator));
+      await database
+        .prepare(
+          "UPDATE metrics SET target=?, actual=?, actual_denominator=? WHERE id=?",
+        )
+        .bind(
+          Math.max(0, asNumber(body.patch.target)),
+          actual,
+          denominator,
+          body.id,
+        )
+        .run();
+    } else if (body.action === "check" && body.id && body.patch)
+      await database
+        .prepare("UPDATE checks SET completed=? WHERE id=?")
+        .bind(asBool(body.patch.completed) ? 1 : 0, body.id)
+        .run();
+    else if (body.action === "release_gate" && body.id && body.patch)
+      await database
+        .prepare("UPDATE release_gates SET actual=?,updated_at=? WHERE id=?")
+        .bind(Math.max(0, asNumber(body.patch.actual)), timestamp, body.id)
+        .run();
+    else if (body.action === "cohort_create" && body.patch) {
+      const person = validateParticipant(body.patch);
+      const sql = `INSERT INTO cohort_evidence (id,phase_id,participant_id,status,age_band,relationship_state,recruitment_source,close_friend_or_teammate,situation_category,onboarding_completed,meaningful_activation,independently_activated,first_answer_useful,genuine_request_count,usefulness_response_count,reminder_test_count,reminder_tested,reminder_delivery_result,reminder_destination_result,return_source,founder_explained_product,founder_helped_onboarding,founder_suggested_situation,founder_helped_request,founder_solved_problem,founder_prompted_return,trust_concern,product_issue,evidence_note,notion_reference_url,created_at,updated_at) VALUES (?, 'phase-0', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+      await bindParticipant(
+        database.prepare(sql),
+        crypto.randomUUID(),
+        person,
+        timestamp,
+      ).run();
+    } else if (body.action === "cohort_update" && body.id && body.patch) {
+      const row = await database
+        .prepare(
+          "SELECT * FROM cohort_evidence WHERE id=? AND phase_id='phase-0'",
+        )
+        .bind(body.id)
+        .first<Record<string, unknown>>();
+      if (!row)
+        return Response.json(
+          { error: "Participant not found." },
+          { status: 404 },
+        );
+      const person = validateParticipant(body.patch, participantFromRow(row));
+      const sql = `UPDATE cohort_evidence SET participant_id=?,status=?,age_band=?,relationship_state=?,recruitment_source=?,close_friend_or_teammate=?,situation_category=?,onboarding_completed=?,meaningful_activation=?,independently_activated=?,first_answer_useful=?,genuine_request_count=?,usefulness_response_count=?,reminder_test_count=?,reminder_tested=?,reminder_delivery_result=?,reminder_destination_result=?,return_source=?,founder_explained_product=?,founder_helped_onboarding=?,founder_suggested_situation=?,founder_helped_request=?,founder_solved_problem=?,founder_prompted_return=?,trust_concern=?,product_issue=?,evidence_note=?,notion_reference_url=?,updated_at=? WHERE id=?`;
+      await database
+        .prepare(sql)
+        .bind(
+          person.participantId,
+          person.status,
+          person.ageBand,
+          person.relationshipState,
+          person.recruitmentSource,
+          person.closeFriendOrTeammate ? 1 : 0,
+          person.situationCategory,
+          person.onboardingCompleted ? 1 : 0,
+          person.meaningfulActivation ? 1 : 0,
+          person.independentlyActivated ? 1 : 0,
+          person.firstAnswerUseful,
+          person.genuineRequestCount,
+          person.usefulnessResponseCount,
+          person.reminderTestCount,
+          person.reminderTested ? 1 : 0,
+          person.reminderDeliveryResult,
+          person.reminderDestinationResult,
+          person.returnSource,
+          person.founderExplainedProduct ? 1 : 0,
+          person.founderHelpedOnboarding ? 1 : 0,
+          person.founderSuggestedSituation ? 1 : 0,
+          person.founderHelpedRequest ? 1 : 0,
+          person.founderSolvedProblem ? 1 : 0,
+          person.founderPromptedReturn ? 1 : 0,
+          person.trustConcern ? 1 : 0,
+          person.productIssue ? 1 : 0,
+          person.evidenceNote,
+          person.notionReferenceUrl,
+          timestamp,
+          body.id,
+        )
+        .run();
+    } else if (body.action === "cohort_delete" && body.id)
+      await database
+        .prepare(
+          "DELETE FROM cohort_evidence WHERE id=? AND phase_id='phase-0'",
+        )
+        .bind(body.id)
+        .run();
+    else if (
+      body.action === "advance" &&
+      body.phaseId &&
+      body.patch?.confirmed === true
+    ) {
       const tracker = await loadTracker();
       const phase = tracker.phases.find((item) => item.id === body.phaseId);
-      if (!phase) return Response.json({ error: 'Phase not found.' }, { status: 404 });
-      const ready = phase.metrics.every(metricPassed) && phase.checks.every((item: TrackerCheck) => item.completed);
-      if (!ready) return Response.json({ error: 'Complete every metric and checklist gate before advancing.' }, { status: 409 });
-      const next = tracker.phases.find((item) => item.position === phase.position + 1);
-      const statements = [database.prepare("UPDATE phases SET status = 'complete', updated_at = ? WHERE id = ?").bind(now, phase.id)];
-      if (next) statements.push(database.prepare("UPDATE phases SET status = 'active', updated_at = ? WHERE id = ?").bind(now, next.id));
+      if (!phase)
+        return Response.json({ error: "Phase not found." }, { status: 404 });
+      const privateData = await loadPrivatePhase0();
+      const unmet =
+        phase.id === "phase-0"
+          ? phase0Unmet(phase, privateData.participants, privateData.gates)
+          : [
+              ...phase.metrics
+                .filter((metric) => !metricPassed(metric))
+                .map((metric) => metric.name),
+              ...phase.checks
+                .filter((check: TrackerCheck) => !check.completed)
+                .map((check) => check.label),
+            ];
+      if (unmet.length)
+        return Response.json(
+          { error: "Phase cannot advance yet.", unmet },
+          { status: 409 },
+        );
+      const next = tracker.phases.find(
+        (item) => item.position === phase.position + 1,
+      );
+      const statements = [
+        database
+          .prepare(
+            "UPDATE phases SET status='complete',updated_at=? WHERE id=?",
+          )
+          .bind(timestamp, phase.id),
+      ];
+      if (next)
+        statements.push(
+          database
+            .prepare(
+              "UPDATE phases SET status='active',updated_at=? WHERE id=?",
+            )
+            .bind(timestamp, next.id),
+        );
       await database.batch(statements);
-    } else {
-      return Response.json({ error: 'Unsupported update.' }, { status: 400 });
-    }
-
-    return Response.json(await trackerResponse(request));
+    } else
+      return Response.json({ error: "Unsupported update." }, { status: 400 });
+    return Response.json(await trackerResponse(request), {
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : 'Unable to save changes.' }, { status: 500 });
+    return Response.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Unable to save changes.",
+      },
+      {
+        status:
+          error instanceof Error &&
+          /Participant ID|Sanitized evidence/.test(error.message)
+            ? 400
+            : 500,
+      },
+    );
   }
 }
