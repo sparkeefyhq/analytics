@@ -1,8 +1,9 @@
 {
   "version": 2,
-  "buildCommand": "echo 'Using the Sparkeefy Launch Control origin'",
-  "outputDirectory": "public",
+  "buildCommand": "npx vite build --config vercel-static/vite.config.ts",
+  "outputDirectory": "vercel-static/dist",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/proxy?path=$1" }
+    { "source": "/api/(.*)", "destination": "/api/proxy?path=api/$1" },
+    { "source": "/launch", "destination": "/index.html" }
   ]
 }
