@@ -26,35 +26,30 @@ type SeedMetric = {
 const phase0Metrics: SeedMetric[] = [
   {
     name: "Onboarding completion",
-    target: 10,
-    targetDenominator: 12,
-    minimumDenominator: 12,
+    target: 80,
     category: "Activation",
-    valueType: "fraction",
+    valueType: "percent",
     definition:
       "Eligible participants who complete onboarding and reach Wingman.",
   },
   {
     name: "Meaningful activation",
-    target: 8,
-    targetDenominator: 12,
-    minimumDenominator: 12,
+    target: 67,
     category: "Activation",
-    valueType: "fraction",
+    valueType: "percent",
     definition:
       "Participants who submit a genuine personal situation and receive a usable Wingman response.",
   },
   {
     name: "Independent activation",
-    target: 6,
+    target: 50,
     category: "Activation",
-    valueType: "number",
+    valueType: "percent",
     definition: "Participants who activate without live founder navigation.",
   },
   {
     name: "First-answer usefulness",
     target: 75,
-    minimumDenominator: 30,
     category: "Value",
     valueType: "percent",
     definition: "First responses rated useful or very useful.",
@@ -62,7 +57,6 @@ const phase0Metrics: SeedMetric[] = [
   {
     name: "Wingman response success",
     target: 95,
-    minimumDenominator: 50,
     category: "Reliability",
     valueType: "percent",
     definition:
@@ -70,27 +64,22 @@ const phase0Metrics: SeedMetric[] = [
   },
   {
     name: "Reminder delivery reliability",
-    target: 19,
-    targetDenominator: 20,
-    minimumDenominator: 20,
+    target: 95,
     category: "Reliability",
-    valueType: "fraction",
+    valueType: "percent",
     definition:
       "Controlled reminders delivered within the accepted delivery window.",
   },
   {
     name: "Reminder destination accuracy",
-    target: 20,
-    targetDenominator: 20,
-    minimumDenominator: 20,
+    target: 100,
     category: "Reliability",
-    valueType: "fraction",
+    valueType: "percent",
     definition: "Reminder opens reaching the correct screen or context.",
   },
   {
     name: "Analytics coverage",
     target: 100,
-    minimumDenominator: 1,
     category: "Measurement",
     valueType: "percent",
     definition:
@@ -291,6 +280,21 @@ async function ensureDatabase() {
     );
     await database.batch(statements);
   }
+  await database.batch(
+    phase0Metrics.map((metric, position) =>
+      database
+        .prepare(
+          `UPDATE metrics SET position=?, category=?, target=?, unit='%', comparator='gte', value_type='percent', target_denominator=NULL, minimum_denominator=NULL, definition=? WHERE phase_id='phase-0' AND name=?`,
+        )
+        .bind(
+          position,
+          metric.category,
+          metric.target,
+          metric.definition,
+          metric.name,
+        ),
+    ),
+  );
   const gateCount = await database
     .prepare(
       "SELECT COUNT(*) AS count FROM release_gates WHERE phase_id='phase-0'",
@@ -450,11 +454,7 @@ async function loadPrivatePhase0() {
     })) as ReleaseGate[],
   };
 }
-function phase0Unmet(
-  phase: TrackerPhase,
-  participants: CohortParticipant[],
-  gates: ReleaseGate[],
-) {
+function phase0Unmet(phase: TrackerPhase) {
   const unmet = phase.metrics
     .filter((metric) => !metricPassed(metric))
     .map((metric) => `${metric.name} has not passed`);
@@ -463,34 +463,6 @@ function phase0Unmet(
       .filter((check) => !check.completed)
       .map((check) => check.label),
   );
-  const eligible = participants.filter((person) => person.status !== "dropped");
-  const requests = participants.reduce(
-    (sum, person) => sum + person.genuineRequestCount,
-    0,
-  );
-  const ratings = participants.reduce(
-    (sum, person) => sum + person.usefulnessResponseCount,
-    0,
-  );
-  const reminders = participants.reduce(
-    (sum, person) => sum + person.reminderTestCount,
-    0,
-  );
-  if (eligible.length < 10) unmet.push("Minimum 10 eligible participants");
-  if (eligible.filter((person) => !person.closeFriendOrTeammate).length < 8)
-    unmet.push("At least 8 participants not close friends or teammates");
-  if (participants.filter((person) => person.meaningfulActivation).length < 8)
-    unmet.push("Minimum 8 meaningful Wingman situations");
-  if (requests < 50) unmet.push("Minimum 50 genuine Wingman requests");
-  if (ratings < 30) unmet.push("Minimum 30 usefulness responses");
-  if (reminders < 20) unmet.push("Minimum 20 controlled reminder tests");
-  if (participants.filter((person) => person.independentlyActivated).length < 6)
-    unmet.push("Minimum 6 independently activated participants");
-  gates
-    .filter((gate) => gate.actual !== 0)
-    .forEach((gate) => unmet.push(`${gate.name} must equal zero`));
-  if (participants.some((person) => person.productIssue))
-    unmet.push("No release-blocking issue remains");
   return unmet;
 }
 async function trackerResponse(request: Request) {
@@ -498,17 +470,11 @@ async function trackerResponse(request: Request) {
     loadTracker(),
     trackerAccess(request),
   ]);
-  if (!access.canEdit) return { ...tracker, ...access };
-  const privateData = await loadPrivatePhase0();
   const phase = tracker.phases.find((item) => item.id === "phase-0");
   return {
     ...tracker,
     ...access,
-    cohortEvidence: privateData.participants,
-    releaseGates: privateData.gates,
-    phase0Unmet: phase
-      ? phase0Unmet(phase, privateData.participants, privateData.gates)
-      : [],
+    phase0Unmet: access.canEdit && phase ? phase0Unmet(phase) : [],
   };
 }
 
@@ -808,10 +774,9 @@ export async function PATCH(request: Request) {
       const phase = tracker.phases.find((item) => item.id === body.phaseId);
       if (!phase)
         return Response.json({ error: "Phase not found." }, { status: 404 });
-      const privateData = await loadPrivatePhase0();
       const unmet =
         phase.id === "phase-0"
-          ? phase0Unmet(phase, privateData.participants, privateData.gates)
+          ? phase0Unmet(phase)
           : [
               ...phase.metrics
                 .filter((metric) => !metricPassed(metric))

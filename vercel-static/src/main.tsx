@@ -17,47 +17,10 @@ type Metric = {
   minimumDenominator?: number | null;
   definition?: string;
 };
-type ReleaseGate = {
-  id: string;
-  phaseId: string;
-  position: number;
-  name: string;
-  actual: number;
-};
-type CohortParticipant = {
-  id: string;
-  phaseId: string;
-  participantId: string;
-  status: string;
-  ageBand: string;
-  relationshipState: string;
-  recruitmentSource: string;
-  closeFriendOrTeammate: boolean;
-  situationCategory: string;
-  onboardingCompleted: boolean;
-  meaningfulActivation: boolean;
-  independentlyActivated: boolean;
-  firstAnswerUseful: "yes" | "no" | "not-rated";
-  genuineRequestCount: number;
-  usefulnessResponseCount: number;
-  reminderTestCount: number;
-  reminderTested: boolean;
-  reminderDeliveryResult: string;
-  reminderDestinationResult: string;
-  returnSource: string;
-  founderExplainedProduct: boolean;
-  founderHelpedOnboarding: boolean;
-  founderSuggestedSituation: boolean;
-  founderHelpedRequest: boolean;
-  founderSolvedProblem: boolean;
-  founderPromptedReturn: boolean;
-  trustConcern: boolean;
-  productIssue: boolean;
-  evidenceNote: string;
-  notionReferenceUrl: string;
-  createdAt: string;
-  updatedAt: string;
-};
+// Kept only for backwards-compatible action handling; the Phase 0 UI no longer
+// renders participant evidence or release-gate controls.
+type ReleaseGate = { id: string; actual: number };
+type CohortParticipant = any;
 type Check = { id: string; label: string; completed: boolean };
 type Phase = {
   id: string;
@@ -81,8 +44,6 @@ type Tracker = {
   canEdit: boolean;
   viewerEmail: string | null;
   authenticated: true;
-  cohortEvidence?: CohortParticipant[];
-  releaseGates?: ReleaseGate[];
   phase0Unmet?: string[];
 };
 type Routine = {
@@ -2782,70 +2743,11 @@ function Launch({
       local.checks.filter((c) => c.completed).length,
     total = local.metrics.length + local.checks.length;
   const phaseZero = local.id === "phase-0";
-  const participants = data.cohortEvidence || [];
-  const releaseGates = data.releaseGates || [];
-  const filteredParticipants = participants.filter(
-    (participant) =>
-      participant.participantId
-        .toLowerCase()
-        .includes(cohortSearch.toLowerCase()) &&
-      (cohortFilter === "all" || cohortFilter === "issues"
-        ? cohortFilter !== "issues" ||
-          participant.productIssue ||
-          participant.trustConcern
-        : cohortFilter === "activated"
-          ? participant.meaningfulActivation
-          : cohortFilter === "independent"
-            ? participant.independentlyActivated
-            : participant.status === cohortFilter),
-  );
-  const cohortSummary = {
-    independent: participants.filter((person) => person.independentlyActivated)
-      .length,
-    assisted: participants.filter(
-      (person) => person.meaningfulActivation && !person.independentlyActivated,
-    ).length,
-    inactive: participants.filter(
-      (person) => !person.meaningfulActivation && person.status !== "dropped",
-    ).length,
-    issues: participants.filter(
-      (person) => person.productIssue || person.trustConcern,
-    ).length,
-  };
-  const newParticipant = (): CohortParticipant => ({
-    id: "",
-    phaseId: "phase-0",
-    participantId: `P0-${String(participants.length + 1).padStart(3, "0")}`,
-    status: "invited",
-    ageBand: "other",
-    relationshipState: "other",
-    recruitmentSource: "",
-    closeFriendOrTeammate: false,
-    situationCategory: "other",
-    onboardingCompleted: false,
-    meaningfulActivation: false,
-    independentlyActivated: false,
-    firstAnswerUseful: "not-rated",
-    genuineRequestCount: 0,
-    usefulnessResponseCount: 0,
-    reminderTestCount: 0,
-    reminderTested: false,
-    reminderDeliveryResult: "not-tested",
-    reminderDestinationResult: "not-tested",
-    returnSource: "unknown",
-    founderExplainedProduct: false,
-    founderHelpedOnboarding: false,
-    founderSuggestedSituation: false,
-    founderHelpedRequest: false,
-    founderSolvedProblem: false,
-    founderPromptedReturn: false,
-    trustConcern: false,
-    productIssue: false,
-    evidenceNote: "",
-    notionReferenceUrl: "",
-    createdAt: "",
-    updatedAt: "",
-  });
+  const participants: CohortParticipant[] = [];
+  const releaseGates: ReleaseGate[] = [];
+  const filteredParticipants: CohortParticipant[] = [];
+  const cohortSummary = { independent: 0, assisted: 0, inactive: 0, issues: 0 };
+  const newParticipant = (): CohortParticipant => ({});
   const update = (
     m: Metric,
     k: "target" | "actual" | "actualDenominator",
@@ -2867,6 +2769,10 @@ function Launch({
         : m.valueType === "fraction"
           ? `${m.actual}/${m.actualDenominator || 0}`
           : `${m.actual}`;
+  const metricPercent = (m: Metric) =>
+    m.actual === null || !m.actualDenominator
+      ? null
+      : Math.round((m.actual / m.actualDenominator) * 100);
   const unmetRequirements = phaseZero
     ? data.phase0Unmet || []
     : [
@@ -3001,7 +2907,7 @@ function Launch({
             <span>Metric</span>
             <span>Target</span>
             <span>Actual</span>
-            <span>Status</span>
+            <span>Completed</span>
           </div>
           {local.metrics.map((m) => (
             <div className="metric-row" key={m.id}>
@@ -3015,18 +2921,15 @@ function Launch({
                     ? `≥ ${m.target}%`
                     : `≥ ${m.target}${m.targetDenominator ? `/${m.targetDenominator}` : ""}`}
                 </b>
-                {m.minimumDenominator ? (
-                  <small>min n={m.minimumDenominator}</small>
-                ) : (
-                  <small>{m.unit}</small>
-                )}
+                <small>benchmark</small>
               </div>
               <div className="metric-actual">
                 <input
                   disabled={!data.canEdit}
                   type="number"
                   min="0"
-                  placeholder="—"
+                  aria-label={`${m.name} completed count`}
+                  placeholder="Done"
                   value={m.actual ?? ""}
                   onChange={(e) => update(m, "actual", e.target.value)}
                   onBlur={() => {
@@ -3049,7 +2952,8 @@ function Launch({
                       disabled={!data.canEdit}
                       type="number"
                       min="0"
-                      placeholder="n"
+                      aria-label={`${m.name} total count`}
+                      placeholder="Total"
                       value={m.actualDenominator ?? ""}
                       onChange={(e) =>
                         update(m, "actualDenominator", e.target.value)
@@ -3073,11 +2977,15 @@ function Launch({
                 <small>{metricActual(m)}</small>
               </div>
               <b
-                className={
-                  m.actual === null ? "pending" : passes(m) ? "pass" : "fail"
-                }
+                className={`metric-completion ${
+                  metricPercent(m) === null
+                    ? "pending"
+                    : passes(m)
+                      ? "pass"
+                      : "fail"
+                }`}
               >
-                {m.actual === null ? "—" : passes(m) ? "✓" : "×"}
+                {metricPercent(m) === null ? "—" : `${metricPercent(m)}%`}
               </b>
               {m.definition && (
                 <p className="metric-definition">{m.definition}</p>
@@ -3086,7 +2994,7 @@ function Launch({
           ))}
         </div>
       </article>
-      {phaseZero && (
+      {false && phaseZero && (
         <>
           <article className="card evidence-snapshot">
             <div className="card-title">
@@ -3230,7 +3138,7 @@ function Launch({
           </button>
         </article>
       </div>
-      {phaseZero && data.canEdit && (
+      {false && phaseZero && data.canEdit && (
         <article className="card cohort-evidence">
           <div className="card-title">
             <div>

@@ -676,7 +676,7 @@ select:focus {
 }
 .metric-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 115px 115px 44px;
+  grid-template-columns: minmax(220px, 1fr) 115px 150px 84px;
   align-items: center;
   gap: 10px;
   min-height: 54px;
@@ -710,24 +710,31 @@ select:focus {
   font-size: 11px;
   font-weight: 700;
 }
-.metric-row > b {
+.metric-completion {
   display: grid;
   place-items: center;
-  width: 25px;
-  height: 25px;
+  min-width: 64px;
+  height: 31px;
   margin-left: auto;
-  border-radius: 50%;
+  padding: 0 10px;
+  border: 1px solid #d9d9e0;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
-.pending {
+.metric-completion.pending {
   border: 1px solid #d9d9e0;
   color: #aaa;
 }
-.pass {
-  background: #dff5e8;
+.metric-completion.pass {
+  border-color: #4ea778;
+  background: transparent;
   color: #26724b;
 }
-.fail {
-  background: #ffe5e2;
+.metric-completion.fail {
+  border-color: #d56a62;
+  background: transparent;
   color: #ba4a41;
 }
 .launch-bottom {
