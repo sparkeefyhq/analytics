@@ -3,6 +3,9 @@ import type { TrackerCheck, TrackerData, TrackerMetric, TrackerPhase } from '@/l
 import { metricPassed } from '@/lib/tracker-types';
 
 export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
+
+const EDITOR_EMAIL = 'sarthakverma0802@gmail.com';
 
 type SeedMetric = [string, number, string?, ('gte' | 'lte' | 'eq')?];
 
@@ -181,9 +184,21 @@ async function loadTracker(): Promise<TrackerData> {
   return { phases };
 }
 
-export async function GET() {
+function viewerEmail(request: Request) {
+  return request.headers.get('oai-authenticated-user-email')?.trim().toLowerCase() ?? null;
+}
+
+function canEdit(request: Request) {
+  return viewerEmail(request) === EDITOR_EMAIL;
+}
+
+async function trackerResponse(request: Request) {
+  return { ...(await loadTracker()), viewerEmail: viewerEmail(request), canEdit: canEdit(request) };
+}
+
+export async function GET(request: Request) {
   try {
-    return Response.json(await loadTracker());
+    return Response.json(await trackerResponse(request));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to load tracker.' }, { status: 500 });
   }
@@ -191,6 +206,9 @@ export async function GET() {
 
 export async function PATCH(request: Request) {
   try {
+    if (!canEdit(request)) {
+      return Response.json({ error: 'This account has view-only access.' }, { status: 403 });
+    }
     await ensureDatabase();
     const body = await request.json() as { action: string; id?: string; phaseId?: string; patch?: Record<string, unknown> };
     const database = db();
@@ -224,7 +242,7 @@ export async function PATCH(request: Request) {
       return Response.json({ error: 'Unsupported update.' }, { status: 400 });
     }
 
-    return Response.json(await loadTracker());
+    return Response.json(await trackerResponse(request));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to save changes.' }, { status: 500 });
   }

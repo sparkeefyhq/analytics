@@ -24,6 +24,7 @@ import type { TrackerData, TrackerMetric, TrackerPhase } from '@/lib/tracker-typ
 import { metricPassed, phaseProgress, phaseReady } from '@/lib/tracker-types';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type TrackerResponse = TrackerData & { viewerEmail?: string | null; canEdit?: boolean };
 
 function phaseUsers(phase: TrackerPhase) {
   return phase.userMin === phase.userMax ? `${phase.userMax}` : `${phase.userMin}–${phase.userMax}`;
@@ -60,7 +61,7 @@ function MetricStatus({ metric }: { metric: TrackerMetric }) {
 }
 
 export function LaunchTracker() {
-  const [data, setData] = useState<TrackerData | null>(null);
+  const [data, setData] = useState<TrackerResponse | null>(null);
   const [selectedId, setSelectedId] = useState('phase-0');
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<TrackerPhase | null>(null);
@@ -72,7 +73,7 @@ export function LaunchTracker() {
     try {
       const response = await fetch('/api/tracker');
       if (!response.ok) throw new Error('Could not load launch data.');
-      setData(await response.json() as TrackerData);
+      setData(await response.json() as TrackerResponse);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not load launch data.');
     }
@@ -81,6 +82,7 @@ export function LaunchTracker() {
   useEffect(() => { void load(); }, []);
 
   const phase = data?.phases.find((item) => item.id === selectedId) ?? data?.phases[0];
+  const canEdit = data?.canEdit === true;
   const progress = phase ? phaseProgress(phase) : { passed: 0, total: 0, percent: 0 };
   const categories = useMemo(() => phase ? ['All', ...Array.from(new Set(phase.metrics.map((metric) => metric.category)))] : ['All'], [phase]);
   const visibleMetrics = phase?.metrics.filter((metric) => filter === 'All' || metric.category === filter) ?? [];
@@ -88,6 +90,10 @@ export function LaunchTracker() {
   const overallCompleted = data?.phases.filter((item) => item.status === 'complete').length ?? 0;
 
   async function mutate(payload: Record<string, unknown>) {
+    if (!canEdit) {
+      setError('This account has view-only access.');
+      return false;
+    }
     setSaveState('saving');
     setError('');
     try {
@@ -96,7 +102,7 @@ export function LaunchTracker() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const result = await response.json() as TrackerData & { error?: string };
+      const result = await response.json() as TrackerResponse & { error?: string };
       if (!response.ok) throw new Error(result.error ?? 'Could not save changes.');
       setData(result);
       setSaveState('saved');
@@ -125,7 +131,7 @@ export function LaunchTracker() {
   }
 
   function startEditing() {
-    if (!phase) return;
+    if (!phase || !canEdit) return;
     setDraft({ ...phase, features: [...phase.features] });
     setEditing(true);
   }
@@ -159,7 +165,7 @@ export function LaunchTracker() {
     <main className="min-h-screen bg-background text-foreground">
       <header className="sticky top-0 z-20 border-b border-black/[0.06] bg-background/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1480px] items-center justify-between px-5 lg:px-8">
-          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3">
             <div className="grid size-9 place-items-center rounded-xl bg-foreground text-background shadow-sm"><Sparkles className="size-4" /></div>
             <div><p className="text-sm font-semibold tracking-[-0.01em]">Sparkeefy</p><p className="text-[11px] text-muted-foreground">Launch control</p></div>
           </div>
@@ -168,6 +174,7 @@ export function LaunchTracker() {
               <span className={`size-1.5 rounded-full ${saveState === 'error' ? 'bg-red-500' : saveState === 'saving' ? 'animate-pulse bg-amber-500' : 'bg-emerald-500'}`} />
               {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : saveState === 'saved' ? 'Saved' : 'Shared tracker'}
             </div>
+            <span className={`hidden rounded-full px-2.5 py-1.5 text-[11px] font-semibold sm:inline-flex ${canEdit ? 'bg-[#eaf7ef] text-[#277551]' : 'bg-black/[0.045] text-muted-foreground'}`}>{canEdit ? 'Editor' : 'View only'}</span>
             <div className="hidden text-right sm:block"><p className="text-xs font-semibold">{overallCompleted} of {data.phases.length} phases</p><p className="text-[10px] text-muted-foreground">completed</p></div>
           </div>
         </div>
@@ -184,11 +191,11 @@ export function LaunchTracker() {
           <div>
             <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted-foreground"><span>Android V3</span><span>•</span><span>Validation roadmap</span></div>
             <h1 className="max-w-2xl text-3xl font-semibold tracking-[-0.045em] sm:text-[42px] sm:leading-[1.05]">Earn the right to scale.</h1>
-            <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">Every phase is a decision gate. Hit every metric and accomplishment before the next cohort opens.</p>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-muted-foreground">{canEdit ? 'Every phase is a decision gate. Hit every metric and accomplishment before the next cohort opens.' : 'You have view-only access. Launch decisions, targets and actuals are managed by the Sparkeefy owner.'}</p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="lg" className="h-10 rounded-xl bg-white px-4 shadow-sm" onClick={startEditing}><Pencil /> Edit phase</Button>
-            <Button size="lg" className="h-10 rounded-xl px-4" disabled={!phaseReady(phase) || phase.status === 'complete'} onClick={() => void mutate({ action: 'advance', phaseId: phase.id })}>
+            <Button variant="outline" size="lg" className="h-10 rounded-xl bg-white px-4 shadow-sm" disabled={!canEdit} onClick={startEditing}><Pencil /> Edit phase</Button>
+            <Button size="lg" className="h-10 rounded-xl px-4" disabled={!canEdit || !phaseReady(phase) || phase.status === 'complete'} onClick={() => void mutate({ action: 'advance', phaseId: phase.id })}>
               {phase.status === 'complete' ? 'Phase complete' : 'Advance phase'} <ArrowRight />
             </Button>
           </div>
@@ -256,7 +263,7 @@ export function LaunchTracker() {
 
               <div className="px-5 py-6 lg:px-7">
                 <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
-                  <div><h3 className="text-sm font-semibold">Decision metrics</h3><p className="mt-1 text-xs text-muted-foreground">Targets and actuals are editable. Changes save when you leave a field.</p></div>
+                  <div><h3 className="text-sm font-semibold">Decision metrics</h3><p className="mt-1 text-xs text-muted-foreground">{canEdit ? 'Targets and actuals are editable. Changes save when you leave a field.' : 'Targets and actuals are visible to the whole team.'}</p></div>
                   <div className="flex max-w-full gap-1 overflow-x-auto pb-1">
                     {categories.map((category) => <button key={category} onClick={() => setFilter(category)} className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${filter === category ? 'bg-foreground text-background' : 'bg-black/[0.035] text-muted-foreground hover:text-foreground'}`}>{category}</button>)}
                   </div>
@@ -268,8 +275,8 @@ export function LaunchTracker() {
                     {visibleMetrics.map((metric) => (
                       <div key={metric.id} className="metric-grid metric-row">
                         <div><span className="font-medium">{metric.name}</span><span className="ml-2 text-[10px] text-muted-foreground">{metric.comparator === 'lte' ? 'max' : metric.comparator === 'eq' ? 'exact' : 'min'}</span></div>
-                        <label className="metric-input"><Input aria-label={`${metric.name} target`} type="number" step="0.1" value={metric.target} onChange={(event) => updateMetric(metric.id, 'target', event.target.value)} onBlur={() => void saveMetric(data.phases.flatMap((item) => item.metrics).find((item) => item.id === metric.id) ?? metric)} /><span>{metric.unit}</span></label>
-                        <label className="metric-input"><Input aria-label={`${metric.name} actual`} type="number" step="0.1" value={metric.actual ?? ''} placeholder="—" onChange={(event) => updateMetric(metric.id, 'actual', event.target.value)} onBlur={() => void saveMetric(data.phases.flatMap((item) => item.metrics).find((item) => item.id === metric.id) ?? metric)} /><span>{metric.unit}</span></label>
+                        <label className="metric-input"><Input disabled={!canEdit} aria-label={`${metric.name} target`} type="number" step="0.1" value={metric.target} onChange={(event) => updateMetric(metric.id, 'target', event.target.value)} onBlur={() => void saveMetric(data.phases.flatMap((item) => item.metrics).find((item) => item.id === metric.id) ?? metric)} /><span>{metric.unit}</span></label>
+                        <label className="metric-input"><Input disabled={!canEdit} aria-label={`${metric.name} actual`} type="number" step="0.1" value={metric.actual ?? ''} placeholder="—" onChange={(event) => updateMetric(metric.id, 'actual', event.target.value)} onBlur={() => void saveMetric(data.phases.flatMap((item) => item.metrics).find((item) => item.id === metric.id) ?? metric)} /><span>{metric.unit}</span></label>
                         <span className="flex justify-end"><MetricStatus metric={metric} /></span>
                       </div>
                     ))}
@@ -283,8 +290,8 @@ export function LaunchTracker() {
                 <div className="mb-5 flex items-center justify-between"><div><h3 className="text-sm font-semibold">Phase accomplishments</h3><p className="mt-1 text-xs text-muted-foreground">Check each qualitative gate only when the team has evidence.</p></div><Target className="size-4 text-muted-foreground" /></div>
                 <div className="space-y-2">
                   {phase.checks.map((item) => (
-                    <label key={item.id} className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-3 transition ${item.completed ? 'border-emerald-200 bg-emerald-50/60' : 'border-black/[0.06] hover:bg-black/[0.02]'}`}>
-                      <Checkbox checked={item.completed} onCheckedChange={(checked) => void mutate({ action: 'check', id: item.id, patch: { completed: Boolean(checked) } })} className="mt-0.5" />
+                    <label key={item.id} className={`flex items-start gap-3 rounded-xl border px-3.5 py-3 transition ${canEdit ? 'cursor-pointer' : ''} ${item.completed ? 'border-emerald-200 bg-emerald-50/60' : 'border-black/[0.06] hover:bg-black/[0.02]'}`}>
+                      <Checkbox disabled={!canEdit} checked={item.completed} onCheckedChange={(checked) => void mutate({ action: 'check', id: item.id, patch: { completed: Boolean(checked) } })} className="mt-0.5" />
                       <span className={`text-xs leading-5 ${item.completed ? 'text-emerald-800 line-through decoration-emerald-300' : ''}`}>{item.label}</span>
                     </label>
                   ))}
@@ -295,7 +302,7 @@ export function LaunchTracker() {
                 <span className={`mb-4 grid size-10 place-items-center rounded-[14px] ${phaseReady(phase) ? 'bg-emerald-600 text-white' : 'bg-black/[0.04] text-muted-foreground'}`}>{phaseReady(phase) ? <CheckCircle2 className="size-4" /> : <RotateCcw className="size-4" />}</span>
                 <h3 className="text-sm font-semibold">{phaseReady(phase) ? 'This phase has earned the next cohort.' : 'Keep improving this phase.'}</h3>
                 <p className="mt-2 text-xs leading-5 text-muted-foreground">{phaseReady(phase) ? 'Every quantitative and qualitative gate is complete. Advance when the team agrees.' : `${progress.total - progress.passed} gates remain. Fix the product, update the evidence, and review again.`}</p>
-                <Button className="mt-5 w-full rounded-xl" disabled={!phaseReady(phase) || phase.status === 'complete'} onClick={() => void mutate({ action: 'advance', phaseId: phase.id })}>{phase.status === 'complete' ? 'Phase complete' : 'Advance to next phase'} <ChevronRight /></Button>
+                <Button className="mt-5 w-full rounded-xl" disabled={!canEdit || !phaseReady(phase) || phase.status === 'complete'} onClick={() => void mutate({ action: 'advance', phaseId: phase.id })}>{phase.status === 'complete' ? 'Phase complete' : 'Advance to next phase'} <ChevronRight /></Button>
               </div>
             </div>
           </div>
