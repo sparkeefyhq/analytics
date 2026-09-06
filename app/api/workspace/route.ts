@@ -5,6 +5,7 @@ export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 type Access = Awaited<ReturnType<typeof trackerAccess>>;
+class InputError extends Error {}
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID()}`;
 const TASK_PRIORITIES = new Set(['low', 'medium', 'high']);
@@ -12,21 +13,21 @@ const MEETING_CATEGORIES = new Set(['Investor', 'Team', 'User interview', 'Advis
 
 function cleanTitle(value: unknown) {
   const title = String(value ?? '').trim();
-  if (!title || title.length > 160) throw new Error('Use a task title between 1 and 160 characters.');
+  if (!title || title.length > 160) throw new InputError('Use a task title between 1 and 160 characters.');
   return title;
 }
 
 function cleanDate(value: unknown) {
   if (value === null || value === undefined || value === '') return null;
   const date = String(value);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Use a valid date.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new InputError('Use a valid date.');
   return date;
 }
 
 function cleanTime(value: unknown) {
   if (value === null || value === undefined || value === '') return null;
   const time = String(value);
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error('Use a valid 24-hour time.');
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new InputError('Use a valid 24-hour time.');
   return time;
 }
 
@@ -37,7 +38,7 @@ function cleanUrl(value: unknown) {
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Unsafe URL');
     return url.toString();
   } catch {
-    throw new Error('Links must use http or https.');
+    throw new InputError('Links must use http or https.');
   }
 }
 
@@ -140,6 +141,14 @@ async function ensureWorkspace() {
     const name = addition.split(' ')[0];
     if (!routineColumns.results.some((column) => column.name === name)) await db.prepare(`ALTER TABLE routines ADD COLUMN ${addition}`).run();
   }
+  const untitledTaskIcons = await db.prepare(`SELECT id, title FROM founder_tasks WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all<{ id: string; title: string }>();
+  const untitledRoutineIcons = await db.prepare(`SELECT id, title FROM routines WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all<{ id: string; title: string }>();
+  if (untitledTaskIcons.results.length || untitledRoutineIcons.results.length) {
+    await db.batch([
+      ...untitledTaskIcons.results.map((item) => db.prepare('UPDATE founder_tasks SET icon_type=?, icon_source=\'inferred\' WHERE id=?').bind(inferredType(item.title), item.id)),
+      ...untitledRoutineIcons.results.map((item) => db.prepare('UPDATE routines SET icon_type=?, icon_source=\'inferred\' WHERE id=?').bind(inferredType(item.title), item.id)),
+    ]);
+  }
 
   const count = await db.prepare('SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?').bind(EDITOR_EMAIL).first<{ count: number }>();
   if ((count?.count ?? 0) === 0) {
@@ -225,6 +234,7 @@ export async function GET(request: Request) {
     return Response.json({ error: 'Unknown workspace view.' }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof InputError) return Response.json({ error: error.message }, { status: 400 });
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to load workspace.' }, { status: 500 });
   }
 }
@@ -366,6 +376,7 @@ export async function POST(request: Request) {
     return Response.json(view === 'suggestions' ? await suggestionData(access) : await founderData(access));
   } catch (error) {
     if (error instanceof Response) return error;
+    if (error instanceof InputError) return Response.json({ error: error.message }, { status: 400 });
     return Response.json({ error: error instanceof Error ? error.message : 'Unable to save workspace.' }, { status: 500 });
   }
 }
