@@ -15,6 +15,13 @@
       "when": 1788723450194,
       "tag": "0001_moaning_nomad",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788729570545,
+      "tag": "0002_material_lila_cheney",
+      "breakpoints": true
     }
   ]
 }
