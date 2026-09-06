@@ -1311,6 +1311,89 @@ const tomorrow = (date: string) => {
   value.setUTCDate(value.getUTCDate() + 1);
   return value.toISOString().slice(0, 10);
 };
+const timeParts = (value: string | null | undefined) => {
+  if (!value) return { hour: "", minute: "00", period: "AM" };
+  const [rawHour, minute = "00"] = value.split(":");
+  const hour = Number(rawHour);
+  return {
+    hour: String(hour % 12 || 12),
+    minute,
+    period: hour >= 12 ? "PM" : "AM",
+  };
+};
+const to24HourTime = (hour: string, minute: string, period: string) => {
+  if (!hour) return "";
+  let value = Number(hour) % 12;
+  if (period === "PM") value += 12;
+  return `${String(value).padStart(2, "0")}:${minute}`;
+};
+function TimePicker({
+  value,
+  onChange,
+  label = "Time",
+}: {
+  value: string | null | undefined;
+  onChange: (value: string) => void;
+  label?: string;
+}) {
+  const parts = timeParts(value);
+  const update = (patch: Partial<typeof parts>) => {
+    const next = { ...parts, ...patch };
+    onChange(to24HourTime(next.hour, next.minute, next.period));
+  };
+  return (
+    <div className="time-picker" aria-label={label}>
+      <select
+        aria-label={`${label} hour`}
+        value={parts.hour}
+        onChange={(event) => update({ hour: event.target.value })}
+      >
+        <option value="">Time</option>
+        {Array.from({ length: 12 }, (_, index) => String(index + 1)).map(
+          (hour) => (
+            <option key={hour} value={hour}>
+              {hour}
+            </option>
+          ),
+        )}
+      </select>
+      <select
+        aria-label={`${label} minute`}
+        value={parts.minute}
+        disabled={!parts.hour}
+        onChange={(event) => update({ minute: event.target.value })}
+      >
+        {[
+          "00",
+          "05",
+          "10",
+          "15",
+          "20",
+          "25",
+          "30",
+          "35",
+          "40",
+          "45",
+          "50",
+          "55",
+        ].map((minute) => (
+          <option key={minute} value={minute}>
+            {minute}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label={`${label} AM or PM`}
+        value={parts.period}
+        disabled={!parts.hour}
+        onChange={(event) => update({ period: event.target.value })}
+      >
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  );
+}
 function WorkIcon({
   title,
   type,
@@ -1373,6 +1456,7 @@ function SarthakV3({
     [editTask, setEditTask] = useState<string | null>(null),
     [editRoutine, setEditRoutine] = useState<string | null>(null),
     [editMeeting, setEditMeeting] = useState<string | null>(null),
+    [redditExpanded, setRedditExpanded] = useState(false),
     [undo, setUndo] = useState<{ label: string; run: () => void } | null>(null),
     [saving, setSaving] = useState(false),
     [clock, setClock] = useState(indiaNow());
@@ -1409,6 +1493,12 @@ function SarthakV3({
       (m) => m.scheduled_date === data.date && m.status === "scheduled",
     ),
     followUps = meetings.filter((m) => m.status === "follow-up");
+  const redditRoutines = activeRoutines.filter(
+      (routine) => iconFor(routine.title, routine.icon_type) === "reddit",
+    ),
+    otherRoutines = activeRoutines.filter(
+      (routine) => iconFor(routine.title, routine.icon_type) !== "reddit",
+    );
   const timed = (a: Task, b: Task) =>
     `${a.due_date && a.due_date < data.date ? "0" : "1"}-${a.due_time || "99:99"}-${a.priority === "high" ? "0" : a.priority === "medium" ? "1" : "2"}-${a.position || 0}`.localeCompare(
       `${b.due_date && b.due_date < data.date ? "0" : "1"}-${b.due_time || "99:99"}-${b.priority === "high" ? "0" : b.priority === "medium" ? "1" : "2"}-${b.position || 0}`,
@@ -1740,15 +1830,13 @@ function SarthakV3({
                 )
               }
             />
-            <input
-              type="time"
-              value={task.due_time || ""}
-              onChange={(e) =>
+            <TimePicker
+              label="Task time"
+              value={task.due_time}
+              onChange={(value) =>
                 setTasks((xs) =>
                   xs.map((x) =>
-                    x.id === task.id
-                      ? { ...x, due_time: e.target.value || null }
-                      : x,
+                    x.id === task.id ? { ...x, due_time: value || null } : x,
                   ),
                 )
               }
@@ -1867,13 +1955,13 @@ function SarthakV3({
                 )
               }
             />
-            <input
-              type="time"
+            <TimePicker
+              label="Routine time"
               value={routine.time}
-              onChange={(e) =>
+              onChange={(value) =>
                 setRoutines((xs) =>
                   xs.map((x) =>
-                    x.id === routine.id ? { ...x, time: e.target.value } : x,
+                    x.id === routine.id ? { ...x, time: value || "09:00" } : x,
                   ),
                 )
               }
@@ -2084,10 +2172,10 @@ function SarthakV3({
                   value={draft.date}
                   onChange={(e) => setDraft({ ...draft, date: e.target.value })}
                 />
-                <input
-                  type="time"
+                <TimePicker
+                  label="Task time"
                   value={draft.time}
-                  onChange={(e) => setDraft({ ...draft, time: e.target.value })}
+                  onChange={(value) => setDraft({ ...draft, time: value })}
                 />
                 <select
                   value={draft.priority}
@@ -2164,11 +2252,11 @@ function SarthakV3({
                   setMeetingDraft({ ...meetingDraft, date: e.target.value })
                 }
               />
-              <input
-                type="time"
+              <TimePicker
+                label="Meeting time"
                 value={meetingDraft.time}
-                onChange={(e) =>
-                  setMeetingDraft({ ...meetingDraft, time: e.target.value })
+                onChange={(value) =>
+                  setMeetingDraft({ ...meetingDraft, time: value })
                 }
               />
               <input
@@ -2327,7 +2415,42 @@ function SarthakV3({
             </div>
             <span>IST</span>
           </div>
-          {activeRoutines.map((routine) => (
+          {redditRoutines.length > 0 && (
+            <section className="routine-group">
+              <button
+                className="routine-group-toggle"
+                onClick={() => setRedditExpanded((expanded) => !expanded)}
+                aria-expanded={redditExpanded}
+              >
+                <span className="work-icon" aria-hidden="true">
+                  <img src={markUrl("reddit")} alt="" />
+                </span>
+                <span>
+                  <b>Reddit posts</b>
+                  <small>
+                    {redditRoutines.length} routines · {redditRoutines[0].time}
+                    {redditRoutines.length > 1
+                      ? `, ${redditRoutines[redditRoutines.length - 1].time}`
+                      : ""}
+                  </small>
+                </span>
+                <span className="routine-group-count">
+                  {redditRoutines.length}
+                </span>
+                <span className="routine-group-chevron" aria-hidden="true">
+                  {redditExpanded ? "−" : "+"}
+                </span>
+              </button>
+              {redditExpanded && (
+                <div className="routine-group-items">
+                  {redditRoutines.map((routine) => (
+                    <RoutineRow key={routine.id} routine={routine} />
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+          {otherRoutines.map((routine) => (
             <RoutineRow key={routine.id} routine={routine} />
           ))}
           {!activeRoutines.length && (
