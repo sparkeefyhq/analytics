@@ -1864,12 +1864,16 @@ select:focus {
 }
 
 .v3 .movable-routine-group {
-  position: relative;
-  z-index: 2;
+  position: fixed;
+  top: clamp(150px, 34vh, 360px);
+  right: 28px;
+  width: min(430px, calc(100vw - 32px));
+  z-index: 50;
   transition:
     box-shadow 0.16s ease,
     opacity 0.16s ease;
   will-change: transform;
+  box-shadow: 0 12px 32px rgba(29, 31, 53, 0.08);
 }
 .v3 .movable-routine-group.is-dragging {
   z-index: 10;
@@ -1921,6 +1925,12 @@ select:focus {
 }
 .v3 .movable-routine-group .routine-group-items {
   padding-left: 8px;
+}
+@media (max-width: 900px) {
+  .v3 .movable-routine-group {
+    top: 150px;
+    right: 16px;
+  }
 }
 
 /* Phase 0 release-readiness workspace. */

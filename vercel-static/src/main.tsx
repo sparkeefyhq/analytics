@@ -1490,10 +1490,16 @@ function SarthakV3({
       startY: number;
       originX: number;
       originY: number;
+      baseLeft: number;
+      baseTop: number;
+      width: number;
+      height: number;
     } | null>(null),
     [undo, setUndo] = useState<{ label: string; run: () => void } | null>(null),
     [saving, setSaving] = useState(false),
     [clock, setClock] = useState(indiaNow());
+  const redditGroupRef = useRef<HTMLElement | null>(null);
+  const redditOffsetRef = useRef(redditOffset);
   useEffect(() => {
     setTasks(data.tasks);
     setRoutines(data.routines);
@@ -1522,6 +1528,9 @@ function SarthakV3({
         JSON.stringify(redditOffset),
       );
     } catch {}
+  }, [redditOffset]);
+  useEffect(() => {
+    redditOffsetRef.current = redditOffset;
   }, [redditOffset]);
   const hour = Number(clock.slice(0, 2)),
     greeting =
@@ -2087,8 +2096,9 @@ function SarthakV3({
     redditRoutines.length ? (
       <section
         className={`routine-group movable-routine-group ${redditDrag ? "is-dragging" : ""}`}
+        ref={redditGroupRef}
         style={{
-          transform: `translate(${redditOffset.x}px, ${redditOffset.y}px)`,
+          transform: `translate3d(${redditOffset.x}px, ${redditOffset.y}px, 0)`,
         }}
       >
         <div className="routine-group-toggle">
@@ -2097,26 +2107,47 @@ function SarthakV3({
             aria-label="Move Reddit posts"
             onPointerDown={(event) => {
               if (event.button !== 0) return;
+              const rect = redditGroupRef.current?.getBoundingClientRect();
+              if (!rect) return;
               event.currentTarget.setPointerCapture(event.pointerId);
               setRedditDrag({
                 pointerId: event.pointerId,
                 startX: event.clientX,
                 startY: event.clientY,
-                originX: redditOffset.x,
-                originY: redditOffset.y,
+                originX: redditOffsetRef.current.x,
+                originY: redditOffsetRef.current.y,
+                baseLeft: rect.left - redditOffsetRef.current.x,
+                baseTop: rect.top - redditOffsetRef.current.y,
+                width: rect.width,
+                height: rect.height,
               });
             }}
             onPointerMove={(event) => {
               if (!redditDrag || redditDrag.pointerId !== event.pointerId)
                 return;
-              setRedditOffset({
-                x: redditDrag.originX + event.clientX - redditDrag.startX,
-                y: redditDrag.originY + event.clientY - redditDrag.startY,
-              });
+              const minX = 16 - redditDrag.baseLeft;
+              const maxX = window.innerWidth - 16 - redditDrag.width - redditDrag.baseLeft;
+              const minY = 16 - redditDrag.baseTop;
+              const maxY = window.innerHeight - 16 - redditDrag.height - redditDrag.baseTop;
+              const next = {
+                x: Math.min(maxX, Math.max(minX, redditDrag.originX + event.clientX - redditDrag.startX)),
+                y: Math.min(maxY, Math.max(minY, redditDrag.originY + event.clientY - redditDrag.startY)),
+              };
+              redditOffsetRef.current = next;
+              if (redditGroupRef.current)
+                redditGroupRef.current.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
             }}
             onPointerUp={(event) => {
-              if (redditDrag?.pointerId === event.pointerId)
+              if (redditDrag?.pointerId === event.pointerId) {
+                setRedditOffset(redditOffsetRef.current);
                 setRedditDrag(null);
+              }
+            }}
+            onPointerCancel={(event) => {
+              if (redditDrag?.pointerId === event.pointerId) {
+                setRedditOffset(redditOffsetRef.current);
+                setRedditDrag(null);
+              }
             }}
           >
             ⠿
