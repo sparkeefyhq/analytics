@@ -2553,7 +2553,6 @@ function SarthakV3({
             </div>
             <span>IST</span>
           </div>
-          <RedditRoutineGroup />
           {otherRoutines.map((routine) => (
             <RoutineRow key={routine.id} routine={routine} />
           ))}
@@ -2562,6 +2561,7 @@ function SarthakV3({
           )}
         </article>
       </div>
+      <RedditRoutineGroup />
       <details className="completed-today">
         <summary>
           Completed today{" "}

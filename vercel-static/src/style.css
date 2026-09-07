@@ -1868,12 +1868,17 @@ select:focus {
   top: clamp(150px, 34vh, 360px);
   right: 28px;
   width: min(430px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.96);
   z-index: 50;
   transition:
     box-shadow 0.16s ease,
     opacity 0.16s ease;
   will-change: transform;
   box-shadow: 0 12px 32px rgba(29, 31, 53, 0.08);
+  backdrop-filter: blur(18px);
 }
 .v3 .movable-routine-group.is-dragging {
   z-index: 10;
