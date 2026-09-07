@@ -131,11 +131,52 @@ const phase0Gates = [
   "Missing critical analytics events",
 ];
 
+type Phase1MetricSeed = {
+  id: string;
+  category: string;
+  name: string;
+  target: number;
+  comparator: "gte" | "lte" | "eq";
+  valueType: "number" | "percent";
+  minimumDenominator?: number;
+  definition: string;
+};
+
+const phase1aMetrics: Phase1MetricSeed[] = [
+  { id: "phase-1a-metric-0", category: "Cohort", name: "Eligible cohort completed", target: 50, comparator: "eq", valueType: "number", definition: "Eligible Indian men aged 18–28 who complete the Phase 1A observation protocol." },
+  { id: "phase-1a-metric-1", category: "Activation", name: "Meaningful activation", target: 70, comparator: "gte", valueType: "percent", minimumDenominator: 50, definition: "Eligible participants who submit a genuine situation, receive a complete Wingman response and report it clearly or somewhat helped." },
+  { id: "phase-1a-metric-2", category: "Independence", name: "Independent share of meaningful activations", target: 80, comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Independent meaningful activations divided by all meaningful activations. Founder-guided or rescued sessions never count as independent." },
+  { id: "phase-1a-metric-3", category: "Value", name: "First-answer usefulness", target: 75, comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "First completed genuine answers rated “Yes, clearly” or “Somewhat” divided by all first genuine situations that received a complete answer." },
+  { id: "phase-1a-metric-4", category: "Behavior", name: "Organic second-situation rate", target: 40, comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Organic second-situation users divided by meaningfully activated users. This is the primary behavioral metric." },
+  { id: "phase-1a-metric-5", category: "Reliability", name: "Genuine Wingman response success", target: 95, comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Genuine requests returning a complete usable response without error or manual retry." },
+  { id: "phase-1a-metric-6", category: "Trust & safety", name: "Critical trust/safety incidents", target: 0, comparator: "eq", valueType: "number", definition: "Privacy leaks, wrong-person memory, cross-account/context leaks, dangerous guidance or critical deletion/privacy failures." },
+  { id: "phase-1a-metric-7", category: "Measurement", name: "Analytics / participant-state reconciliation", target: 100, comparator: "gte", valueType: "percent", minimumDenominator: 50, definition: "Every eligible participant has a valid final measurement state and correct denominator, source and version fields." },
+];
+
+const phase1bMetrics: Phase1MetricSeed[] = [
+  { id: "phase-1b-metric-0", category: "Activation", name: "Meaningful activation", target: 70, comparator: "gte", valueType: "percent", minimumDenominator: 100, definition: "Cold eligible users who meaningfully activate using the same Phase 1 definition." },
+  { id: "phase-1b-metric-1", category: "Independence", name: "Independent share of meaningful activations", target: 80, comparator: "gte", valueType: "percent", minimumDenominator: 70, definition: "Independent meaningful activations divided by all meaningful activations in the colder cohort." },
+  { id: "phase-1b-metric-2", category: "Behavior", name: "Organic second-situation rate", target: 40, comparator: "gte", valueType: "percent", minimumDenominator: 70, definition: "Organic second-situation users divided by meaningfully activated cold users." },
+  { id: "phase-1b-metric-3", category: "Reliability", name: "Genuine Wingman response success", target: 95, comparator: "gte", valueType: "percent", minimumDenominator: 70, definition: "Genuine cold-cohort requests returning a complete usable response without error or manual retry." },
+  { id: "phase-1b-metric-4", category: "Trust & safety", name: "Critical trust/safety incidents", target: 0, comparator: "eq", valueType: "number", definition: "Critical privacy, memory, safety or deletion failures. Any unresolved incident blocks advancement." },
+  { id: "phase-1b-metric-5", category: "Measurement", name: "Analytics reconciliation", target: 100, comparator: "gte", valueType: "percent", minimumDenominator: 100, definition: "Every eligible colder participant has a reconciled measurement state, denominator, source and version." },
+];
+
+const phase1aChecks = [
+  "Phase 1 build frozen/version tagged", "Phase 1 analytics verified", "50 eligible users recruited", "~25 dating/talking-stage users recruited", "~25 committed-relationship users recruited", "Team/paid/favour testers excluded", "SRM/non-SRM tagged", "Founder connection tagged", "Acquisition/recruitment source tagged", "Every genuine first situation classified", "Every founder-assisted session marked correctly", "Every activated user received full 14-day window", "No lifecycle return prompting during organic baseline", "Every return attribution classified", "Every non-returner opportunity state classified", "First-answer usefulness denominators reconcile", "Organic second-situation denominators reconcile", "Top three failure mechanisms documented", "Retained-user forensics completed", "Wedge comparison completed", "Leading wedge not explained primarily by SRM/friends", "Zero unresolved critical trust/safety issues", "Phase 1A decision documented",
+];
+
+const phase1bChecks = [
+  "~100 eligible colder users recruited", "Same eligibility and 14-day observation rules applied", "Minimal founder involvement maintained", "Winning wedge/job defined from Phase 1A", "Every return attribution classified", "Cold-cohort denominators reconcile", "Cold organic repeater yield reviewed", "Zero unresolved critical trust/safety issues", "Phase 1 final decision documented",
+];
+
 function db() {
   if (!env.DB) throw new Error("Database binding is unavailable.");
   return env.DB;
 }
 const now = () => new Date().toISOString();
+const safeString = (value: unknown) =>
+  typeof value === "string" ? value : "";
 const asNumber = (value: unknown, fallback = 0) =>
   Number.isFinite(Number(value)) ? Number(value) : fallback;
 const asBool = (value: unknown) =>
@@ -189,6 +230,12 @@ async function initializeDatabase() {
     ),
     database.prepare(
       `CREATE TABLE IF NOT EXISTS cohort_evidence (id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, participant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'invited', age_band TEXT NOT NULL DEFAULT 'other', relationship_state TEXT NOT NULL DEFAULT 'other', recruitment_source TEXT NOT NULL DEFAULT '', close_friend_or_teammate INTEGER NOT NULL DEFAULT 0, situation_category TEXT NOT NULL DEFAULT 'other', onboarding_completed INTEGER NOT NULL DEFAULT 0, meaningful_activation INTEGER NOT NULL DEFAULT 0, independently_activated INTEGER NOT NULL DEFAULT 0, first_answer_useful TEXT NOT NULL DEFAULT 'not-rated', genuine_request_count INTEGER NOT NULL DEFAULT 0, usefulness_response_count INTEGER NOT NULL DEFAULT 0, reminder_test_count INTEGER NOT NULL DEFAULT 0, reminder_tested INTEGER NOT NULL DEFAULT 0, reminder_delivery_result TEXT NOT NULL DEFAULT 'not-tested', reminder_destination_result TEXT NOT NULL DEFAULT 'not-tested', return_source TEXT NOT NULL DEFAULT 'unknown', founder_explained_product INTEGER NOT NULL DEFAULT 0, founder_helped_onboarding INTEGER NOT NULL DEFAULT 0, founder_suggested_situation INTEGER NOT NULL DEFAULT 0, founder_helped_request INTEGER NOT NULL DEFAULT 0, founder_solved_problem INTEGER NOT NULL DEFAULT 0, founder_prompted_return INTEGER NOT NULL DEFAULT 0, trust_concern INTEGER NOT NULL DEFAULT 0, product_issue INTEGER NOT NULL DEFAULT 0, evidence_note TEXT NOT NULL DEFAULT '', notion_reference_url TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS phase1_state (phase_id TEXT PRIMARY KEY, decision_1a TEXT, final_decision TEXT, updated_at TEXT NOT NULL)`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS phase1_wedge_signals (wedge TEXT NOT NULL, field TEXT NOT NULL, numeric_value REAL, text_value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY (wedge, field))`,
     ),
     database.prepare(
       "CREATE INDEX IF NOT EXISTS idx_metrics_phase_position ON metrics(phase_id, position)",
@@ -253,6 +300,78 @@ async function initializeDatabase() {
       timestamp,
     )
     .run();
+
+  const phase1 = await database
+    .prepare("SELECT id FROM phases WHERE id = 'phase-1'")
+    .first();
+  if (phase1) {
+    await database
+      .prepare(
+        `UPDATE phases SET name=?, objective=?, user_min=50, user_max=50, duration_min=14, duration_max=14, duration_unit='days', features=?, updated_at=? WHERE id='phase-1'`,
+      )
+      .bind(
+        "Phase 1: Organic Wingman Pull",
+        "Prove that the right user independently gets real value and chooses Wingman again for another genuine relationship situation.",
+        JSON.stringify([
+          "AI Wingman V3",
+          "Person context",
+          "User-controlled memory",
+          "User-created practical reminders",
+          "Usefulness feedback",
+          "Required analytics",
+        ]),
+        timestamp,
+      )
+      .run();
+    await database
+      .prepare(
+        "INSERT OR IGNORE INTO phase1_state (phase_id,decision_1a,final_decision,updated_at) VALUES ('phase-1',NULL,NULL,?)",
+      )
+      .bind(timestamp)
+      .run();
+    const phase1Marker = await database
+      .prepare("SELECT id FROM metrics WHERE id='phase-1a-metric-0'")
+      .first();
+    if (!phase1Marker)
+      await database.batch([
+        database.prepare("DELETE FROM metrics WHERE phase_id='phase-1'"),
+        database.prepare("DELETE FROM checks WHERE phase_id='phase-1'"),
+      ]);
+    const allPhase1Metrics = [...phase1aMetrics, ...phase1bMetrics];
+    await database.batch(
+      allPhase1Metrics.map((metric, position) =>
+        database
+          .prepare(
+            `INSERT INTO metrics (id,phase_id,position,category,name,target,actual,unit,comparator,value_type,target_denominator,actual_denominator,minimum_denominator,definition) VALUES (?, 'phase-1', ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?) ON CONFLICT(id) DO UPDATE SET position=excluded.position,category=excluded.category,name=excluded.name,target=excluded.target,unit=excluded.unit,comparator=excluded.comparator,value_type=excluded.value_type,target_denominator=NULL,minimum_denominator=excluded.minimum_denominator,definition=excluded.definition`,
+          )
+          .bind(
+            metric.id,
+            position,
+            metric.category,
+            metric.name,
+            metric.target,
+            metric.valueType === "percent" ? "%" : "count",
+            metric.comparator,
+            metric.valueType,
+            metric.minimumDenominator ?? null,
+            metric.definition,
+          ),
+      ),
+    );
+    const allPhase1Checks = [
+      ...phase1aChecks.map((label) => ({ id: `phase-1a-check-${phase1aChecks.indexOf(label)}`, label })),
+      ...phase1bChecks.map((label) => ({ id: `phase-1b-check-${phase1bChecks.indexOf(label)}`, label })),
+    ];
+    await database.batch(
+      allPhase1Checks.map((check, position) =>
+        database
+          .prepare(
+            "INSERT INTO checks (id,phase_id,position,label,completed) VALUES (?, 'phase-1', ?, ?, 0) ON CONFLICT(id) DO UPDATE SET position=excluded.position,label=excluded.label",
+          )
+          .bind(check.id, position, check.label),
+      ),
+    );
+  }
   const marker = await database
     .prepare(
       "SELECT id FROM metrics WHERE phase_id='phase-0' AND name='Independent activation'",
@@ -522,16 +641,88 @@ function phase0Unmet(phase: TrackerPhase) {
   );
   return unmet;
 }
+
+type Phase1State = {
+  decision1A: string | null;
+  finalDecision: string | null;
+  phase1AReady: boolean;
+  phase1BUnlocked: boolean;
+  phase1Unmet: string[];
+};
+
+const isReplicationDecision = (decision: string | null) =>
+  decision === "advance" || decision === "narrow";
+const phase1SubsetUnmet = (phase: TrackerPhase, prefix: string) => [
+  ...phase.metrics
+    .filter((metric) => metric.id.startsWith(prefix) && !metricPassed(metric))
+    .map((metric) => `${metric.name} has not passed`),
+  ...phase.checks
+    .filter((check) => check.id.startsWith(prefix) && !check.completed)
+    .map((check) => check.label),
+];
+async function loadPhase1State(phase: TrackerPhase | undefined): Promise<Phase1State> {
+  if (!phase)
+    return {
+      decision1A: null,
+      finalDecision: null,
+      phase1AReady: false,
+      phase1BUnlocked: false,
+      phase1Unmet: ["Phase 1 is unavailable."],
+    };
+  const row = await db()
+    .prepare("SELECT decision_1a,final_decision FROM phase1_state WHERE phase_id='phase-1'")
+    .first<{ decision_1a: string | null; final_decision: string | null }>();
+  const decision1A = row?.decision_1a ?? null;
+  const finalDecision = row?.final_decision ?? null;
+  const phase1AUnmet = phase1SubsetUnmet(phase, "phase-1a-");
+  const phase1AReady =
+    phase1AUnmet.length === 0 && isReplicationDecision(decision1A);
+  const phase1BUnlocked = phase1AReady;
+  const phase1BUnmet = phase1BUnlocked
+    ? phase1SubsetUnmet(phase, "phase-1b-")
+    : ["Phase 1B is locked until Phase 1A passes and a replication decision is recorded."];
+  const phase1Unmet = [
+    ...phase1AUnmet,
+    ...(isReplicationDecision(decision1A)
+      ? []
+      : ["Phase 1A decision must be Advance or Narrow to unlock cold replication"]),
+    ...phase1BUnmet,
+    ...(isReplicationDecision(finalDecision)
+      ? []
+      : ["Final Phase 1 decision must be Advance or Narrow"]),
+  ];
+  return {
+    decision1A,
+    finalDecision,
+    phase1AReady,
+    phase1BUnlocked,
+    phase1Unmet,
+  };
+}
 async function trackerResponse(request: Request) {
   const [tracker, access] = await Promise.all([
     loadTracker(),
     trackerAccess(request),
   ]);
   const phase = tracker.phases.find((item) => item.id === "phase-0");
+  const phase1 = tracker.phases.find((item) => item.id === "phase-1");
+  const phase1State = await loadPhase1State(phase1);
+  const wedgeRows = await db()
+    .prepare("SELECT wedge,field,numeric_value,text_value FROM phase1_wedge_signals ORDER BY wedge,field")
+    .all<{ wedge: string; field: string; numeric_value: number | null; text_value: string }>();
   return {
     ...tracker,
     ...access,
     phase0Unmet: access.canEdit && phase ? phase0Unmet(phase) : [],
+    phase1: {
+      ...phase1State,
+      wedgeSignals: wedgeRows.results.map((row) => ({
+        wedge: row.wedge,
+        field: row.field,
+        numericValue: row.numeric_value,
+        textValue: row.text_value,
+      })),
+    },
   };
 }
 
@@ -752,6 +943,44 @@ export async function PATCH(request: Request) {
         .prepare("UPDATE checks SET completed=? WHERE id=?")
         .bind(asBool(body.patch.completed) ? 1 : 0, body.id)
         .run();
+    else if (body.action === "phase1_decision" && body.patch) {
+      const stage = safeString(body.patch.stage);
+      const decision = safeString(body.patch.decision);
+      if (!['1a', 'final'].includes(stage) || !['advance', 'narrow', 'repair', 'reconsider'].includes(decision))
+        return Response.json({ error: "Use a valid Phase 1 decision." }, { status: 400 });
+      await database
+        .prepare(
+          stage === "1a"
+            ? "UPDATE phase1_state SET decision_1a=?,updated_at=? WHERE phase_id='phase-1'"
+            : "UPDATE phase1_state SET final_decision=?,updated_at=? WHERE phase_id='phase-1'",
+        )
+        .bind(decision, timestamp)
+        .run();
+    } else if (body.action === "phase1_wedge" && body.patch) {
+      const wedge = safeString(body.patch.wedge);
+      const field = safeString(body.patch.field);
+      const allowedWedges = ["talking-stage", "committed"];
+      const allowedFields = [
+        "eligible_users", "meaningful_activation", "independent_activation",
+        "first_answer_usefulness", "organic_second_situation_rate",
+        "typical_days_to_second_situation", "founder_rescue_minutes",
+        "memory_benefit", "privacy_comfort", "primary_recurring_job",
+        "alternative_used", "trust_safety_incidents",
+      ];
+      if (!allowedWedges.includes(wedge) || !allowedFields.includes(field))
+        return Response.json({ error: "Use a valid wedge comparison field." }, { status: 400 });
+      const numericValue =
+        body.patch.numericValue === null || body.patch.numericValue === ""
+          ? null
+          : Math.max(0, Math.min(100000, asNumber(body.patch.numericValue)));
+      const textValue = safeString(body.patch.textValue).trim().slice(0, 120);
+      await database
+        .prepare(
+          "INSERT INTO phase1_wedge_signals (wedge,field,numeric_value,text_value,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(wedge,field) DO UPDATE SET numeric_value=excluded.numeric_value,text_value=excluded.text_value,updated_at=excluded.updated_at",
+        )
+        .bind(wedge, field, numericValue, textValue, timestamp)
+        .run();
+    }
     else if (body.action === "start" && body.phaseId)
       await database
         .prepare("UPDATE phases SET status='active',updated_at=? WHERE id=?")
@@ -839,14 +1068,16 @@ export async function PATCH(request: Request) {
       const unmet =
         phase.id === "phase-0"
           ? phase0Unmet(phase)
-          : [
-              ...phase.metrics
-                .filter((metric) => !metricPassed(metric))
-                .map((metric) => metric.name),
-              ...phase.checks
-                .filter((check: TrackerCheck) => !check.completed)
-                .map((check) => check.label),
-            ];
+          : phase.id === "phase-1"
+            ? (await loadPhase1State(phase)).phase1Unmet
+            : [
+                ...phase.metrics
+                  .filter((metric) => !metricPassed(metric))
+                  .map((metric) => metric.name),
+                ...phase.checks
+                  .filter((check: TrackerCheck) => !check.completed)
+                  .map((check) => check.label),
+              ];
       if (unmet.length)
         return Response.json(
           { error: "Phase cannot advance yet.", unmet },

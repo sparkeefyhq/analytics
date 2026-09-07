@@ -45,6 +45,19 @@ type Tracker = {
   viewerEmail: string | null;
   authenticated: true;
   phase0Unmet?: string[];
+  phase1?: {
+    decision1A: string | null;
+    finalDecision: string | null;
+    phase1AReady: boolean;
+    phase1BUnlocked: boolean;
+    phase1Unmet: string[];
+    wedgeSignals: {
+      wedge: string;
+      field: string;
+      numericValue: number | null;
+      textValue: string;
+    }[];
+  };
 };
 type Routine = {
   id: string;
@@ -2754,6 +2767,141 @@ function SarthakV3({
   );
 }
 
+function PhaseOnePanel({
+  phase,
+  data,
+  updateMetric,
+  save,
+  phaseCanAdvance,
+  onAdvance,
+}: {
+  phase: Phase;
+  data: Tracker;
+  updateMetric: (metric: Metric, key: "target" | "actual" | "actualDenominator", value: string) => void;
+  save: (action: string, patch?: Record<string, unknown>, id?: string) => Promise<void>;
+  phaseCanAdvance: boolean;
+  onAdvance: () => void;
+}) {
+  const state = data.phase1 || {
+    decision1A: null,
+    finalDecision: null,
+    phase1AReady: false,
+    phase1BUnlocked: false,
+    phase1Unmet: ["Loading Phase 1 state…"],
+    wedgeSignals: [],
+  };
+  const aMetrics = phase.metrics.filter((metric) => metric.id.startsWith("phase-1a-"));
+  const bMetrics = phase.metrics.filter((metric) => metric.id.startsWith("phase-1b-"));
+  const aChecks = phase.checks.filter((check) => check.id.startsWith("phase-1a-"));
+  const bChecks = phase.checks.filter((check) => check.id.startsWith("phase-1b-"));
+  const value = (metric: Metric) =>
+    metric.actual === null || !metric.actualDenominator
+      ? null
+      : Math.round((metric.actual / metric.actualDenominator) * 100);
+  const metricInput = (metric: Metric) => (
+    <div className="metric-actual phase1-actual">
+      <input
+        disabled={!data.canEdit}
+        type="number"
+        min="0"
+        aria-label={`${metric.name} numerator`}
+        placeholder="Count"
+        value={metric.actual ?? ""}
+        onChange={(event) => updateMetric(metric, "actual", event.target.value)}
+        onBlur={() =>
+          void save("metric", {
+            target: metric.target,
+            actual: metric.actual,
+            actualDenominator: metric.actualDenominator,
+          }, metric.id)
+        }
+      />
+      {metric.valueType === "percent" && (
+        <>
+          <span>/</span>
+          <input
+            disabled={!data.canEdit}
+            type="number"
+            min="0"
+            aria-label={`${metric.name} denominator`}
+            placeholder="Eligible"
+            value={metric.actualDenominator ?? ""}
+            onChange={(event) => updateMetric(metric, "actualDenominator", event.target.value)}
+            onBlur={() =>
+              void save("metric", {
+                target: metric.target,
+                actual: metric.actual,
+                actualDenominator: metric.actualDenominator,
+              }, metric.id)
+            }
+          />
+        </>
+      )}
+    </div>
+  );
+  const metricTable = (metrics: Metric[], name: string) => (
+    <article className="card metrics phase1-metrics">
+      <div className="card-title">
+        <div>
+          <p className="eyebrow">HARD DECISION METRICS</p>
+          <h3>{name}</h3>
+          <p>These are the only quantitative advancement gates.</p>
+        </div>
+      </div>
+      <div className="metric-table">
+        <div className="metric-row head">
+          <span>Metric</span><span>Target</span><span>Actual</span><span>Status</span>
+        </div>
+        {metrics.map((metric) => (
+          <div className="metric-row" key={metric.id}>
+            <span><b>{metric.name}</b><small>{metric.category}</small></span>
+            <div className="metric-target"><b>{metric.valueType === "percent" ? `≥ ${metric.target}%` : metric.comparator === "eq" ? `${metric.target}` : `≥ ${metric.target}`}</b><small>{metric.minimumDenominator ? `min n=${metric.minimumDenominator}` : "benchmark"}</small></div>
+            {metricInput(metric)}
+            <b className={`metric-completion ${metric.actual === null ? "pending" : passes(metric) ? "pass" : "fail"}`}>
+              {metric.valueType === "percent" ? (value(metric) === null ? "—" : `${value(metric)}%`) : metric.actual === null ? "—" : passes(metric) ? "Pass" : "Review"}
+            </b>
+            <p className="metric-definition">{metric.definition}</p>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+  const yieldMetric = (metrics: Metric[], label: string, cohortFallback: number) => {
+    const repeater = metrics.find((metric) => metric.name === "Organic second-situation rate");
+    const cohort = metrics.find((metric) => metric.name === "Eligible cohort completed")?.actual || cohortFallback;
+    const count = repeater?.actual ?? null;
+    const percent = count !== null && cohort > 0 ? Math.round((count / cohort) * 100) : null;
+    return <article className="phase1-yield"><p className="eyebrow">HEADLINE TRACTION METRIC</p><h3>{label}</h3><b>{count === null ? "—" : `${count} / ${cohort}`} {percent === null ? "" : `= ${percent}%`}</b><span>Organic second-situation users / all eligible users invited. Not an additional advancement gate.</span></article>;
+  };
+  const wedges = [
+    ["eligible_users", "Eligible users", "number"], ["meaningful_activation", "Meaningful activation", "number"], ["independent_activation", "Independent activation", "number"], ["first_answer_usefulness", "First-answer usefulness (%)", "number"], ["organic_second_situation_rate", "Organic second-situation rate (%)", "number"], ["typical_days_to_second_situation", "Typical days to second situation", "number"], ["founder_rescue_minutes", "Founder rescue minutes", "number"], ["memory_benefit", "Memory benefit (%)", "number"], ["privacy_comfort", "Privacy comfort (%)", "number"], ["primary_recurring_job", "Primary recurring Wingman job", "text"], ["alternative_used", "Alternative used when they did not return", "text"], ["trust_safety_incidents", "Trust/safety incidents", "number"],
+  ] as const;
+  const signal = (wedge: string, field: string) => state.wedgeSignals.find((item) => item.wedge === wedge && item.field === field);
+  const decision = (stage: "1a" | "final", current: string | null, title: string) => (
+    <article className="card phase1-decision">
+      <div><p className="eyebrow">{stage === "1a" ? "PHASE 1A DECISION" : "PHASE 1 FINAL OUTCOME"}</p><h3>{title}</h3><p>{stage === "1a" ? "Phase 1B unlocks only when Phase 1A’s hard gates pass and this decision is Advance or Narrow." : "Phase 2 can unlock only after cold replication passes and this decision is Advance or Narrow."}</p></div>
+      <select disabled={!data.canEdit} value={current || ""} onChange={(event) => void save("phase1_decision", { stage, decision: event.target.value }, phase.id)}>
+        <option value="" disabled>Record decision…</option><option value="advance">ADVANCE</option><option value="narrow">NARROW</option><option value="repair">REPAIR</option><option value="reconsider">RECONSIDER</option>
+      </select>
+    </article>
+  );
+  return <>
+    <section className="phase1-brief">
+      <div><p className="eyebrow">CORE QUESTION</p><h3>Can a target user independently get useful help from Wingman and choose Wingman again when another genuine relationship situation occurs?</h3><p>Phase 1A — Wedge Discovery, then Phase 1B — Cold Replication. Each meaningfully activated participant receives a full 14-day observation window.</p></div>
+      <div className="phase1-journey"><b>Core journey</b><span>Short trust contract → choose immediate job → genuine situation → minimum necessary clarification → useful response → optional memory</span><small>Immediate jobs: Not sure what to say · Something feels off · Help me handle a situation · Just exploring. Demo or fabricated use never counts as meaningful activation.</small></div>
+      <details><summary>Phase 1 configuration</summary><div className="config-grid"><span><b>In scope</b>AI Wingman V3 · person context · user-controlled memory · practical reminders · usefulness feedback · analytics</span><span><b>Out of scope</b>Spark Meter · lifecycle retention notifications · referrals · pricing · monetization · public reviews · broad marketing · artificial daily engagement</span><span><b>Return rule</b>For 14 days: no return prompting, manufactured situations, lifecycle nudges, referral prompts, rewards or reviews. User-created reminders are allowed but classified as reminder-assisted.</span></div></details>
+    </section>
+    <section className="phase1-section"><div className="phase1-subhead"><span>1A</span><div><p className="eyebrow">WEDGE DISCOVERY</p><h2>50 eligible Indian men aged 18–28</h2><p>~25 talking-stage/dating/situationship and ~25 committed relationship; a mix of SRM/non-SRM, founder-connected/colder, English/natural Hinglish.</p></div></div>{metricTable(aMetrics, "Phase 1A")}{yieldMetric(aMetrics, "Organic Repeater Yield", 50)}
+      <article className="card wedge-comparison"><div className="card-title"><div><p className="eyebrow">PHASE 1A WEDGE COMPARISON</p><h3>Compare signal before choosing a wedge</h3><p>Do not declare a winner from tiny percentage differences. Consider repeat lead, recurring job, founder dependence, trust/safety and evidence outside SRM/friends.</p></div></div><div className="wedge-grid">{[["talking-stage", "Talking-stage / dating / situationship"], ["committed", "Committed relationship"]].map(([wedge, title]) => <section key={wedge}><h4>{title}</h4>{wedges.map(([field, label, kind]) => { const saved = signal(wedge, field); return <label key={field}><span>{label}</span><input disabled={!data.canEdit} type={kind === "number" ? "number" : "text"} min={kind === "number" ? "0" : undefined} defaultValue={kind === "number" ? (saved?.numericValue ?? "") : (saved?.textValue || "")} onBlur={(event) => void save("phase1_wedge", { wedge, field, numericValue: kind === "number" ? event.target.value : null, textValue: kind === "text" ? event.target.value : "" }, phase.id)} /></label>; })}</section>)}</div></article>
+      <article className="card checklist phase1-checklist"><div className="card-title"><div><p className="eyebrow">PHASE 1A CHECKLIST</p><h3>Evidence before replication</h3></div><span>{aChecks.filter((check) => check.completed).length}/{aChecks.length}</span></div>{aChecks.map((check) => <label className={check.completed ? "checked" : ""} key={check.id}><input disabled={!data.canEdit} type="checkbox" checked={check.completed} onChange={(event) => void save("check", { completed: event.target.checked }, check.id)} />{check.label}</label>)}</article>
+      <details className="phase1-diagnostics"><summary>Diagnostic signals — not advancement gates</summary><p>D1 return · D7 return · eligible situation exposure · opportunity-adjusted capture · previous default · default displacement · first/second Wingman job · same/different person · memory benefit · language/register · founder rescue minutes · response latency · abandonment · technical/session health · app version · rewrite rate · SRM/non-SRM · founder-connected/cold · recruitment mode.</p><p>Derived diagnostic: founder rescue minutes per independently activated user. Watch for a downward trend across users/cohorts; do not invent a hard target yet.</p><p>Track return states as: Organic second situation, Reminder-assisted, Founder-prompted, Referral-assisted, Second opportunity but another alternative chosen, No second opportunity, or Unknown attribution. Keep only structured pseudonymous evidence—never conversations, names, screenshots or private narratives.</p></details>
+      {decision("1a", state.decision1A, "Choose what the Phase 1A evidence says")}
+    </section>
+    <section className={`phase1-section phase1b ${state.phase1BUnlocked ? "unlocked" : "locked"}`}><div className="phase1-subhead"><span>1B</span><div><p className="eyebrow">COLD REPLICATION</p><h2>~100 eligible colder waitlist users</h2><p>Reproduce the strongest Phase 1A user/job with the same rules, minimal founder involvement and reduced SRM/founder trust effects.</p></div><b>{state.phase1BUnlocked ? "Unlocked" : "Locked"}</b></div>{state.phase1BUnlocked ? <>{metricTable(bMetrics, "Phase 1B")}{yieldMetric(bMetrics, "Cold Organic Repeater Yield", 100)}<article className="card checklist phase1-checklist"><div className="card-title"><div><p className="eyebrow">PHASE 1B CHECKLIST</p><h3>Cold replication evidence</h3></div><span>{bChecks.filter((check) => check.completed).length}/{bChecks.length}</span></div>{bChecks.map((check) => <label className={check.completed ? "checked" : ""} key={check.id}><input disabled={!data.canEdit} type="checkbox" checked={check.completed} onChange={(event) => void save("check", { completed: event.target.checked }, check.id)} />{check.label}</label>)}</article>{decision("final", state.finalDecision, "Classify Phase 1 after cold replication")}</> : <div className="phase1-locked-copy"><b>Phase 1B is locked.</b><span>Complete all Phase 1A gates and record an Advance or Narrow decision to open cold replication.</span></div>}</section>
+    <article className={`advance-card phase1-advance ${phaseCanAdvance ? "ready" : ""}`}><h3>{phaseCanAdvance ? "Phase 1 earned Phase 2." : "Phase 2 stays locked."}</h3><p>{phaseCanAdvance ? "Phase 1A and cold replication both passed with a replication-permitting decision." : <><b>{state.phase1Unmet.length} exact requirements remain.</b><span className="unmet-list">{state.phase1Unmet.slice(0, 5).join(" · ")}{state.phase1Unmet.length > 5 ? " · …" : ""}</span></>}</p><button disabled={!data.canEdit || !phaseCanAdvance || phase.status === "complete"} className="primary" onClick={onAdvance}>{phase.status === "complete" ? "Phase complete" : "Advance to Phase 2 →"}</button></article>
+  </>;
+}
+
 function Launch({
   data,
   save,
@@ -2774,10 +2922,14 @@ function Launch({
       local.checks.filter((c) => c.completed).length,
     total = local.metrics.length + local.checks.length;
   const phaseZero = local.id === "phase-0";
+  const phaseOne = local.id === "phase-1";
   const cohortActual = phaseZero
     ? (local.metrics.find((metric) => metric.name === "Onboarding completion")
         ?.actualDenominator ?? local.actualUsers)
-    : local.actualUsers;
+    : phaseOne
+      ? (local.metrics.find((metric) => metric.id === "phase-1a-metric-0")
+          ?.actual ?? 0)
+      : local.actualUsers;
   const checklistComplete =
     local.checks.length > 0 && local.checks.every((check) => check.completed);
   const participants: CohortParticipant[] = [];
@@ -2814,7 +2966,9 @@ function Launch({
         : 0;
   const unmetRequirements = phaseZero
     ? data.phase0Unmet || []
-    : [
+    : phaseOne
+      ? data.phase1?.phase1Unmet || []
+      : [
         ...local.metrics
           .filter((metric) => !passes(metric))
           .map((metric) => metric.name),
@@ -2926,6 +3080,16 @@ function Launch({
           </details>
         </section>
       )}
+      {phaseOne ? (
+        <PhaseOnePanel
+          phase={local}
+          data={data}
+          updateMetric={update}
+          save={save}
+          phaseCanAdvance={phaseCanAdvance}
+          onAdvance={() => setShowAdvanceConfirm(true)}
+        />
+      ) : (
       <article className="card metrics">
         <div className="card-title">
           <div>
@@ -3026,6 +3190,7 @@ function Launch({
           ))}
         </div>
       </article>
+      )}
       {false && phaseZero && (
         <>
           <article className="card evidence-snapshot">
@@ -3118,7 +3283,7 @@ function Launch({
           </article>
         </>
       )}
-      <div className="launch-bottom">
+      {!phaseOne && <div className="launch-bottom">
         <article className={`card checklist ${checklistComplete ? "complete" : ""}`}>
           <div className="card-title">
             <div>
@@ -3181,7 +3346,7 @@ function Launch({
             {local.status === "complete" ? "Phase complete" : "Advance phase →"}
           </button>
         </article>
-      </div>
+      </div>}
       {false && phaseZero && data.canEdit && (
         <article className="card cohort-evidence">
           <div className="card-title">

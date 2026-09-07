@@ -2294,3 +2294,212 @@ select:focus {
     width: 100%;
   }
 }
+
+/* Phase 1: clear separation between advancement evidence and diagnosis. */
+.phase1-brief,
+.phase1-yield,
+.phase1-decision,
+.phase1-locked-copy {
+  margin: 16px 0;
+  padding: 20px;
+  border: 1px solid #dfe3ff;
+  border-radius: 18px;
+  background: linear-gradient(120deg, #fbfcff, #f4f5ff);
+}
+.phase1-brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.75fr);
+  gap: 16px;
+}
+.phase1-brief h3,
+.phase1-yield h3,
+.phase1-decision h3 {
+  margin: 6px 0;
+  font-size: 17px;
+  line-height: 1.42;
+}
+.phase1-brief p,
+.phase1-brief span,
+.phase1-brief small,
+.phase1-yield span,
+.phase1-decision p,
+.phase1-locked-copy span {
+  color: #707184;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.phase1-journey {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 14px;
+  border-radius: 13px;
+  background: rgba(255,255,255,.72);
+}
+.phase1-brief details {
+  grid-column: 1/-1;
+  font-size: 12px;
+}
+.phase1-section {
+  margin-top: 24px;
+}
+.phase1-subhead {
+  display: flex;
+  align-items: start;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+.phase1-subhead > span {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  background: #eef0ff;
+  color: #6676db;
+  font-weight: 800;
+}
+.phase1-subhead h2 {
+  margin: 3px 0 4px;
+  font-size: 20px;
+}
+.phase1-subhead p {
+  margin: 0;
+  color: #777887;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.phase1-subhead > b {
+  margin-left: auto;
+  padding: 7px 10px;
+  border: 1px solid #e1e3f4;
+  border-radius: 999px;
+  color: #727386;
+  font-size: 11px;
+}
+.phase1-metrics .card-title p {
+  margin: 5px 0 0;
+  color: #777887;
+  font-size: 12px;
+}
+.phase1-actual {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+.phase1-yield {
+  display: grid;
+  gap: 4px;
+}
+.phase1-yield b {
+  color: #5264d8;
+  font-size: 24px;
+  letter-spacing: -0.04em;
+}
+.wedge-comparison {
+  margin: 16px 0;
+}
+.wedge-comparison .card-title p {
+  margin: 5px 0 0;
+  color: #777887;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.wedge-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.wedge-grid > section {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fcfcff;
+}
+.wedge-grid h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.wedge-grid label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px;
+  align-items: center;
+  gap: 10px;
+  color: #696a79;
+  font-size: 11px;
+}
+.wedge-grid input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+.phase1-checklist {
+  margin-top: 16px;
+}
+.phase1-checklist label {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.phase1-checklist label:first-of-type { border-top: 0; }
+.phase1-diagnostics {
+  margin: 16px 0;
+  padding: 15px 18px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #fff;
+}
+.phase1-diagnostics summary {
+  color: #5365d7;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.phase1-diagnostics p {
+  color: #777887;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.phase1-decision {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  background: #fff;
+}
+.phase1-decision > div { max-width: 650px; }
+.phase1-decision select { min-width: 165px; }
+.phase1b.locked { opacity: .72; }
+.phase1b.unlocked .phase1-subhead > b {
+  border-color: #a7dcc0;
+  color: #2e8b58;
+  background: #f3fff7;
+}
+.phase1-locked-copy {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+  background: #fafafb;
+}
+.phase1-advance {
+  margin: 20px 0 0;
+}
+@media (max-width: 800px) {
+  .phase1-brief,
+  .wedge-grid { grid-template-columns: 1fr; }
+  .phase1-decision { align-items: stretch; flex-direction: column; }
+  .phase1-decision select { width: 100%; }
+}
+@media (max-width: 520px) {
+  .phase1-brief,
+  .phase1-yield,
+  .phase1-decision,
+  .phase1-locked-copy { padding: 16px; }
+  .phase1-subhead h2 { font-size: 17px; }
+  .wedge-grid label { grid-template-columns: 1fr; gap: 5px; }
+}
