@@ -2743,6 +2743,10 @@ function Launch({
       local.checks.filter((c) => c.completed).length,
     total = local.metrics.length + local.checks.length;
   const phaseZero = local.id === "phase-0";
+  const cohortActual = phaseZero
+    ? (local.metrics.find((metric) => metric.name === "Onboarding completion")
+        ?.actualDenominator ?? local.actualUsers)
+    : local.actualUsers;
   const checklistComplete =
     local.checks.length > 0 && local.checks.every((check) => check.completed);
   const participants: CohortParticipant[] = [];
@@ -2800,7 +2804,7 @@ function Launch({
           <b>
             {progress}/{total}
           </b>
-          <span>gates passed</span>
+          <span>checks passed</span>
         </div>
       </header>
       <div className="phase-tabs">
@@ -2840,7 +2844,9 @@ function Launch({
           <div>
             Cohort
             <strong>
-              {local.actualUsers} / {local.userMin}–{local.userMax} users
+              {local.userMin === local.userMax
+                ? `${cohortActual} / ${local.userMax} users`
+                : `${cohortActual} / ${local.userMin} to ${local.userMax} users`}
             </strong>
           </div>
           <div>
@@ -2860,12 +2866,12 @@ function Launch({
           <div>
             <p className="eyebrow">CORE QUESTION</p>
             <h3>
-              Can real users complete a Wingman situation and find the response
-              useful?
+              Can 15 target users get useful help independently and return
+              without prompting?
             </h3>
           </div>
           <div className="phase-zero-wedge">
-            <b>Indian men aged 18 to 28</b>
+            <b>15 Indian men aged 18 to 28</b>
             <span>Use real users and log every result.</span>
           </div>
           <details>

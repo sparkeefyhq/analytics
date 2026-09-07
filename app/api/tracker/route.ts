@@ -34,7 +34,7 @@ const phase0Metrics: SeedMetric[] = [
   },
   {
     name: "Meaningful activation",
-    target: 67,
+    target: 70,
     category: "Activation",
     valueType: "percent",
     definition:
@@ -42,7 +42,7 @@ const phase0Metrics: SeedMetric[] = [
   },
   {
     name: "Independent activation",
-    target: 50,
+    target: 60,
     category: "Activation",
     valueType: "percent",
     definition: "Participants who activate without live founder navigation.",
@@ -85,21 +85,39 @@ const phase0Metrics: SeedMetric[] = [
     definition:
       "Required events verified with the correct participant, timestamp, source and properties.",
   },
+  {
+    name: "Day 1 unprompted return",
+    target: 40,
+    category: "Retention",
+    valueType: "percent",
+    definition:
+      "Activated users who return the next day without a founder prompt or reminder.",
+  },
+  {
+    name: "Second real situation",
+    target: 30,
+    category: "Retention",
+    valueType: "percent",
+    definition:
+      "Activated users who bring a second genuine situation within 72 hours.",
+  },
 ];
 const phase0Checks = [
   "Release build frozen",
   "Android onboarding and Wingman journey tested",
-  "Minimum users reached",
+  "15 users completed the cohort",
+  "10 users recruited outside the team and close friends",
+  "All 15 users interviewed",
   "50 Wingman requests logged",
   "30 usefulness ratings logged",
   "20 reminder tests completed",
+  "Return source classified for every activated user",
+  "Top three failure reasons documented",
+  "Highest impact blocker fixed and retested",
   "Analytics verified",
   "Internal activity excluded",
   "Founder assistance recorded",
-  "No context leakage",
-  "No privacy or safety incident",
-  "No sensitive notification exposure",
-  "No blocking bugs",
+  "No blocking privacy, safety or journey bugs",
 ];
 const phase0Gates = [
   "Cross-person context leakage",
@@ -220,7 +238,7 @@ async function ensureDatabase() {
   const timestamp = now();
   await database
     .prepare(
-      `UPDATE phases SET name=?, objective=?, user_min=10, user_max=15, duration_min=3, duration_max=5, duration_unit='days', status=CASE WHEN status='complete' THEN status ELSE 'active' END, features=?, updated_at=? WHERE id='phase-0'`,
+      `UPDATE phases SET name=?, objective=?, user_min=15, user_max=15, duration_min=3, duration_max=5, duration_unit='days', status=CASE WHEN status='complete' THEN status ELSE 'active' END, features=?, updated_at=? WHERE id='phase-0'`,
     )
     .bind(
       "Phase 0: Power User Release Candidate",
@@ -284,6 +302,22 @@ async function ensureDatabase() {
     phase0Metrics.map((metric, position) =>
       database
         .prepare(
+          `INSERT OR IGNORE INTO metrics (id,phase_id,position,category,name,target,actual,unit,comparator,value_type,target_denominator,actual_denominator,minimum_denominator,definition) VALUES (?, 'phase-0', ?, ?, ?, ?, NULL, '%', 'gte', 'percent', NULL, NULL, NULL, ?)`,
+        )
+        .bind(
+          `phase-0-metric-${position}`,
+          position,
+          metric.category,
+          metric.name,
+          metric.target,
+          metric.definition,
+        ),
+    ),
+  );
+  await database.batch(
+    phase0Metrics.map((metric, position) =>
+      database
+        .prepare(
           `UPDATE metrics SET position=?, category=?, target=?, unit='%', comparator='gte', value_type='percent', target_denominator=NULL, minimum_denominator=NULL, definition=? WHERE phase_id='phase-0' AND name=?`,
         )
         .bind(
@@ -299,9 +333,9 @@ async function ensureDatabase() {
     phase0Checks.map((label, position) =>
       database
         .prepare(
-          "UPDATE checks SET position=?, label=? WHERE phase_id='phase-0' AND position=?",
+          "INSERT INTO checks (id,phase_id,position,label,completed) VALUES (?, 'phase-0', ?, ?, 0) ON CONFLICT(id) DO UPDATE SET position=excluded.position,label=excluded.label",
         )
-        .bind(position, label, position),
+        .bind(`phase-0-check-${position}`, position, label),
     ),
   );
   const gateCount = await database
