@@ -2743,6 +2743,8 @@ function Launch({
       local.checks.filter((c) => c.completed).length,
     total = local.metrics.length + local.checks.length;
   const phaseZero = local.id === "phase-0";
+  const checklistComplete =
+    local.checks.length > 0 && local.checks.every((check) => check.completed);
   const participants: CohortParticipant[] = [];
   const releaseGates: ReleaseGate[] = [];
   const filteredParticipants: CohortParticipant[] = [];
@@ -2858,37 +2860,28 @@ function Launch({
           <div>
             <p className="eyebrow">CORE QUESTION</p>
             <h3>
-              Can target users independently complete a real Wingman situation,
-              receive useful help, trust the experience and use a basic reminder
-              without a critical product failure?
+              Can real users complete a Wingman situation and find the response
+              useful?
             </h3>
-            <p>
-              Passing earns permission to test organic product pull in Phase 1.
-              It does not prove retention, demand or product-market fit.
-            </p>
           </div>
           <div className="phase-zero-wedge">
-            <b>Indian men aged 18–28</b>
-            <span>
-              At least 8 participants must not be close friends or teammates.
-              Internal activity is excluded.
-            </span>
+            <b>Indian men aged 18 to 28</b>
+            <span>Use real users and log every result.</span>
           </div>
           <details>
             <summary>Phase 0 configuration</summary>
             <div className="config-grid">
               <span>
-                <b>Enabled</b>AI Wingman V3 · person context & memory ·
-                user-created reminders · usefulness feedback · analytics · crash
-                logging
+                <b>Enabled</b>AI Wingman V3 · person context · user reminders ·
+                feedback · analytics
               </span>
               <span>
                 <b>Disabled</b>Monetization · Spark Meter · Situation Pass ·
-                referrals · marketing or re-engagement notifications ·
-                gamification · paid acquisition
+                referrals · marketing notifications · gamification · paid
+                acquisition
               </span>
               <span>
-                <b>Reminder rule</b>Explicit user-created reminders only.
+                <b>Reminder rule</b>Explicit user reminders only.
                 Neutral private copy; reminder opens are{" "}
                 <em>reminder-assisted</em>, never organic.
               </span>
@@ -3089,11 +3082,23 @@ function Launch({
         </>
       )}
       <div className="launch-bottom">
-        <article className="card checklist">
+        <article className={`card checklist ${checklistComplete ? "complete" : ""}`}>
           <div className="card-title">
             <div>
-              <p className="eyebrow">PHASE ACCOMPLISHMENTS</p>
-              <h3>Evidence, not optimism</h3>
+              <p className="eyebrow">PHASE 0</p>
+              <h3>Checklist</h3>
+            </div>
+            <div className="checklist-actions">
+              <span className={checklistComplete ? "checklist-status done" : "checklist-status"}>
+                {checklistComplete ? "Complete" : local.status === "active" ? "In progress" : "Not started"}
+              </span>
+              <button
+                className="outline"
+                disabled={!data.canEdit || checklistComplete}
+                onClick={() => void save("start", undefined, local.id)}
+              >
+                {checklistComplete ? "Done" : "Start"}
+              </button>
             </div>
           </div>
           {local.checks.map((c) => (
@@ -3118,7 +3123,7 @@ function Launch({
           </h3>
           <p>
             {phaseCanAdvance ? (
-              "Every required metric, evidence threshold, hard-zero gate and accomplishment is complete."
+              "Every benchmark and checklist item is complete."
             ) : (
               <>
                 <b>{unmetRequirements.length} exact requirements remain.</b>
@@ -3542,7 +3547,7 @@ function Launch({
       {phaseZero && (
         <section className="phase-zero-reference">
           <details>
-            <summary>Diagnostic signals — not advancement gates</summary>
+            <summary>Diagnostic signals: not advancement gates</summary>
             <p>
               Answer latency · reminder open and completion rates · sessions per
               participant · requests per activated participant · permission

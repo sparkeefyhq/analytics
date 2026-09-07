@@ -753,6 +753,26 @@ select:focus {
   font-size: 12px;
   line-height: 1.45;
 }
+.checklist-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.checklist-status {
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+.checklist-status.done {
+  border-color: #4ea778;
+  color: #26724b;
+}
+.checklist.complete {
+  border-color: #4ea778;
+}
 .checklist label.checked {
   border-color: #cbe8d5;
   background: #f0faf4;

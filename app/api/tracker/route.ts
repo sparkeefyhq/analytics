@@ -87,19 +87,19 @@ const phase0Metrics: SeedMetric[] = [
   },
 ];
 const phase0Checks = [
-  "Release-candidate build frozen",
-  "Full Android onboarding-to-Wingman journey tested",
-  "Minimum eligible cohort reached",
-  "Minimum 50 genuine Wingman requests reached",
-  "Minimum 30 usefulness ratings reached",
-  "Minimum 20 reminder tests completed",
-  "Required analytics independently verified",
-  "Internal activity excluded from evidence",
-  "Founder assistance recorded for every participant",
-  "No critical context leakage",
-  "No critical privacy or safety incident",
+  "Release build frozen",
+  "Android onboarding and Wingman journey tested",
+  "Minimum users reached",
+  "50 Wingman requests logged",
+  "30 usefulness ratings logged",
+  "20 reminder tests completed",
+  "Analytics verified",
+  "Internal activity excluded",
+  "Founder assistance recorded",
+  "No context leakage",
+  "No privacy or safety incident",
   "No sensitive notification exposure",
-  "No open release-blocking bugs",
+  "No blocking bugs",
 ];
 const phase0Gates = [
   "Cross-person context leakage",
@@ -223,12 +223,12 @@ async function ensureDatabase() {
       `UPDATE phases SET name=?, objective=?, user_min=10, user_max=15, duration_min=3, duration_max=5, duration_unit='days', status=CASE WHEN status='complete' THEN status ELSE 'active' END, features=?, updated_at=? WHERE id='phase-0'`,
     )
     .bind(
-      "Phase 0 — Power-User Release Candidate",
-      "Validate that Android V3 is reliable, understandable, useful, private, safe and measurable enough to test with real users.",
+      "Phase 0: Power User Release Candidate",
+      "Validate Android V3 with real users.",
       JSON.stringify([
         "AI Wingman V3",
-        "Person-specific context and memory",
-        "Basic user-created reminders",
+        "Person context and memory",
+        "User reminders",
         "Usefulness feedback",
         "Required analytics",
       ]),
@@ -293,6 +293,15 @@ async function ensureDatabase() {
           metric.definition,
           metric.name,
         ),
+    ),
+  );
+  await database.batch(
+    phase0Checks.map((label, position) =>
+      database
+        .prepare(
+          "UPDATE checks SET position=?, label=? WHERE phase_id='phase-0' AND position=?",
+        )
+        .bind(position, label, position),
     ),
   );
   const gateCount = await database
@@ -694,6 +703,11 @@ export async function PATCH(request: Request) {
       await database
         .prepare("UPDATE checks SET completed=? WHERE id=?")
         .bind(asBool(body.patch.completed) ? 1 : 0, body.id)
+        .run();
+    else if (body.action === "start" && body.phaseId)
+      await database
+        .prepare("UPDATE phases SET status='active',updated_at=? WHERE id=?")
+        .bind(timestamp, body.phaseId)
         .run();
     else if (body.action === "release_gate" && body.id && body.patch)
       await database
