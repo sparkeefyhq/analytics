@@ -68,7 +68,7 @@ function indiaDate() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
-async function ensureWorkspace() {
+async function initializeWorkspace() {
   const db = database();
   await db.batch([
     db.prepare(`CREATE TABLE IF NOT EXISTS routines (
@@ -177,6 +177,19 @@ async function ensureWorkspace() {
       db.prepare('UPDATE routines SET active = 0, updated_at = ? WHERE id = ?').bind(timestamp, String(routine.id)),
     ]));
   }
+}
+
+// Avoid repeating schema checks, indexes and seed migrations for every
+// workspace request while this Worker isolate stays warm.
+let workspaceSetup: Promise<void> | null = null;
+function ensureWorkspace() {
+  if (!workspaceSetup) {
+    workspaceSetup = initializeWorkspace().catch((error) => {
+      workspaceSetup = null;
+      throw error;
+    });
+  }
+  return workspaceSetup;
 }
 
 async function ensureToday(ownerEmail: string) {

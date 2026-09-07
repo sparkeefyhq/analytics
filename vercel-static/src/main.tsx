@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { pickTodaysFocus } from "./focus";
 import "./style.css";
@@ -3944,7 +3944,9 @@ function App() {
     [needsLogin, setNeedsLogin] = useState(false),
     [view, setView] = useState(location.pathname.split("/")[1] || "launch"),
     [notice, setNotice] = useState(""),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [workspaceLoading, setWorkspaceLoading] = useState<string | null>(null);
+  const workspaceRequests = useRef(new Map<string, Promise<void>>());
   const flash = (m: string) => {
     setNotice(m);
     window.setTimeout(() => setNotice(""), 2600);
@@ -3962,26 +3964,44 @@ function App() {
     return d;
   }
   async function loadWorkspace(name: string) {
-    const r = await fetch(`/api/workspace?view=${name}`);
-    if (!r.ok) {
-      if (r.status === 403) {
-        history.replaceState({}, "", "/launch");
-        setView("launch");
-        return;
+    const existing = workspaceRequests.current.get(name);
+    if (existing) return existing;
+    const request = (async () => {
+      setWorkspaceLoading(name);
+      try {
+        const r = await fetch(`/api/workspace?view=${name}`);
+        if (!r.ok) {
+          if (r.status === 403) {
+            history.replaceState({}, "", "/launch");
+            setView("launch");
+            return;
+          }
+          throw Error("Unable to load workspace.");
+        }
+        const data = await r.json();
+        if (name === "sarthak") setFounder(data as FounderData);
+        else setSuggestions(data as SuggestionsData);
+      } catch (x) {
+        setError(x instanceof Error ? x.message : "Unable to load workspace.");
+      } finally {
+        setWorkspaceLoading((current) => (current === name ? null : current));
+        workspaceRequests.current.delete(name);
       }
-      throw Error("Unable to load workspace.");
-    }
-    if (name === "sarthak") setFounder((await r.json()) as FounderData);
-    else setSuggestions((await r.json()) as SuggestionsData);
+    })();
+    workspaceRequests.current.set(name, request);
+    return request;
   }
   async function load() {
     try {
       setError("");
       const t = await loadTracker();
       if (!t) return;
-      if (t.canEdit) await loadWorkspace("sarthak");
-      await loadWorkspace("suggestions");
-      if (!t.canEdit && view === "sarthak") {
+      // Keep the first paint on the critical Launch payload. Secondary
+      // workspaces are fetched only when opened, so a slow query cannot
+      // delay the launch dashboard.
+      if (view === "sarthak" && t.canEdit) await loadWorkspace("sarthak");
+      else if (view === "suggestions") await loadWorkspace("suggestions");
+      else if (!t.canEdit && view === "sarthak") {
         setView("launch");
         history.replaceState({}, "", "/launch");
       }
@@ -3993,10 +4013,21 @@ function App() {
   }
   useEffect(() => {
     void load();
-    const h = () => setView(location.pathname.split("/")[1] || "launch");
+    const h = () => {
+      const nextView = location.pathname.split("/")[1] || "launch";
+      setView(nextView);
+      if (nextView === "sarthak" || nextView === "suggestions")
+        void loadWorkspace(nextView);
+    };
     addEventListener("popstate", h);
     return () => removeEventListener("popstate", h);
   }, []);
+  const navigate = (nextView: string) => {
+    history.pushState({}, "", `/${nextView}`);
+    setView(nextView);
+    if (nextView === "sarthak" || nextView === "suggestions")
+      void loadWorkspace(nextView);
+  };
   async function launchSave(
     action: string,
     patch?: Record<string, unknown>,
@@ -4083,7 +4114,7 @@ function App() {
     <main className="operating-system">
       <Sidebar
         view={view}
-        setView={setView}
+        setView={navigate}
         canEdit={tracker.canEdit}
         email={tracker.viewerEmail}
         onLogout={() => void logout()}
@@ -4106,6 +4137,11 @@ function App() {
             notice={flash}
           />
         )}
+        {workspaceLoading &&
+          ((view === "sarthak" && !founder) ||
+            (view === "suggestions" && !suggestions)) && (
+            <div className="loading workspace-loading">Loading workspace…</div>
+          )}
       </div>
     </main>
   );

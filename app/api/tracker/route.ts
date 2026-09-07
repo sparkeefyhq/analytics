@@ -172,7 +172,7 @@ async function addMetricColumn(
       .run();
 }
 
-async function ensureDatabase() {
+async function initializeDatabase() {
   const database = db();
   await database.batch([
     database.prepare(
@@ -359,6 +359,20 @@ async function ensureDatabase() {
           ),
       ),
     );
+}
+
+// D1 schema checks and seed migrations are expensive on every request. Keep
+// one initialization promise per warm Worker isolate, while clearing it on a
+// failure so a transient D1 error can recover on the next request.
+let databaseSetup: Promise<void> | null = null;
+function ensureDatabase() {
+  if (!databaseSetup) {
+    databaseSetup = initializeDatabase().catch((error) => {
+      databaseSetup = null;
+      throw error;
+    });
+  }
+  return databaseSetup;
 }
 
 function metricFromRow(row: Record<string, unknown>): TrackerMetric {
