@@ -918,6 +918,12 @@ export async function PATCH(request: Request) {
     const database = db();
     const timestamp = now();
     if (body.action === "metric" && body.id && body.patch) {
+      const currentMetric = await database
+        .prepare("SELECT phase_id,target FROM metrics WHERE id=?")
+        .bind(body.id)
+        .first<{ phase_id: string; target: number }>();
+      if (!currentMetric)
+        return Response.json({ error: "Metric not found." }, { status: 404 });
       const actual =
         body.patch.actual === null || body.patch.actual === ""
           ? null
@@ -932,7 +938,9 @@ export async function PATCH(request: Request) {
           "UPDATE metrics SET target=?, actual=?, actual_denominator=? WHERE id=?",
         )
         .bind(
-          Math.max(0, asNumber(body.patch.target)),
+          currentMetric.phase_id === "phase-1"
+            ? Math.max(0, asNumber(currentMetric.target))
+            : Math.max(0, asNumber(body.patch.target)),
           actual,
           denominator,
           body.id,
