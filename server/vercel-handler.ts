@@ -3,6 +3,7 @@ import * as workspace from '../app/api/workspace/route';
 import * as login from '../app/api/auth/login/route';
 import * as logout from '../app/api/auth/logout/route';
 import * as controlUsers from '../app/api/control/users/route';
+import * as analyticsV2 from '../app/api/analytics/v2/route';
 import { trackerAccess } from '../lib/auth';
 import { withWriteTransaction } from '../lib/vercel-database';
 
@@ -12,7 +13,10 @@ export async function handle(request:Request):Promise<Response>{
   const method=request.method;
   const json=(body:unknown,status=200)=>Response.json(body,{status,headers:{'Cache-Control':'no-store'}});
   if(path==='/api/health')return json({host:'vercel',database:process.env.TURSO_DATABASE_URL?'configured':'missing',sitesDependency:false});
+  // Analytics can load independently of the legacy tracker and never downloads its private payload.
+  if(path==='/api/analytics/v2/access'&&method==='GET')return json({...await trackerAccess(request),phases:[],releaseGates:[]});
   const handlers:Record<string,Record<string,(request:Request)=>Promise<Response>>>={
+    '/api/analytics/v2':{GET:analyticsV2.GET},
     '/api/tracker':{GET:tracker.GET,PATCH:tracker.PATCH},
     '/api/workspace':{GET:workspace.GET,POST:workspace.POST},
     '/api/auth/login':{POST:login.POST},'/api/auth/logout':{POST:logout.POST},

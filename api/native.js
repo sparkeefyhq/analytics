@@ -5,9 +5,12 @@ var client;
 var context = new AsyncLocalStorage();
 function connection() {
   if (!client) {
-    const url = process.env.TURSO_DATABASE_URL;
+    const isolated = process.env.VERCEL_ENV === "preview";
+    if (process.env.VERCEL_ENV === "production") throw Error("Control v2 production cutover is locked.");
+    const url = isolated ? process.env.V2_TURSO_DATABASE_URL : process.env.TURSO_DATABASE_URL;
     if (!url) throw Error("TURSO_DATABASE_URL is required.");
-    client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+    if (isolated && url === process.env.TURSO_DATABASE_URL) throw Error("Preview must not use production storage.");
+    client = createClient({ url, authToken: isolated ? process.env.V2_TURSO_AUTH_TOKEN : process.env.TURSO_AUTH_TOKEN });
   }
   return client;
 }
@@ -1084,9 +1087,9 @@ async function loadPhase0Analytics() {
   await ensureDatabase();
   await ensurePhase0PostHogSchema();
   const database3 = db();
-  const cached = await database3.prepare("SELECT payload, computed_at FROM posthog_metric_cache WHERE key = ?").bind(PHASE0_CACHE_KEY).first();
-  if (cached && Date.now() - Date.parse(cached.computed_at) < PHASE0_CACHE_TTL_MS) {
-    return JSON.parse(cached.payload);
+  const cached2 = await database3.prepare("SELECT payload, computed_at FROM posthog_metric_cache WHERE key = ?").bind(PHASE0_CACHE_KEY).first();
+  if (cached2 && Date.now() - Date.parse(cached2.computed_at) < PHASE0_CACHE_TTL_MS) {
+    return JSON.parse(cached2.payload);
   }
   const interviewRows = await database3.prepare(
     "SELECT founder_suggested_situation FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'"
@@ -2260,6 +2263,844 @@ async function GET3(request) {
   }
 }
 
+// lib/analytics-v2/model.ts
+var COHORTS = [
+  "all",
+  "phase-0",
+  "phase-1a",
+  "phase-1b",
+  "phase-2"
+];
+var DAYS = [1, 3, 7, 15, 30];
+var missing = (detail, source = "PostHog", state = "not-connected") => ({ value: null, state, source, detail });
+var measured = (value, detail, source = "PostHog") => ({ value, state: "available", source, detail });
+function ratio(numerator, denominator, detail, pending2 = 0) {
+  return {
+    value: denominator ? numerator / denominator * 100 : null,
+    numerator,
+    denominator,
+    pending: pending2,
+    state: denominator ? "available" : pending2 ? "not-eligible" : "no-data",
+    source: "PostHog",
+    detail,
+    unit: "%"
+  };
+}
+var DAY = 864e5;
+function periodStart(period, now3) {
+  return period === "all" ? -Infinity : period === "today" ? Math.floor((now3 + 198e5) / DAY) * DAY - 198e5 : now3 - (period === "7d" ? 7 : 30) * DAY;
+}
+function calculate(data, cohort, period) {
+  const now3 = Date.parse(data.asOf), since = periodStart(period, now3);
+  const selectedMembers = data.members.filter(
+    (m) => !m.internal && !m.test && (cohort === "all" || m.cohort === cohort) && Date.parse(m.from) <= now3
+  );
+  const grouped = /* @__PURE__ */ new Map();
+  for (const m of selectedMembers.sort(
+    (a, b) => a.from.localeCompare(b.from)
+  )) {
+    const previous = grouped.get(m.id);
+    if (!previous)
+      grouped.set(m.id, {
+        ...m,
+        intervals: [{ from: m.from, to: m.to }],
+        cohorts: [m.cohort]
+      });
+    else {
+      previous.intervals.push({ from: m.from, to: m.to });
+      if (!previous.cohorts.includes(m.cohort))
+        previous.cohorts.push(m.cohort);
+      if (m.firstOpen && (!previous.firstOpen || m.firstOpen < previous.firstOpen))
+        previous.firstOpen = m.firstOpen;
+    }
+  }
+  const members = [...grouped.values()];
+  const observed = members.filter(
+    (m) => m.firstOpen && Date.parse(m.firstOpen) <= now3
+  );
+  const has = (cap) => data.capabilities.includes(cap);
+  const unavailable2 = (cap) => missing(
+    data.state !== "available" ? data.detail : `Awaiting verified ${cap} instrumentation.`,
+    "PostHog",
+    data.state !== "available" ? data.state : "not-connected"
+  );
+  const facts = /* @__PURE__ */ new Map();
+  for (const m of members) {
+    const dedup = /* @__PURE__ */ new Map();
+    for (const f of data.facts)
+      if (!f.internal && !f.test && f.user === m.id && Date.parse(f.at) <= now3 && m.intervals.some(
+        (interval) => Date.parse(f.at) >= Date.parse(interval.from) && (!interval.to || Date.parse(f.at) < Date.parse(interval.to))
+      )) {
+        const key = ["message", "complete", "failed"].includes(f.kind) && f.request ? `${f.kind}:${f.request}` : f.id;
+        const previous = dedup.get(key);
+        if (!previous || f.at < previous.at) dedup.set(key, f);
+      }
+    facts.set(m.id, [...dedup.values()]);
+  }
+  const selected = (m, start = since) => (facts.get(m.id) ?? []).filter((f) => Date.parse(f.at) >= start);
+  const all = members.flatMap((m) => selected(m));
+  const count = (cap, value, detail) => data.state !== "available" || !has(cap) ? unavailable2(cap) : members.length ? measured(value, detail) : missing("No members in this cohort.", "Reconciled", "no-data");
+  const usersWith = (cap, pred, detail) => count(cap, members.filter((m) => selected(m).some(pred)).length, detail);
+  const firstMilestone = (cap, kind) => count(
+    cap,
+    members.filter((m) => {
+      const first = (facts.get(m.id) ?? []).filter((f) => f.kind === kind).map((f) => Date.parse(f.at)).sort((a, b) => a - b)[0];
+      return first !== void 0 && first >= since && m.firstOpen !== null && Date.parse(m.firstOpen) >= Date.parse(data.coverageFrom);
+    }).length,
+    `Users whose first observed ${kind} in this cohort occurred in the selected period. Requires coverage from first open.`
+  );
+  const milestone2 = (kind, field, n) => usersWith(
+    field === "people" ? "people" : "memory",
+    (f) => f.kind === kind && (f[field] ?? -1) >= n,
+    `Unique users with a recorded ${field} count of at least ${n} in the selected period. Not a conversion funnel.`
+  );
+  const activeKinds = /* @__PURE__ */ new Set([
+    "app",
+    "first_open",
+    "onboarding",
+    "person",
+    "memory",
+    "wingman",
+    "message",
+    "calendar",
+    "situation"
+  ]);
+  const active = members.filter(
+    (m) => selected(m).some((f) => activeKinds.has(f.kind))
+  );
+  const retained = (type, day, population = observed) => {
+    const cap = type === "app" ? "activity" : type === "wingman" ? "wingman" : "situations";
+    if (data.state !== "available" || !has(cap)) return unavailable2(cap);
+    let eligible = 0, returned = 0, pending2 = 0;
+    for (const m of population) {
+      if (!m.firstOpen) continue;
+      const start = Date.parse(m.firstOpen) + day * DAY, end = start + DAY;
+      if (!m.intervals.some(
+        (interval) => start >= Date.parse(interval.from) && (!interval.to || end <= Date.parse(interval.to))
+      ))
+        continue;
+      if (end > now3) {
+        pending2++;
+        continue;
+      }
+      if (end < since) continue;
+      if (Date.parse(m.firstOpen) < Date.parse(data.coverageFrom)) continue;
+      eligible++;
+      if ((facts.get(m.id) ?? []).some(
+        (f) => Date.parse(f.at) >= start && Date.parse(f.at) < end && (type === "app" ? activeKinds.has(f.kind) : type === "wingman" ? f.kind === "message" : f.kind === "situation")
+      ))
+        returned++;
+    }
+    return ratio(
+      returned,
+      eligible,
+      `D${day}: [${day * 24}, ${(day + 1) * 24}) hours after first open. Only fully closed windows; time filter selects window-end dates. ${pending2} windows pending.`,
+      pending2
+    );
+  };
+  const retentionFor = (population = observed) => Object.fromEntries(
+    ["app", "wingman", "situation"].map((type) => [
+      type,
+      Object.fromEntries(
+        DAYS.map((day) => [`d${day}`, retained(type, day, population)])
+      )
+    ])
+  );
+  const average = (cap, values, detail) => data.state !== "available" || !has(cap) ? unavailable2(cap) : !values.length ? missing("No observed users.", "PostHog", "no-data") : count(cap, values.reduce((a, b) => a + b, 0) / values.length, detail);
+  const volume = (cap, kind, start, population = members.filter(
+    (m) => selected(m, Math.max(since, start)).some((f) => activeKinds.has(f.kind))
+  )) => average(
+    cap,
+    population.map(
+      (m) => selected(m, Math.max(since, start)).filter((f) => f.kind === kind).length
+    ),
+    "Per active user in this time-filtered population; named window is intersected with the global time filter."
+  );
+  const second = (m, organic = false) => {
+    const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation" && f.situation).sort((a, b) => a.at.localeCompare(b.at));
+    const seen = /* @__PURE__ */ new Set();
+    for (const f of situations) {
+      if (seen.has(f.situation)) continue;
+      seen.add(f.situation);
+      if (seen.size === 2)
+        return Date.parse(f.at) >= since && (!organic || f.attribution === "organic" && f.assisted === false);
+    }
+    return false;
+  };
+  const metrics = {
+    active: count(
+      "activity",
+      active.length,
+      "Unique users with a foreground/product activity event; background response events are excluded."
+    ),
+    activated: has("activation") && data.state === "available" ? ratio(
+      members.filter(
+        (m) => selected(m).some((f) => f.kind === "onboarding") && selected(m).some((f) => f.kind === "activated")
+      ).length,
+      members.filter(
+        (m) => selected(m).some((f) => f.kind === "onboarding")
+      ).length,
+      "Verified meaningful activation among users who onboarded in this period; requires reconciled qualification, not just five messages."
+    ) : unavailable2("activation"),
+    downloads: missing(
+      "Play Console store-level downloads are not individual first opens. No store connector configured.",
+      "Play Console"
+    ),
+    first_opens: usersWith(
+      "activity",
+      (f) => f.kind === "first_open",
+      "Unique first app opens in the selected period."
+    ),
+    onboarded: usersWith(
+      "onboarding",
+      (f) => f.kind === "onboarding",
+      "Unique users completing onboarding in the selected period."
+    ),
+    wingman_opened: usersWith(
+      "wingman",
+      (f) => f.kind === "wingman",
+      "Unique users opening Wingman in the selected period."
+    ),
+    first_message: firstMilestone("wingman", "message"),
+    first_answer: firstMilestone("responses", "complete"),
+    five_messages: count(
+      "wingman",
+      members.filter(
+        (m) => selected(m).filter((f) => f.kind === "message").length >= 5
+      ).length,
+      "Users sending at least five distinct requests in the selected period."
+    ),
+    second_situation: count(
+      "situations",
+      members.filter((m) => second(m)).length,
+      "Users whose second distinct, verified genuine situation occurred in the selected period. A message is not a situation."
+    ),
+    organic_second: has("situations") && has("attribution") ? count(
+      "situations",
+      members.filter((m) => second(m, true)).length,
+      "Second verified situation, independently initiated and positively attributed organic. Unknown attribution is excluded, not assumed organic."
+    ) : unavailable2("attribution"),
+    messages_day: volume("wingman", "message", periodStart("today", now3)),
+    messages_7d: volume("wingman", "message", now3 - 7 * DAY),
+    messages_30d: volume("wingman", "message", now3 - 30 * DAY),
+    sessions: average(
+      "sessions",
+      active.map(
+        (m) => new Set(
+          selected(m).filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
+        ).size
+      ),
+      "Distinct Wingman session IDs per active user. Never approximated as calendar days."
+    ),
+    people_used: count(
+      "people-use",
+      new Set(
+        all.filter((f) => f.kind === "message" && f.person).map((f) => `${f.user}:${f.person}`)
+      ).size,
+      "Distinct user/person pairs actually used with Wingman in this period."
+    ),
+    people_used_2: count(
+      "people-use",
+      members.filter(
+        (m) => new Set(
+          selected(m).filter((f) => f.kind === "message").map((f) => f.person).filter(Boolean)
+        ).size >= 2
+      ).length,
+      "Users who used Wingman with two or more distinct saved people in this period."
+    ),
+    memory_reused: usersWith(
+      "memory-reuse",
+      (f) => f.kind === "memory_reused",
+      "Users with a verified later request using previously saved memory context; memory creation is not reuse."
+    )
+  };
+  for (const n of [1, 2, 3, 5])
+    metrics[`people_${n}`] = milestone2("person", "people", n);
+  for (const n of [1, 3, 5, 20])
+    metrics[`memory_${n}`] = milestone2("memory", "memories", n);
+  const peak = (m, field) => Math.max(0, ...(facts.get(m.id) ?? []).map((f) => f[field] ?? 0));
+  metrics.people_average = average(
+    "people",
+    active.map((m) => peak(m, "people")),
+    "Average observed peak people count per active user in the selected period; not current inventory after deletion."
+  );
+  metrics.memory_average = average(
+    "memory",
+    active.map((m) => peak(m, "memories")),
+    "Average observed peak memory count per active user in the selected period; not current inventory after deletion."
+  );
+  const mem = active.map((m) => peak(m, "memories")).sort((a, b) => a - b);
+  metrics.memory_median = data.state !== "available" || !has("memory") ? unavailable2("memory") : mem.length ? count(
+    "memory",
+    (mem[Math.floor((mem.length - 1) / 2)] + mem[Math.floor(mem.length / 2)]) / 2,
+    "Median observed peak memory count among active users in the selected period."
+  ) : missing("No observed users.", "PostHog", "no-data");
+  const requests = all.filter((f) => f.kind === "message");
+  const completed = all.filter((f) => f.kind === "complete");
+  const completedIds = new Set(
+    completed.map((f) => `${f.user}:${f.request ?? f.id}`)
+  );
+  const failed = all.filter(
+    (f) => f.kind === "failed" && !completedIds.has(`${f.user}:${f.request ?? f.id}`)
+  );
+  metrics.complete = count(
+    "responses",
+    completed.length,
+    "Completed unique requests; retries deduplicated by request ID."
+  );
+  metrics.failed = count(
+    "responses",
+    failed.length,
+    "Failed requests without a completion in this period. Pending requests are not failures."
+  );
+  metrics.success = has("responses") && data.state === "available" ? ratio(
+    completed.length,
+    completed.length + failed.length,
+    "Completed / resolved requests. In-flight requests excluded; late successes reconcile failures."
+  ) : unavailable2("responses");
+  for (const [key, cap, kind] of [
+    ["retries", "retries", "retry"],
+    ["fallbacks", "fallbacks", "fallback"]
+  ])
+    metrics[key] = count(
+      cap,
+      all.filter((f) => f.kind === kind).length,
+      `Recorded ${key} events in the selected period.`
+    );
+  const latencies = completed.map((f) => f.latency).filter((n) => n !== void 0).sort((a, b) => a - b);
+  for (const [key, q] of [
+    ["latency_median", 0.5],
+    ["latency_p95", 0.95]
+  ])
+    metrics[key] = !has("latency") ? unavailable2("latency") : latencies.length ? {
+      ...count(
+        "latency",
+        latencies[Math.max(0, Math.ceil(q * latencies.length) - 1)],
+        "Nearest-rank latency over complete responses in milliseconds."
+      ),
+      unit: "ms"
+    } : missing("No latency observations.", "Backend", "no-data");
+  metrics.requests = count(
+    "wingman",
+    requests.length,
+    "Unique user requests in the selected period, excluding automatic retries."
+  );
+  const usage = all.filter((f) => f.kind === "usage");
+  for (const [key, field] of [
+    ["input_tokens", "input"],
+    ["output_tokens", "output"],
+    ["cost", "cost"]
+  ]) {
+    const cap = field === "cost" ? "cost" : "tokens";
+    metrics[key] = !has(cap) || data.state !== "available" ? unavailable2(cap) : !usage.length || usage.some((f) => f[field] === void 0) ? missing(
+      "No complete billing coverage; totals withheld.",
+      "Backend",
+      "no-data"
+    ) : {
+      ...count(
+        cap,
+        usage.reduce((sum, f) => sum + (f[field] ?? 0), 0),
+        "Sum over all billable usage records, including retries/failures; verified complete coverage required."
+      ),
+      source: "Backend",
+      ...field === "cost" ? { unit: "USD" } : {}
+    };
+  }
+  metrics.total_tokens = metrics.input_tokens.state === "available" && metrics.output_tokens.state === "available" ? measured(
+    metrics.input_tokens.value + metrics.output_tokens.value,
+    "Input plus output tokens.",
+    "Backend"
+  ) : missing(
+    "Awaiting complete token telemetry.",
+    "Backend",
+    metrics.input_tokens.state !== "available" ? metrics.input_tokens.state : metrics.output_tokens.state
+  );
+  for (const [key, denom] of [
+    ["cost_request", "requests"],
+    ["cost_active", "active"],
+    ["cost_activation", "activated"],
+    ["cost_repeater", "organic_second"]
+  ]) {
+    const d = denom === "activated" ? metrics[denom].numerator : metrics[denom].value;
+    metrics[key] = metrics.cost.state === "available" && metrics[denom].state === "available" && d ? {
+      ...measured(
+        metrics.cost.value / d,
+        `Measured AI cost / ${denom.replaceAll("_", " ")} in the same selected period.`,
+        "Backend"
+      ),
+      unit: "USD"
+    } : missing(
+      "Awaiting measured cost and a non-zero, verified denominator.",
+      "Backend",
+      metrics.cost.state !== "available" ? metrics.cost.state : metrics[denom].state !== "available" ? metrics[denom].state : "no-data"
+    );
+  }
+  const users = observed.map((m) => {
+    const uf = selected(m);
+    const um = {
+      onboarding: count(
+        "onboarding",
+        (facts.get(m.id) ?? []).some((f) => f.kind === "onboarding") ? 1 : 0,
+        "Onboarding status as of the latest source snapshot, within cohort boundaries."
+      ),
+      people: count(
+        "people",
+        peak(m, "people"),
+        "Observed peak people count in selected period."
+      ),
+      memories: count(
+        "memory",
+        peak(m, "memories"),
+        "Observed peak memory count in selected period."
+      ),
+      people_used: count(
+        "people-use",
+        new Set(
+          uf.filter((f) => f.kind === "message").map((f) => f.person).filter(Boolean)
+        ).size,
+        "Distinct people used with Wingman."
+      ),
+      second_situation: count(
+        "situations",
+        second(m) ? 1 : 0,
+        "Second verified situation in selected period."
+      ),
+      independent: count(
+        "attribution",
+        uf.filter((f) => f.kind === "message" && f.assisted === false).length,
+        "Messages explicitly marked independent. Unknowns are not independent."
+      ),
+      assisted: count(
+        "attribution",
+        uf.filter((f) => f.kind === "message" && f.assisted === true).length,
+        "Messages explicitly marked assisted."
+      )
+    };
+    for (const p of ["today", "7d", "30d"]) {
+      const fs = selected(m, Math.max(since, periodStart(p, now3)));
+      um[`messages_${p}`] = count(
+        "wingman",
+        fs.filter((f) => f.kind === "message").length,
+        `${p} intersected with global time filter.`
+      );
+      um[`sessions_${p}`] = count(
+        "sessions",
+        new Set(
+          fs.filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
+        ).size,
+        "Distinct Wingman session IDs."
+      );
+      um[`time_${p}`] = {
+        ...count(
+          "foreground",
+          fs.filter((f) => f.kind === "foreground").reduce((sum, f) => sum + (f.seconds ?? 0), 0),
+          "Sum of deduplicated foreground duration events; background time excluded."
+        ),
+        unit: "seconds"
+      };
+      um[`days_${p}`] = count(
+        "activity",
+        new Set(
+          fs.filter((f) => activeKinds.has(f.kind)).map((f) => Math.floor((Date.parse(f.at) + 198e5) / DAY))
+        ).size,
+        "Distinct active calendar days in Asia/Kolkata."
+      );
+    }
+    for (const a of ["organic", "reminder", "founder", "unknown"])
+      um[`return_${a}`] = count(
+        "attribution",
+        uf.filter(
+          (f) => f.kind === "message" && Date.parse(f.at) >= Date.parse(m.firstOpen) + DAY && (f.attribution ?? "unknown") === a
+        ).length,
+        `Return requests after the first 24 hours, attributed ${a}. This is attribution, not causal proof.`
+      );
+    return {
+      id: m.id,
+      cohort: m.cohort,
+      cohorts: m.cohorts,
+      acquisition: m.acquisition,
+      firstOpen: m.firstOpen,
+      lastActive: (facts.get(m.id) ?? []).filter((f) => activeKinds.has(f.kind)).map((f) => f.at).sort().at(-1) ?? null,
+      metrics: um,
+      retention: retentionFor([m])
+    };
+  });
+  return {
+    version: 2,
+    mode: data.mode,
+    asOf: data.asOf,
+    coverageFrom: data.coverageFrom,
+    cohort,
+    period,
+    state: data.state,
+    detail: data.detail,
+    metrics,
+    retention: retentionFor(),
+    users,
+    excluded: data.members.filter((m) => m.internal || m.test).length
+  };
+}
+
+// lib/analytics-v2/source.ts
+import { createHmac } from "node:crypto";
+var EVENTS = {
+  first_open: "first_open",
+  app_opened: "app",
+  onboarding_completed: "onboarding",
+  person_context_created: "person",
+  memory_added: "memory",
+  calendar_event_created: "calendar",
+  wingman_opened: "wingman",
+  response_started: "message",
+  response_completed: "complete",
+  response_failed: "failed"
+};
+var NUMBERS = [
+  "people",
+  "memories",
+  "seconds",
+  "latency",
+  "input",
+  "output",
+  "cost"
+];
+var KNOWN = [
+  "activity",
+  "onboarding",
+  "people",
+  "memory",
+  "wingman",
+  "responses",
+  "retries"
+];
+var opaque = (value) => `participant-${createHmac("sha256", process.env.SPARKEEFY_SESSION_SECRET).update(value).digest("hex").slice(0, 16)}`;
+var numeric = (n) => n !== null && n !== "" && Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : void 0;
+function readMembership(raw) {
+  const rows = JSON.parse(raw);
+  if (!Array.isArray(rows)) throw Error("Invalid cohort manifest");
+  const aliases = /* @__PURE__ */ new Map(), participants = /* @__PURE__ */ new Set();
+  return rows.map((value) => {
+    if (!value || typeof value !== "object")
+      throw Error("Invalid cohort manifest");
+    const row = value;
+    if (typeof row.cohort !== "string" || !COHORTS.slice(1).includes(row.cohort) || !Array.isArray(row.distinctIds) || !row.distinctIds.length || typeof row.id !== "string" || typeof row.from !== "string" || !Number.isFinite(Date.parse(row.from)) || row.to !== void 0 && (typeof row.to !== "string" || !Number.isFinite(Date.parse(row.to)) || Date.parse(row.to) <= Date.parse(row.from)) || typeof row.acquisition !== "string" || !["organic", "referral", "paid", "founder", "unknown"].includes(
+      row.acquisition
+    ) || typeof row.internal !== "boolean" || typeof row.test !== "boolean" || !(row.firstOpen === null || typeof row.firstOpen === "string" && Number.isFinite(Date.parse(row.firstOpen))))
+      throw Error("Invalid cohort manifest");
+    const member = {
+      id: row.id,
+      distinctIds: row.distinctIds,
+      cohort: row.cohort,
+      from: row.from,
+      to: row.to,
+      firstOpen: row.firstOpen,
+      internal: row.internal,
+      test: row.test,
+      acquisition: row.acquisition
+    };
+    const key = `${member.cohort}:${member.id}`;
+    if (participants.has(key)) throw Error("Duplicate cohort participant");
+    participants.add(key);
+    for (const alias of row.distinctIds) {
+      if (typeof alias !== "string" || !alias) throw Error("Invalid identity");
+      const previous = aliases.get(alias) ?? [];
+      if (previous.some((m) => m.id !== member.id))
+        throw Error(
+          "Identity must retain the same stable participant key across cohorts"
+        );
+      if (previous.some(
+        (m) => Date.parse(m.from) < (member.to ? Date.parse(member.to) : Infinity) && Date.parse(member.from) < (m.to ? Date.parse(m.to) : Infinity)
+      ))
+        throw Error("Overlapping cohort identity");
+      aliases.set(alias, [...previous, member]);
+    }
+    return member;
+  });
+}
+var cached;
+var pending;
+async function liveDataset() {
+  if (cached && Date.now() - cached.at < 3e4) return cached.data;
+  if (pending) return pending;
+  pending = load().finally(() => {
+    pending = void 0;
+  });
+  const data = await pending;
+  cached = { at: Date.now(), data };
+  return data;
+}
+async function load() {
+  const base = {
+    mode: "live",
+    state: "not-connected",
+    detail: "Awaiting reconciled cohort membership and v2 coverage manifest. Project-wide Phase 0 counts are not substituted.",
+    asOf: (/* @__PURE__ */ new Date()).toISOString(),
+    coverageFrom: process.env.CONTROL_V2_COVERAGE_FROM || (/* @__PURE__ */ new Date()).toISOString(),
+    members: [],
+    facts: [],
+    capabilities: KNOWN
+  };
+  if (!process.env.POSTHOG_API_KEY || !process.env.CONTROL_V2_COHORTS_JSON || !process.env.CONTROL_V2_COVERAGE_FROM || !process.env.SPARKEEFY_SESSION_SECRET)
+    return base;
+  try {
+    const mapping = readMembership(process.env.CONTROL_V2_COHORTS_JSON);
+    if (!Number.isFinite(Date.parse(base.coverageFrom)))
+      throw Error("Invalid coverage");
+    base.members = mapping.map(({ distinctIds: _, ...m }) => ({
+      ...m,
+      id: opaque(m.id)
+    }));
+    const allowed2 = mapping.filter((m) => !m.internal && !m.test);
+    if (!allowed2.length)
+      return {
+        ...base,
+        state: "available",
+        detail: "Reconciled membership contains no eligible users."
+      };
+    const ids = allowed2.flatMap((m) => m.distinctIds);
+    const query = `SELECT uuid, distinct_id, event, timestamp, properties.request_id, properties.contact_id, properties.person_count_after, properties.memory_count_after, properties.recovery_triggered, properties.is_internal, properties.is_test, properties.environment FROM events WHERE distinct_id IN (${ids.map(hogqlString).join(",")}) AND timestamp >= toDateTime(${hogqlString(base.coverageFrom)}) AND timestamp <= toDateTime(${hogqlString(base.asOf)}) AND event IN (${Object.keys(EVENTS).map(hogqlString).join(",")}) ORDER BY timestamp, uuid LIMIT 50001`;
+    const rows = await postHogQuery(query);
+    if (rows.length > 5e4)
+      throw Error(
+        "Query coverage limit exceeded; add server-side pagination before increasing traffic"
+      );
+    const facts = [];
+    for (const row of rows) {
+      if (row.length !== 12) throw Error("Unexpected event schema");
+      const [
+        id2,
+        user,
+        event,
+        at,
+        request,
+        person,
+        people,
+        memories,
+        recovery,
+        internal,
+        test,
+        environment
+      ] = row;
+      if ([true, 1, "true"].includes(internal) || [true, 1, "true"].includes(test) || typeof environment === "string" && environment && !["production", "prod"].includes(environment))
+        continue;
+      if (typeof user !== "string" || typeof event !== "string" || typeof at !== "string" || typeof id2 !== "string" || !Number.isFinite(Date.parse(at)))
+        throw Error("Invalid event row");
+      const member = allowed2.find(
+        (m) => m.distinctIds.includes(user) && Date.parse(at) >= Date.parse(m.from) && (!m.to || Date.parse(at) < Date.parse(m.to))
+      );
+      if (!member) continue;
+      const owner = opaque(member.id), kind = EVENTS[event];
+      if (!kind) throw Error("Invalid event row");
+      const fact = {
+        id: String(id2),
+        user: owner,
+        kind,
+        at: new Date(String(at)).toISOString()
+      };
+      if (typeof request === "string" && request)
+        fact.request = createHmac("sha256", owner).update(request).digest("hex");
+      if (typeof person === "string" && person)
+        fact.person = createHmac("sha256", owner).update(person).digest("hex");
+      fact.people = numeric(people);
+      fact.memories = numeric(memories);
+      for (const key of NUMBERS)
+        if (fact[key] !== void 0 && !Number.isFinite(fact[key]))
+          throw Error("Invalid numeric property");
+      facts.push(fact);
+      if ((kind === "complete" || kind === "failed") && (recovery === true || recovery === 1))
+        facts.push({
+          ...fact,
+          id: `retry-${fact.request ?? fact.id}`,
+          kind: "retry"
+        });
+    }
+    if (facts.some(
+      (f) => ["message", "complete", "failed"].includes(f.kind) && !f.request
+    ))
+      base.capabilities = KNOWN.filter(
+        (c) => c !== "wingman" && c !== "responses"
+      );
+    if (facts.some((f) => f.kind === "person" && f.people === void 0))
+      base.capabilities = base.capabilities.filter((c) => c !== "people");
+    if (facts.some((f) => f.kind === "memory" && f.memories === void 0))
+      base.capabilities = base.capabilities.filter((c) => c !== "memory");
+    return {
+      ...base,
+      state: "available",
+      detail: "PostHog \xB7 reconciled identity allowlist \xB7 30-second cache",
+      facts
+    };
+  } catch {
+    return {
+      ...base,
+      state: "query-error",
+      detail: "V2 source query or coverage validation failed. No partial totals are shown.",
+      facts: []
+    };
+  }
+}
+
+// lib/analytics-v2/fixture.ts
+function fixture(now3 = Date.now()) {
+  const iso = (n) => new Date(n).toISOString();
+  const data = {
+    mode: "test",
+    state: "available",
+    detail: "Synthetic preview data \xB7 not Phase 0 results",
+    asOf: iso(now3),
+    coverageFrom: iso(now3 - 90 * DAY),
+    members: [],
+    facts: [],
+    capabilities: [
+      "activity",
+      "onboarding",
+      "people",
+      "memory",
+      "wingman",
+      "responses",
+      "sessions",
+      "foreground",
+      "situations",
+      "activation",
+      "memory-reuse",
+      "people-use",
+      "retries",
+      "fallbacks",
+      "latency",
+      "tokens",
+      "cost",
+      "attribution"
+    ]
+  };
+  const ages = [45, 34, 20, 10, 5, 2.5, 0.5];
+  for (let i = 0; i < ages.length; i++) {
+    const id2 = `participant-${String(i + 1).padStart(3, "0")}`, first = now3 - ages[i] * DAY;
+    data.members.push({
+      id: id2,
+      cohort: i < 4 ? "phase-0" : i < 6 ? "phase-1a" : "phase-1b",
+      from: iso(first),
+      firstOpen: iso(first),
+      internal: false,
+      test: false,
+      acquisition: i % 2 ? "referral" : "organic"
+    });
+    let sequence = 0;
+    const add = (offset, kind, extra = {}) => {
+      if (first + offset * DAY <= now3)
+        data.facts.push({
+          id: `${id2}-${sequence++}`,
+          user: id2,
+          at: iso(first + offset * DAY),
+          kind,
+          ...extra
+        });
+    };
+    add(0, "first_open");
+    add(0.01, "onboarding");
+    add(0.03, "person", { people: [5, 3, 2, 1, 5, 2, 1][i] });
+    add(0.04, "memory", { memories: [20, 5, 3, 1, 5, 1, 0][i] });
+    if (i % 2 === 0) add(0.05, "activated");
+    for (const day of [0, 1, 3, 7, 15, 30]) {
+      if (day && i % 3 === 1) continue;
+      add(day + 0.1, "app");
+      add(day + 0.1, "wingman", { session: `s-${i}-${day}` });
+      add(day + 0.2, "foreground", { seconds: 180 + i * 17 });
+      for (let msg = 0; msg < (i % 2 ? 2 : 6); msg++) {
+        const request = `r-${i}-${day}-${msg}`;
+        add(day + 0.11 + msg * 1e-3, "message", {
+          request,
+          session: `s-${i}-${day}`,
+          person: `person-${msg % 2}`,
+          assisted: i === 2,
+          attribution: i === 2 ? "founder" : "organic"
+        });
+        add(
+          day + 0.112 + msg * 1e-3,
+          msg === 1 && i === 3 ? "failed" : "complete",
+          {
+            request,
+            latency: 600 + msg * 100,
+            input: 100,
+            output: 50,
+            cost: 2e-3
+          }
+        );
+        add(day + 0.112 + msg * 1e-3, "usage", {
+          request,
+          input: 100,
+          output: 50,
+          cost: 2e-3
+        });
+      }
+      add(day + 0.12, "situation", {
+        situation: `situation-${i}-${day}`,
+        assisted: false,
+        attribution: i === 2 ? "founder" : "organic"
+      });
+      if (day > 0) add(day + 0.13, "memory_reused");
+    }
+    add(ages[i] - 0.1, "app");
+    add(ages[i] - 0.09, "wingman", { session: `recent-${i}` });
+    add(ages[i] - 0.08, "message", {
+      request: `recent-r-${i}`,
+      session: `recent-${i}`,
+      person: "person-0",
+      attribution: "organic",
+      assisted: false
+    });
+    add(ages[i] - 0.079, "complete", {
+      request: `recent-r-${i}`,
+      latency: 1200,
+      input: 200,
+      output: 80,
+      cost: 4e-3
+    });
+    add(ages[i] - 0.079, "usage", {
+      request: `recent-r-${i}`,
+      input: 200,
+      output: 80,
+      cost: 4e-3
+    });
+  }
+  data.members.push(
+    { ...data.members[0], id: "excluded-internal", internal: true },
+    { ...data.members[0], id: "excluded-test", test: true }
+  );
+  data.facts.push({
+    id: "excluded-message",
+    user: "excluded-internal",
+    at: iso(now3 - 1e3),
+    kind: "message",
+    request: "excluded"
+  });
+  return data;
+}
+
+// app/api/analytics/v2/route.ts
+async function GET4(request) {
+  if (process.env.VERCEL_ENV === "production")
+    return Response.json({ error: "V2 is preview-only." }, { status: 503 });
+  const url = new URL(request.url);
+  const cohort = url.searchParams.get("cohort") || "all", period = url.searchParams.get("period") || "all";
+  const users = url.searchParams.get("view") === "users";
+  if (!COHORTS.includes(cohort) || !["today", "7d", "30d", "all"].includes(period))
+    return Response.json({ error: "Invalid filter" }, { status: 400 });
+  const synthetic = url.searchParams.get("dataset") === "test";
+  if (synthetic && !(process.env.VERCEL_ENV === "preview" || process.env.CONTROL_V2_LOCAL_TEST === "true"))
+    return Response.json({ error: "Test data disabled" }, { status: 403 });
+  if (users && !synthetic && !(await trackerAccess(request)).canEdit)
+    return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+  const result2 = calculate(
+    synthetic ? fixture() : await liveDataset(),
+    cohort,
+    period
+  );
+  return Response.json(
+    { ...result2, users: users ? result2.users : [] },
+    { headers: { "Cache-Control": "private, no-store" } }
+  );
+}
+
 // server/vercel-handler.ts
 async function handle(request) {
   const url = new URL(request.url);
@@ -2267,7 +3108,9 @@ async function handle(request) {
   const method = request.method;
   const json = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   if (path === "/api/health") return json({ host: "vercel", database: process.env.TURSO_DATABASE_URL ? "configured" : "missing", sitesDependency: false });
+  if (path === "/api/analytics/v2/access" && method === "GET") return json({ ...await trackerAccess(request), phases: [], releaseGates: [] });
   const handlers = {
+    "/api/analytics/v2": { GET: GET4 },
     "/api/tracker": { GET, PATCH },
     "/api/workspace": { GET: GET2, POST },
     "/api/auth/login": { POST: POST2 },
