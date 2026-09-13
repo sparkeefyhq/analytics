@@ -285,14 +285,14 @@ export const MEASUREMENT_START = "2026-09-13T00:00:00+05:30";
 
 export type ActivePeriod = "today" | "week" | "month" | "all";
 
-/** activeUsers.{today,week,month,all}: unique cohort users with foreground
- * activity (wingman_opened) in each IST calendar window. */
-export async function activeUsersForPeriod(
-  cohort: CohortIdentity[],
-  period: ActivePeriod,
-): Promise<Observation> {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, pending: cohort.length, status: "pending", source: "posthog" };
+/** activeUsers.{today,week,month,all}: unique users with foreground activity
+ * (wingman_opened) in each IST calendar window, project-wide. Deliberately
+ * NOT scoped to the manually-verified Phase 0 cohort — this widget mirrors
+ * the same live PostHog activity already shown on the "Sparkeefy Founder
+ * View" PostHog dashboard, so it stays connected the moment PostHog
+ * credentials are configured rather than waiting on anyone to manually link
+ * individual cohort participants to a distinct_id. */
+export async function activeUsersForPeriod(period: ActivePeriod): Promise<Observation> {
   const boundary =
     period === "today"
       ? `toStartOfDay(toTimeZone(now(), '${IST_TZ}'))`
@@ -304,11 +304,10 @@ export async function activeUsersForPeriod(
   try {
     const count = await scalar(
       `SELECT count(DISTINCT distinct_id) FROM events
-       WHERE event = 'wingman_opened' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
-         AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`,
+       WHERE event = 'wingman_opened' AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`,
     );
-    return { count, pending: unmapped, status: "available", source: "posthog" };
+    return { count, status: "available", source: "posthog" };
   } catch {
-    return { count: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, status: "error", source: "posthog" };
   }
 }

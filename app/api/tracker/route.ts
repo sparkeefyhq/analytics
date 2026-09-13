@@ -869,10 +869,10 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     reminderReturn(cohort),
     requestCount("response_completed"),
     requestCount("response_failed"),
-    activeUsersForPeriod(cohort, "today"),
-    activeUsersForPeriod(cohort, "week"),
-    activeUsersForPeriod(cohort, "month"),
-    activeUsersForPeriod(cohort, "all"),
+    activeUsersForPeriod("today"),
+    activeUsersForPeriod("week"),
+    activeUsersForPeriod("month"),
+    activeUsersForPeriod("all"),
   ]);
 
   const snapshot: Phase0Snapshot = {

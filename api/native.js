@@ -367,19 +367,16 @@ async function requestCount(event) {
 }
 var IST_TZ = "Asia/Kolkata";
 var MEASUREMENT_START = "2026-09-13T00:00:00+05:30";
-async function activeUsersForPeriod(cohort, period) {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, pending: cohort.length, status: "pending", source: "posthog" };
+async function activeUsersForPeriod(period) {
   const boundary = period === "today" ? `toStartOfDay(toTimeZone(now(), '${IST_TZ}'))` : period === "week" ? `toStartOfWeek(toTimeZone(now(), '${IST_TZ}'), 1)` : period === "month" ? `toStartOfMonth(toTimeZone(now(), '${IST_TZ}'))` : `toDateTime('${MEASUREMENT_START}')`;
   try {
     const count = await scalar(
       `SELECT count(DISTINCT distinct_id) FROM events
-       WHERE event = 'wingman_opened' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
-         AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`
+       WHERE event = 'wingman_opened' AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`
     );
-    return { count, pending: unmapped, status: "available", source: "posthog" };
+    return { count, status: "available", source: "posthog" };
   } catch {
-    return { count: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, status: "error", source: "posthog" };
   }
 }
 
@@ -1078,10 +1075,10 @@ async function loadPhase0Analytics() {
     reminderReturn(cohort),
     requestCount("response_completed"),
     requestCount("response_failed"),
-    activeUsersForPeriod(cohort, "today"),
-    activeUsersForPeriod(cohort, "week"),
-    activeUsersForPeriod(cohort, "month"),
-    activeUsersForPeriod(cohort, "all")
+    activeUsersForPeriod("today"),
+    activeUsersForPeriod("week"),
+    activeUsersForPeriod("month"),
+    activeUsersForPeriod("all")
   ]);
   const snapshot = {
     version: 1,

@@ -37,11 +37,16 @@ test('an entirely unmapped cohort is pending, never zero, and never queries Post
     cohortDayWindowReturn(cohort, 'wingman_opened', 1),
     organicSecondSituation(cohort),
     reminderReturn(cohort),
-    activeUsersForPeriod(cohort, 'today'),
   ])) {
     assert.equal(observation.status, 'pending');
     assert.equal(observation.count, null);
   }
+});
+
+test('activeUsersForPeriod is project-wide, not gated on cohort linking, and degrades to error without credentials', async () => {
+  const observation = await activeUsersForPeriod('today');
+  assert.equal(observation.status, 'error');
+  assert.equal(observation.count, null);
 });
 
 test('an empty cohort is pending rather than an available zero', async () => {
