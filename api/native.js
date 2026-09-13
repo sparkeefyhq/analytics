@@ -237,39 +237,27 @@ async function scalar(hogql) {
 function hogqlString(value) {
   return `'${value.replace(/'/g, "''")}'`;
 }
-function idList(distinctIds) {
-  return distinctIds.map(hogqlString).join(",");
-}
-function splitCohort(cohort) {
-  const mapped = cohort.filter((p) => p.distinctId !== null);
-  const unmapped = cohort.length - mapped.length;
-  return { mapped, unmapped };
-}
-async function cohortMilestone(cohort, event, extraWhere = "") {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: cohort.length || null, pending: unmapped, status: "pending", source: "posthog" };
+async function milestone(event, extraWhere = "") {
   try {
     const count = await scalar(
-      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})${extraWhere ? ` AND ${extraWhere}` : ""}`
+      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}'${extraWhere ? ` AND ${extraWhere}` : ""}`
     );
-    return { count, denominator: cohort.length || null, pending: unmapped, status: "available", source: "posthog" };
+    return { count, status: "available", source: "posthog" };
   } catch {
-    return { count: null, denominator: cohort.length || null, pending: unmapped, status: "error", source: "posthog" };
+    return { count: null, status: "error", source: "posthog" };
   }
 }
-function cohortOrdinalMilestone(cohort, event, property, atLeast) {
-  return cohortMilestone(cohort, event, `properties.${property} >= ${atLeast}`);
+function ordinalMilestone(event, property, atLeast) {
+  return milestone(event, `properties.${property} >= ${atLeast}`);
 }
-async function cohortDayWindowReturn(cohort, returningEvent, dayIndex, minimumEvents = 1) {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+async function dayWindowReturn(returningEvent, dayIndex, minimumEvents = 1) {
   const windowStartHours = (dayIndex - 1) * 24;
   const windowEndHours = dayIndex * 24;
   try {
     const rows = await postHogQuery(
       `WITH first_opens AS (
          SELECT distinct_id, min(timestamp) AS first_open_at
-         FROM events WHERE event = 'first_open' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         FROM events WHERE event = 'first_open'
          GROUP BY distinct_id
        ),
        window_closed AS (
@@ -293,22 +281,19 @@ async function cohortDayWindowReturn(cohort, returningEvent, dayIndex, minimumEv
     return {
       count: returned ?? null,
       denominator: windowClosed ?? null,
-      pending: mapped.length - (windowClosed ?? 0) + unmapped,
       status: "available",
       source: "posthog"
     };
   } catch {
-    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
-async function organicSecondSituation(cohort) {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+async function organicSecondSituation() {
   try {
     const rows = await postHogQuery(
       `WITH firsts AS (
          SELECT distinct_id, min(timestamp) AS first_at
-         FROM events WHERE event = 'genuine_situation_started' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         FROM events WHERE event = 'genuine_situation_started'
          GROUP BY distinct_id
        ),
        eligible AS (
@@ -326,19 +311,17 @@ async function organicSecondSituation(cohort) {
               (SELECT count() FROM organic_second) AS organic_second_count`
     );
     const [eligible, organicSecond] = rows[0] ?? [0, 0];
-    return { count: organicSecond ?? null, denominator: eligible ?? null, pending: unmapped, status: "available", source: "posthog" };
+    return { count: organicSecond ?? null, denominator: eligible ?? null, status: "available", source: "posthog" };
   } catch {
-    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
-async function reminderReturn(cohort) {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+async function reminderReturn() {
   try {
     const rows = await postHogQuery(
       `WITH opens AS (
          SELECT distinct_id, timestamp AS opened_at
-         FROM events WHERE event = 'reminder_opened' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         FROM events WHERE event = 'reminder_opened'
        ),
        matched AS (
          SELECT DISTINCT opens.distinct_id AS distinct_id
@@ -351,10 +334,10 @@ async function reminderReturn(cohort) {
               (SELECT count() FROM matched) AS returned_count`
     );
     const [openedCount, returnedCount] = rows[0] ?? [0, 0];
-    if (!openedCount) return { count: null, denominator: null, pending: cohort.length, status: "unavailable", source: "posthog" };
-    return { count: returnedCount ?? null, denominator: openedCount ?? null, pending: unmapped, status: "available", source: "posthog" };
+    if (!openedCount) return { count: null, denominator: null, status: "unavailable", source: "posthog" };
+    return { count: returnedCount ?? null, denominator: openedCount ?? null, status: "available", source: "posthog" };
   } catch {
-    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
 async function requestCount(event) {
@@ -1008,13 +991,6 @@ async function loadPhase0Analytics() {
   if (cached && Date.now() - Date.parse(cached.computed_at) < PHASE0_CACHE_TTL_MS) {
     return JSON.parse(cached.payload);
   }
-  const cohortRows = await database3.prepare(
-    "SELECT participant_id, posthog_distinct_id FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'"
-  ).all();
-  const cohort = cohortRows.results.map((row) => ({
-    participantId: row.participant_id,
-    distinctId: row.posthog_distinct_id
-  }));
   const interviewRows = await database3.prepare(
     "SELECT founder_suggested_situation FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'"
   ).all();
@@ -1053,26 +1029,26 @@ async function loadPhase0Analytics() {
     activeMonth,
     activeAll
   ] = await Promise.all([
-    cohortMilestone(cohort, "first_open"),
-    cohortMilestone(cohort, "onboarding_completed"),
-    cohortMilestone(cohort, "response_completed"),
-    cohortMilestone(cohort, "calendar_event_created"),
-    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 1),
-    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 2),
-    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 3),
-    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 1),
-    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 2),
-    cohortDayWindowReturn(cohort, "wingman_opened", 1),
-    cohortDayWindowReturn(cohort, "response_started", 1, 5),
-    cohortDayWindowReturn(cohort, "response_started", 1),
-    cohortDayWindowReturn(cohort, "wingman_opened", 2),
-    cohortDayWindowReturn(cohort, "wingman_opened", 3),
-    cohortDayWindowReturn(cohort, "wingman_opened", 4),
-    cohortDayWindowReturn(cohort, "response_started", 2),
-    cohortDayWindowReturn(cohort, "response_started", 3),
-    cohortDayWindowReturn(cohort, "response_started", 4),
-    organicSecondSituation(cohort),
-    reminderReturn(cohort),
+    milestone("first_open"),
+    milestone("onboarding_completed"),
+    milestone("response_completed"),
+    milestone("calendar_event_created"),
+    ordinalMilestone("person_context_created", "person_count_after", 1),
+    ordinalMilestone("person_context_created", "person_count_after", 2),
+    ordinalMilestone("person_context_created", "person_count_after", 3),
+    ordinalMilestone("memory_added", "memory_count_after", 1),
+    ordinalMilestone("memory_added", "memory_count_after", 2),
+    dayWindowReturn("wingman_opened", 1),
+    dayWindowReturn("response_started", 1, 1),
+    dayWindowReturn("response_started", 1, 5),
+    dayWindowReturn("wingman_opened", 2),
+    dayWindowReturn("wingman_opened", 3),
+    dayWindowReturn("wingman_opened", 4),
+    dayWindowReturn("response_started", 2),
+    dayWindowReturn("response_started", 3),
+    dayWindowReturn("response_started", 4),
+    organicSecondSituation(),
+    reminderReturn(),
     requestCount("response_completed"),
     requestCount("response_failed"),
     activeUsersForPeriod("today"),

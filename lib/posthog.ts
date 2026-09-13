@@ -89,74 +89,54 @@ async function scalar(hogql: string): Promise<number | null> {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** Escapes a distinct_id list for a HogQL `IN (...)` clause. Values here are
- * opaque distinct_ids we ourselves stored in D1, never end-user free text,
- * but this still avoids building HogQL by naive string concatenation. */
+/** Escapes a string for use inside a HogQL literal. */
 export function hogqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function idList(distinctIds: string[]): string {
-  return distinctIds.map(hogqlString).join(",");
-}
-
+/**
+ * A specific, known person's PostHog identity — still used by the private
+ * Users page (app/api/control/users/route.ts) to look up one individual's
+ * own activity. Unrelated to the aggregate metrics below, which are
+ * project-wide and never require anyone to be linked first.
+ */
 export type CohortIdentity = { participantId: string; distinctId: string | null };
 
-/**
- * Every "eligible cohort" metric needs the set of mapped distinct_ids and
- * how many participants are still unmapped (those stay `pending`, never
- * silently dropped from the denominator or coerced to zero).
- */
-function splitCohort(cohort: CohortIdentity[]) {
-  const mapped = cohort.filter((p): p is { participantId: string; distinctId: string } => p.distinctId !== null);
-  const unmapped = cohort.length - mapped.length;
-  return { mapped, unmapped };
-}
-
-/** Simple "unique users who ever fired this event" milestone, scoped to the
- * mapped cohort. Used for first_open, onboarding, first_answer,
- * calendar_created, and the person/memory ordinal milestones. */
-export async function cohortMilestone(
-  cohort: CohortIdentity[],
-  event: string,
-  extraWhere = "",
-): Promise<Observation> {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: cohort.length || null, pending: unmapped, status: "pending", source: "posthog" };
+/** Simple "unique users who ever fired this event" milestone, project-wide.
+ * Used for first_open, onboarding, first_answer, calendar_created, and the
+ * person/memory ordinal milestones. Always reflects live PostHog data —
+ * never gated on any manual participant-linking step. */
+export async function milestone(event: string, extraWhere = ""): Promise<Observation> {
   try {
     const count = await scalar(
-      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})${extraWhere ? ` AND ${extraWhere}` : ""}`,
+      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}'${extraWhere ? ` AND ${extraWhere}` : ""}`,
     );
-    return { count, denominator: cohort.length || null, pending: unmapped, status: "available", source: "posthog" };
+    return { count, status: "available", source: "posthog" };
   } catch {
-    return { count: null, denominator: cohort.length || null, pending: unmapped, status: "error", source: "posthog" };
+    return { count: null, status: "error", source: "posthog" };
   }
 }
 
-/** person_1/2/3 and memory_1/2: unique cohort users who reached an ordinal
- * count via the person_count_after / memory_count_after properties added to
- * production on 2026-09-13. */
-export function cohortOrdinalMilestone(
-  cohort: CohortIdentity[],
+/** person_1/2/3 and memory_1/2: unique users project-wide who reached an
+ * ordinal count via the person_count_after / memory_count_after properties
+ * added to production on 2026-09-13. */
+export function ordinalMilestone(
   event: "person_context_created" | "memory_added",
   property: "person_count_after" | "memory_count_after",
   atLeast: number,
 ): Promise<Observation> {
-  return cohortMilestone(cohort, event, `properties.${property} >= ${atLeast}`);
+  return milestone(event, `properties.${property} >= ${atLeast}`);
 }
 
-/** Day-N return window since each participant's own first_open, N in
- * [1,2,3,4] mapping to Analytics' [0,24h)/[24,48h)/[48,72h)/[72,96h)
- * convention. Denominator only includes participants whose window has fully
- * elapsed; everyone else is `pending`, never counted as a failed return. */
-export async function cohortDayWindowReturn(
-  cohort: CohortIdentity[],
+/** Day-N return window since each user's own first_open, N in [1,2,3,4]
+ * mapping to Analytics' [0,24h)/[24,48h)/[48,72h)/[72,96h) convention.
+ * Project-wide: denominator is everyone whose window has fully elapsed, not
+ * gated behind manual cohort linking. */
+export async function dayWindowReturn(
   returningEvent: string,
   dayIndex: number,
   minimumEvents = 1,
 ): Promise<Observation> {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
   const windowStartHours = (dayIndex - 1) * 24;
   const windowEndHours = dayIndex * 24;
   try {
@@ -167,7 +147,7 @@ export async function cohortDayWindowReturn(
     const rows = await postHogQuery(
       `WITH first_opens AS (
          SELECT distinct_id, min(timestamp) AS first_open_at
-         FROM events WHERE event = 'first_open' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         FROM events WHERE event = 'first_open'
          GROUP BY distinct_id
        ),
        window_closed AS (
@@ -191,28 +171,25 @@ export async function cohortDayWindowReturn(
     return {
       count: returned ?? null,
       denominator: windowClosed ?? null,
-      pending: mapped.length - (windowClosed ?? 0) + unmapped,
       status: "available",
       source: "posthog",
     };
   } catch {
-    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
 
 /** organic_second: a second genuine situation within 72h of the first,
- * attributed organic — mirrors the "Second genuine situation within 72h"
- * PostHog funnel already validated in the PostHog UI this session. */
-export async function organicSecondSituation(cohort: CohortIdentity[]): Promise<Observation> {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+ * attributed organic, project-wide — mirrors the "Second genuine situation
+ * within 72h" PostHog funnel already validated in the PostHog UI. */
+export async function organicSecondSituation(): Promise<Observation> {
   try {
     // Validated against live PostHog data before landing here (join-based,
-    // no correlated subqueries — see cohortDayWindowReturn's comment).
+    // no correlated subqueries — see dayWindowReturn's comment).
     const rows = await postHogQuery(
       `WITH firsts AS (
          SELECT distinct_id, min(timestamp) AS first_at
-         FROM events WHERE event = 'genuine_situation_started' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         FROM events WHERE event = 'genuine_situation_started'
          GROUP BY distinct_id
        ),
        eligible AS (
@@ -230,24 +207,23 @@ export async function organicSecondSituation(cohort: CohortIdentity[]): Promise<
               (SELECT count() FROM organic_second) AS organic_second_count`,
     );
     const [eligible, organicSecond] = (rows[0] as [number, number] | undefined) ?? [0, 0];
-    return { count: organicSecond ?? null, denominator: eligible ?? null, pending: unmapped, status: "available", source: "posthog" };
+    return { count: organicSecond ?? null, denominator: eligible ?? null, status: "available", source: "posthog" };
   } catch {
-    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
 
 /** reminder_return: a reminder_opened followed by response_started from the
- * same person within 30 minutes. Always "assisted", never organic. */
-export async function reminderReturn(cohort: CohortIdentity[]): Promise<Observation> {
-  const { mapped, unmapped } = splitCohort(cohort);
-  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+ * same person within 30 minutes, project-wide. Always "assisted", never
+ * organic. */
+export async function reminderReturn(): Promise<Observation> {
   try {
     // Validated against live PostHog data before landing here (join-based,
-    // no correlated subqueries — see cohortDayWindowReturn's comment).
+    // no correlated subqueries — see dayWindowReturn's comment).
     const rows = await postHogQuery(
       `WITH opens AS (
          SELECT distinct_id, timestamp AS opened_at
-         FROM events WHERE event = 'reminder_opened' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         FROM events WHERE event = 'reminder_opened'
        ),
        matched AS (
          SELECT DISTINCT opens.distinct_id AS distinct_id
@@ -260,10 +236,10 @@ export async function reminderReturn(cohort: CohortIdentity[]): Promise<Observat
               (SELECT count() FROM matched) AS returned_count`,
     );
     const [openedCount, returnedCount] = (rows[0] as [number, number] | undefined) ?? [0, 0];
-    if (!openedCount) return { count: null, denominator: null, pending: cohort.length, status: "unavailable", source: "posthog" };
-    return { count: returnedCount ?? null, denominator: openedCount ?? null, pending: unmapped, status: "available", source: "posthog" };
+    if (!openedCount) return { count: null, denominator: null, status: "unavailable", source: "posthog" };
+    return { count: returnedCount ?? null, denominator: openedCount ?? null, status: "available", source: "posthog" };
   } catch {
-    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+    return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
 

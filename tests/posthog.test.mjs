@@ -14,9 +14,9 @@ const outfile = resolve(mkdtempSync('tests/.tmp-posthog-'), 'posthog.mjs');
 await build({ entryPoints: ['lib/posthog.ts'], outfile, bundle: true, platform: 'node', format: 'esm', target: 'node22', packages: 'external', alias: { '@': './' } });
 const {
   unavailable,
-  cohortMilestone,
-  cohortOrdinalMilestone,
-  cohortDayWindowReturn,
+  milestone,
+  ordinalMilestone,
+  dayWindowReturn,
   hogqlString,
   organicSecondSituation,
   reminderReturn,
@@ -29,44 +29,19 @@ test('unavailable() never fabricates a count', () => {
   assert.deepEqual(unavailable('manual'), { count: null, status: 'unavailable', source: 'manual' });
 });
 
-test('an entirely unmapped cohort is pending, never zero, and never queries PostHog', async () => {
-  const cohort = [{ participantId: 'p1', distinctId: null }, { participantId: 'p2', distinctId: null }];
+test('every project-wide metric degrades to error without credentials, never a fabricated count', async () => {
   for (const observation of await Promise.all([
-    cohortMilestone(cohort, 'first_open'),
-    cohortOrdinalMilestone(cohort, 'person_context_created', 'person_count_after', 2),
-    cohortDayWindowReturn(cohort, 'wingman_opened', 1),
-    organicSecondSituation(cohort),
-    reminderReturn(cohort),
+    milestone('first_open'),
+    ordinalMilestone('person_context_created', 'person_count_after', 2),
+    dayWindowReturn('wingman_opened', 1),
+    organicSecondSituation(),
+    reminderReturn(),
+    activeUsersForPeriod('today'),
+    requestCount('response_completed'),
   ])) {
-    assert.equal(observation.status, 'pending');
+    assert.equal(observation.status, 'error');
     assert.equal(observation.count, null);
   }
-});
-
-test('activeUsersForPeriod is project-wide, not gated on cohort linking, and degrades to error without credentials', async () => {
-  const observation = await activeUsersForPeriod('today');
-  assert.equal(observation.status, 'error');
-  assert.equal(observation.count, null);
-});
-
-test('an empty cohort is pending rather than an available zero', async () => {
-  const observation = await cohortMilestone([], 'first_open');
-  assert.equal(observation.status, 'pending');
-  assert.equal(observation.count, null);
-  assert.equal(observation.denominator, null);
-});
-
-test('a mapped cohort with no PostHog credentials degrades to error, not a fabricated count', async () => {
-  const cohort = [{ participantId: 'p1', distinctId: 'abc123' }];
-  const observation = await cohortMilestone(cohort, 'first_open');
-  assert.equal(observation.status, 'error');
-  assert.equal(observation.count, null);
-});
-
-test('requestCount (no cohort scoping) also degrades to error without credentials, never a fabricated count', async () => {
-  const observation = await requestCount('response_completed');
-  assert.equal(observation.status, 'error');
-  assert.equal(observation.count, null);
 });
 
 test('five-message Day 1 measurement requires five events, not merely one', async () => {
@@ -85,7 +60,7 @@ test('five-message Day 1 measurement requires five events, not merely one', asyn
     return new Response(JSON.stringify({ results: [[1, 1]] }), { status: 200 });
   };
   try {
-    const result = await cohortDayWindowReturn([{ participantId: 'P0-001', distinctId: 'user-1' }], 'response_started', 1, 5);
+    const result = await dayWindowReturn('response_started', 1, 5);
     assert.match(query, /HAVING count\(\) >= 5/);
     assert.equal(result.count, 1);
     assert.equal(result.denominator, 1);
@@ -97,6 +72,6 @@ test('five-message Day 1 measurement requires five events, not merely one', asyn
   }
 });
 
-test('PostHog distinct IDs are safely quoted before forming HogQL', () => {
+test('PostHog string literals are safely quoted before forming HogQL', () => {
   assert.equal(hogqlString("person' OR 1=1"), "'person'' OR 1=1'");
 });

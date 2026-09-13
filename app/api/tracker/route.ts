@@ -11,14 +11,13 @@ import type {
 import { metricPassed } from "@/lib/tracker-types";
 import {
   activeUsersForPeriod,
-  cohortDayWindowReturn,
-  cohortMilestone,
-  cohortOrdinalMilestone,
+  dayWindowReturn,
+  milestone,
+  ordinalMilestone,
   organicSecondSituation,
   reminderReturn,
   requestCount,
   unavailable,
-  type CohortIdentity,
   type Observation,
   type Phase0Snapshot,
 } from "@/lib/posthog";
@@ -794,16 +793,6 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
   if (cached && Date.now() - Date.parse(cached.computed_at) < PHASE0_CACHE_TTL_MS) {
     return JSON.parse(cached.payload) as Phase0Snapshot;
   }
-  const cohortRows = await database
-    .prepare(
-      "SELECT participant_id, posthog_distinct_id FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'",
-    )
-    .all<{ participant_id: string; posthog_distinct_id: string | null }>();
-  const cohort: CohortIdentity[] = cohortRows.results.map((row) => ({
-    participantId: row.participant_id,
-    distinctId: row.posthog_distinct_id,
-  }));
-
   const interviewRows = await database
     .prepare(
       "SELECT founder_suggested_situation FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'",
@@ -847,26 +836,26 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     activeMonth,
     activeAll,
   ] = await Promise.all([
-    cohortMilestone(cohort, "first_open"),
-    cohortMilestone(cohort, "onboarding_completed"),
-    cohortMilestone(cohort, "response_completed"),
-    cohortMilestone(cohort, "calendar_event_created"),
-    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 1),
-    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 2),
-    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 3),
-    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 1),
-    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 2),
-    cohortDayWindowReturn(cohort, "wingman_opened", 1),
-    cohortDayWindowReturn(cohort, "response_started", 1, 5),
-    cohortDayWindowReturn(cohort, "response_started", 1),
-    cohortDayWindowReturn(cohort, "wingman_opened", 2),
-    cohortDayWindowReturn(cohort, "wingman_opened", 3),
-    cohortDayWindowReturn(cohort, "wingman_opened", 4),
-    cohortDayWindowReturn(cohort, "response_started", 2),
-    cohortDayWindowReturn(cohort, "response_started", 3),
-    cohortDayWindowReturn(cohort, "response_started", 4),
-    organicSecondSituation(cohort),
-    reminderReturn(cohort),
+    milestone("first_open"),
+    milestone("onboarding_completed"),
+    milestone("response_completed"),
+    milestone("calendar_event_created"),
+    ordinalMilestone("person_context_created", "person_count_after", 1),
+    ordinalMilestone("person_context_created", "person_count_after", 2),
+    ordinalMilestone("person_context_created", "person_count_after", 3),
+    ordinalMilestone("memory_added", "memory_count_after", 1),
+    ordinalMilestone("memory_added", "memory_count_after", 2),
+    dayWindowReturn("wingman_opened", 1),
+    dayWindowReturn("response_started", 1, 1),
+    dayWindowReturn("response_started", 1, 5),
+    dayWindowReturn("wingman_opened", 2),
+    dayWindowReturn("wingman_opened", 3),
+    dayWindowReturn("wingman_opened", 4),
+    dayWindowReturn("response_started", 2),
+    dayWindowReturn("response_started", 3),
+    dayWindowReturn("response_started", 4),
+    organicSecondSituation(),
+    reminderReturn(),
     requestCount("response_completed"),
     requestCount("response_failed"),
     activeUsersForPeriod("today"),
