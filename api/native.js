@@ -237,10 +237,15 @@ async function scalar(hogql) {
 function hogqlString(value) {
   return `'${value.replace(/'/g, "''")}'`;
 }
+var MEASUREMENT_START = "2026-09-13T15:31:00+05:30";
+var PHASE0_SCHEMA_VERSION = "2026-09-phase0.1";
+function phase0Filter(prefix = "") {
+  return `${prefix}properties.analytics_schema_version = ${hogqlString(PHASE0_SCHEMA_VERSION)} AND ${prefix}timestamp >= toDateTime(${hogqlString(MEASUREMENT_START)})`;
+}
 async function milestone(event, extraWhere = "") {
   try {
     const count = await scalar(
-      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}'${extraWhere ? ` AND ${extraWhere}` : ""}`
+      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}' AND ${phase0Filter()}${extraWhere ? ` AND ${extraWhere}` : ""}`
     );
     return { count, status: "available", source: "posthog" };
   } catch {
@@ -257,7 +262,7 @@ async function dayWindowReturn(returningEvent, dayIndex, minimumEvents = 1) {
     const rows = await postHogQuery(
       `WITH first_opens AS (
          SELECT distinct_id, min(timestamp) AS first_open_at
-         FROM events WHERE event = 'first_open'
+         FROM events WHERE event = 'first_open' AND ${phase0Filter()}
          GROUP BY distinct_id
        ),
        window_closed AS (
@@ -269,6 +274,7 @@ async function dayWindowReturn(returningEvent, dayIndex, minimumEvents = 1) {
          FROM events AS e
          INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
          WHERE e.event = '${returningEvent}'
+           AND ${phase0Filter("e.")}
            AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
            AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
          GROUP BY e.distinct_id
@@ -293,7 +299,7 @@ async function organicSecondSituation() {
     const rows = await postHogQuery(
       `WITH firsts AS (
          SELECT distinct_id, min(timestamp) AS first_at
-         FROM events WHERE event = 'genuine_situation_started'
+         FROM events WHERE event = 'genuine_situation_started' AND ${phase0Filter()}
          GROUP BY distinct_id
        ),
        eligible AS (
@@ -304,6 +310,7 @@ async function organicSecondSituation() {
          FROM events AS e
          INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
          WHERE e.event = 'second_situation_started'
+           AND ${phase0Filter("e.")}
            AND e.properties.return_source = 'organic'
            AND e.timestamp < el.first_at + INTERVAL 72 HOUR
        )
@@ -321,13 +328,14 @@ async function reminderReturn() {
     const rows = await postHogQuery(
       `WITH opens AS (
          SELECT distinct_id, timestamp AS opened_at
-         FROM events WHERE event = 'reminder_opened'
+         FROM events WHERE event = 'reminder_opened' AND ${phase0Filter()}
        ),
        matched AS (
          SELECT DISTINCT opens.distinct_id AS distinct_id
          FROM opens
          INNER JOIN events AS r ON r.distinct_id = opens.distinct_id
          WHERE r.event = 'response_started'
+           AND ${phase0Filter("r.")}
            AND r.timestamp >= opens.opened_at AND r.timestamp < opens.opened_at + INTERVAL 30 MINUTE
        )
        SELECT (SELECT count(DISTINCT distinct_id) FROM opens) AS opened_count,
@@ -342,20 +350,19 @@ async function reminderReturn() {
 }
 async function requestCount(event) {
   try {
-    const count = await scalar(`SELECT count() FROM events WHERE event = '${event}'`);
+    const count = await scalar(`SELECT count() FROM events WHERE event = '${event}' AND ${phase0Filter()}`);
     return { count, status: "available", source: "posthog" };
   } catch {
     return { count: null, status: "error", source: "posthog" };
   }
 }
 var IST_TZ = "Asia/Kolkata";
-var MEASUREMENT_START = "2026-09-13T00:00:00+05:30";
 async function activeUsersForPeriod(period) {
   const boundary = period === "today" ? `toStartOfDay(toTimeZone(now(), '${IST_TZ}'))` : period === "week" ? `toStartOfWeek(toTimeZone(now(), '${IST_TZ}'), 1)` : period === "month" ? `toStartOfMonth(toTimeZone(now(), '${IST_TZ}'))` : `toDateTime('${MEASUREMENT_START}')`;
   try {
     const count = await scalar(
       `SELECT count(DISTINCT distinct_id) FROM events
-       WHERE event = 'wingman_opened' AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`
+       WHERE event = 'wingman_opened' AND ${phase0Filter()} AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`
     );
     return { count, status: "available", source: "posthog" };
   } catch {

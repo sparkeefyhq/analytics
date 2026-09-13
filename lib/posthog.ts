@@ -95,6 +95,33 @@ export function hogqlString(value: string): string {
 }
 
 /**
+ * Launch-reset watermark: the moment "today" starts for every Phase 0
+ * metric, matching the `date_from` baked into the PostHog "Sparkeefy
+ * Founder View" dashboard's own insights exactly (verified live via
+ * `system.insights` on 2026-09-13). Everything before this — dev/test
+ * traffic from earlier setup and testing — must never count.
+ *
+ * IMPORTANT: if that PostHog dashboard is ever reset again to a new
+ * moment, this constant must be updated to match, or the two dashboards
+ * will silently drift apart again the way they did before this fix.
+ */
+export const MEASUREMENT_START = "2026-09-13T15:31:00+05:30";
+
+const PHASE0_SCHEMA_VERSION = "2026-09-phase0.1";
+
+/**
+ * The same two-part filter every PostHog "Sparkeefy Founder View" insight
+ * applies: the current Phase 0 instrumentation schema tag, and the launch
+ * watermark above. Apply this to every base event reference in every query
+ * below (pass the table alias, e.g. "e.", when the query aliases `events`)
+ * so our own analytics page can never show a different number than the
+ * PostHog dashboard for the same underlying event.
+ */
+function phase0Filter(prefix = ""): string {
+  return `${prefix}properties.analytics_schema_version = ${hogqlString(PHASE0_SCHEMA_VERSION)} AND ${prefix}timestamp >= toDateTime(${hogqlString(MEASUREMENT_START)})`;
+}
+
+/**
  * A specific, known person's PostHog identity — still used by the private
  * Users page (app/api/control/users/route.ts) to look up one individual's
  * own activity. Unrelated to the aggregate metrics below, which are
@@ -109,7 +136,7 @@ export type CohortIdentity = { participantId: string; distinctId: string | null 
 export async function milestone(event: string, extraWhere = ""): Promise<Observation> {
   try {
     const count = await scalar(
-      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}'${extraWhere ? ` AND ${extraWhere}` : ""}`,
+      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}' AND ${phase0Filter()}${extraWhere ? ` AND ${extraWhere}` : ""}`,
     );
     return { count, status: "available", source: "posthog" };
   } catch {
@@ -147,7 +174,7 @@ export async function dayWindowReturn(
     const rows = await postHogQuery(
       `WITH first_opens AS (
          SELECT distinct_id, min(timestamp) AS first_open_at
-         FROM events WHERE event = 'first_open'
+         FROM events WHERE event = 'first_open' AND ${phase0Filter()}
          GROUP BY distinct_id
        ),
        window_closed AS (
@@ -159,6 +186,7 @@ export async function dayWindowReturn(
          FROM events AS e
          INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
          WHERE e.event = '${returningEvent}'
+           AND ${phase0Filter("e.")}
            AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
            AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
          GROUP BY e.distinct_id
@@ -189,7 +217,7 @@ export async function organicSecondSituation(): Promise<Observation> {
     const rows = await postHogQuery(
       `WITH firsts AS (
          SELECT distinct_id, min(timestamp) AS first_at
-         FROM events WHERE event = 'genuine_situation_started'
+         FROM events WHERE event = 'genuine_situation_started' AND ${phase0Filter()}
          GROUP BY distinct_id
        ),
        eligible AS (
@@ -200,6 +228,7 @@ export async function organicSecondSituation(): Promise<Observation> {
          FROM events AS e
          INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
          WHERE e.event = 'second_situation_started'
+           AND ${phase0Filter("e.")}
            AND e.properties.return_source = 'organic'
            AND e.timestamp < el.first_at + INTERVAL 72 HOUR
        )
@@ -223,13 +252,14 @@ export async function reminderReturn(): Promise<Observation> {
     const rows = await postHogQuery(
       `WITH opens AS (
          SELECT distinct_id, timestamp AS opened_at
-         FROM events WHERE event = 'reminder_opened'
+         FROM events WHERE event = 'reminder_opened' AND ${phase0Filter()}
        ),
        matched AS (
          SELECT DISTINCT opens.distinct_id AS distinct_id
          FROM opens
          INNER JOIN events AS r ON r.distinct_id = opens.distinct_id
          WHERE r.event = 'response_started'
+           AND ${phase0Filter("r.")}
            AND r.timestamp >= opens.opened_at AND r.timestamp < opens.opened_at + INTERVAL 30 MINUTE
        )
        SELECT (SELECT count(DISTINCT distinct_id) FROM opens) AS opened_count,
@@ -246,7 +276,7 @@ export async function reminderReturn(): Promise<Observation> {
 /** responses_complete / responses_failed: request counts, not user counts. */
 export async function requestCount(event: "response_completed" | "response_failed"): Promise<Observation> {
   try {
-    const count = await scalar(`SELECT count() FROM events WHERE event = '${event}'`);
+    const count = await scalar(`SELECT count() FROM events WHERE event = '${event}' AND ${phase0Filter()}`);
     return { count, status: "available", source: "posthog" };
   } catch {
     return { count: null, status: "error", source: "posthog" };
@@ -254,10 +284,6 @@ export async function requestCount(event: "response_completed" | "response_faile
 }
 
 const IST_TZ = "Asia/Kolkata";
-/** Measurement-start watermark for the "all" active-users window — the day
- * Phase 0 instrumentation went live in production. Not a magic literal
- * scattered through query strings. */
-export const MEASUREMENT_START = "2026-09-13T00:00:00+05:30";
 
 export type ActivePeriod = "today" | "week" | "month" | "all";
 
@@ -280,7 +306,7 @@ export async function activeUsersForPeriod(period: ActivePeriod): Promise<Observ
   try {
     const count = await scalar(
       `SELECT count(DISTINCT distinct_id) FROM events
-       WHERE event = 'wingman_opened' AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`,
+       WHERE event = 'wingman_opened' AND ${phase0Filter()} AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`,
     );
     return { count, status: "available", source: "posthog" };
   } catch {
