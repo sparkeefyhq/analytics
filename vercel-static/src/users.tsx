@@ -20,7 +20,7 @@ export function UsersPage({allowed,onLogin}:{allowed:boolean;onLogin:()=>void}) 
   const data=live.data?.version===1?live.data:undefined;
   const users=(Array.isArray(data?.users)?data.users:[]).filter(user=>[user.name,user.email,user.phone].some(v=>v?.toLowerCase().includes(query.toLowerCase())));
   return <section className="control-page users-page"><header className="control-header"><h1>Users</h1>{allowed&&<button className="control-secondary" onClick={live.refresh}>Refresh</button>}</header>
-    {!allowed||live.denied?<article className="signal-card users-empty"><h2>Private user analytics</h2><p>Personal details are not available on this public dashboard.</p></article>:<>
+    {!allowed||live.denied?<article className="signal-card users-empty"><h2>Private user analytics</h2><p>Personal details are available only in the admin workspace.</p><button className="control-secondary" onClick={onLogin}>Admin sign in</button></article>:<>
       <p className="p0-caption">{data?.updatedAt?`Data through ${date(data.updatedAt)} · Checks every 30s`:'Awaiting user data connection'}</p>
       {live.error&&<p role="alert" className="p0-caption">{live.error}</p>}
       {id&&<button className="control-secondary" onClick={()=>setId(null)}>← All users</button>}
