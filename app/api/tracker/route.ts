@@ -12,11 +12,14 @@ import { metricPassed } from "@/lib/tracker-types";
 import {
   activeUsersForPeriod,
   dayWindowReturn,
+  daysActiveWithinWindow,
   milestone,
   ordinalMilestone,
   organicSecondSituation,
+  personReused,
   reminderReturn,
   requestCount,
+  responsesRetried,
   topUsersByMessages,
   totalMessagesSent,
   unavailable,
@@ -830,9 +833,13 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     returnRequestDay3,
     returnRequestDay4,
     organicSecond,
+    requestDays2,
+    requestDays3,
+    personReusedObservation,
     reminderReturnObservation,
     responsesComplete,
     responsesFailed,
+    responsesRetriedObservation,
     totalMessages,
     activeToday,
     activeWeek,
@@ -859,9 +866,13 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     dayWindowReturn("response_started", 3),
     dayWindowReturn("response_started", 4),
     organicSecondSituation(),
+    daysActiveWithinWindow(2),
+    daysActiveWithinWindow(3),
+    personReused(),
     reminderReturn(),
     requestCount("response_completed"),
     requestCount("response_failed"),
+    responsesRetried(),
     totalMessagesSent(),
     activeUsersForPeriod("today"),
     activeUsersForPeriod("week"),
@@ -897,22 +908,20 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
       return_request_day3: returnRequestDay3,
       return_request_day4: returnRequestDay4,
       organic_second: organicSecond,
-      // request_days_2/3 and person_reused/memory_reused need a slightly
-      // different windowed-days join than the boolean return-window helper
-      // above provides; left unavailable rather than approximated until a
-      // dedicated query is written and validated the same way as the rest
-      // of this file's queries were before landing.
-      request_days_2: unavailable(),
-      request_days_3: unavailable(),
-      person_reused: unavailable(),
+      request_days_2: requestDays2,
+      request_days_3: requestDays3,
+      person_reused: personReusedObservation,
+      // Wingman's response-generation path does not fetch or inject saved
+      // memories into any reply today (confirmed: listOwnMemories/
+      // countOwnMemories are only used by the memory CRUD endpoints, never
+      // by the chat turn handler) — there is no signal to build this from
+      // without fabricating one. This is a product gap, not a tracking gap.
       memory_reused: unavailable(),
       reminder_return: reminderReturnObservation,
       opportunity_repeat: opportunityRepeat,
       responses_complete: responsesComplete,
       responses_failed: responsesFailed,
-      // No retry event exists in the current instrumentation — never
-      // approximated from another signal.
-      responses_retried: unavailable(),
+      responses_retried: responsesRetriedObservation,
       total_messages_sent: totalMessages,
     },
     topUsers: topUsers.status === "available" ? topUsers.users : [],

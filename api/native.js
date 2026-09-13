@@ -296,6 +296,60 @@ async function dayWindowReturn(returningEvent, dayIndex, minimumEvents = 1) {
     return { count: null, denominator: null, status: "error", source: "posthog" };
   }
 }
+async function daysActiveWithinWindow(minDays) {
+  try {
+    const rows = await postHogQuery(
+      `WITH first_opens AS (
+         SELECT distinct_id, min(timestamp) AS first_open_at
+         FROM events WHERE event = 'first_open' AND ${phase0Filter()}
+         GROUP BY distinct_id
+       ),
+       daily AS (
+         SELECT e.distinct_id AS distinct_id,
+                intDiv(dateDiff('second', fo.first_open_at, e.timestamp), 86400) AS day_index
+         FROM events AS e
+         INNER JOIN first_opens AS fo ON e.distinct_id = fo.distinct_id
+         WHERE e.event = 'response_started' AND ${phase0Filter("e.")}
+           AND e.timestamp >= fo.first_open_at AND e.timestamp < fo.first_open_at + INTERVAL 72 HOUR
+       ),
+       distinct_days AS (
+         SELECT distinct_id, count(DISTINCT day_index) AS days_active FROM daily GROUP BY distinct_id
+       )
+       SELECT (SELECT count() FROM first_opens) AS total_first_opens,
+              (SELECT count() FROM distinct_days WHERE days_active >= ${minDays}) AS reached_count`
+    );
+    const [totalFirstOpens, reached] = rows[0] ?? [0, 0];
+    return { count: reached ?? null, denominator: totalFirstOpens ?? null, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: null, status: "error", source: "posthog" };
+  }
+}
+async function personReused() {
+  try {
+    const rows = await postHogQuery(
+      `WITH first_person AS (
+         SELECT distinct_id, min(timestamp) AS created_at
+         FROM events WHERE event = 'person_context_created' AND ${phase0Filter()}
+         GROUP BY distinct_id
+       ),
+       reused AS (
+         SELECT DISTINCT e.distinct_id AS distinct_id
+         FROM events AS e
+         INNER JOIN first_person AS fp ON e.distinct_id = fp.distinct_id
+         WHERE e.event IN ('response_completed', 'response_failed')
+           AND ${phase0Filter("e.")}
+           AND e.properties.used_person_context = true
+           AND e.timestamp > fp.created_at
+       )
+       SELECT (SELECT count() FROM first_person) AS total_with_person,
+              (SELECT count() FROM reused) AS reused_count`
+    );
+    const [totalWithPerson, reused] = rows[0] ?? [0, 0];
+    return { count: reused ?? null, denominator: totalWithPerson ?? null, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: null, status: "error", source: "posthog" };
+  }
+}
 async function organicSecondSituation() {
   try {
     const rows = await postHogQuery(
@@ -361,6 +415,16 @@ async function requestCount(event) {
 async function totalMessagesSent() {
   try {
     const count = await scalar(`SELECT count() FROM events WHERE event = 'response_started' AND ${phase0Filter()}`);
+    return { count, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, status: "error", source: "posthog" };
+  }
+}
+async function responsesRetried() {
+  try {
+    const count = await scalar(
+      `SELECT count() FROM events WHERE event IN ('response_completed', 'response_failed') AND ${phase0Filter()} AND properties.recovery_triggered = true`
+    );
     return { count, status: "available", source: "posthog" };
   } catch {
     return { count: null, status: "error", source: "posthog" };
@@ -1054,9 +1118,13 @@ async function loadPhase0Analytics() {
     returnRequestDay3,
     returnRequestDay4,
     organicSecond,
+    requestDays2,
+    requestDays3,
+    personReusedObservation,
     reminderReturnObservation,
     responsesComplete,
     responsesFailed,
+    responsesRetriedObservation,
     totalMessages,
     activeToday,
     activeWeek,
@@ -1083,9 +1151,13 @@ async function loadPhase0Analytics() {
     dayWindowReturn("response_started", 3),
     dayWindowReturn("response_started", 4),
     organicSecondSituation(),
+    daysActiveWithinWindow(2),
+    daysActiveWithinWindow(3),
+    personReused(),
     reminderReturn(),
     requestCount("response_completed"),
     requestCount("response_failed"),
+    responsesRetried(),
     totalMessagesSent(),
     activeUsersForPeriod("today"),
     activeUsersForPeriod("week"),
@@ -1120,22 +1192,20 @@ async function loadPhase0Analytics() {
       return_request_day3: returnRequestDay3,
       return_request_day4: returnRequestDay4,
       organic_second: organicSecond,
-      // request_days_2/3 and person_reused/memory_reused need a slightly
-      // different windowed-days join than the boolean return-window helper
-      // above provides; left unavailable rather than approximated until a
-      // dedicated query is written and validated the same way as the rest
-      // of this file's queries were before landing.
-      request_days_2: unavailable(),
-      request_days_3: unavailable(),
-      person_reused: unavailable(),
+      request_days_2: requestDays2,
+      request_days_3: requestDays3,
+      person_reused: personReusedObservation,
+      // Wingman's response-generation path does not fetch or inject saved
+      // memories into any reply today (confirmed: listOwnMemories/
+      // countOwnMemories are only used by the memory CRUD endpoints, never
+      // by the chat turn handler) — there is no signal to build this from
+      // without fabricating one. This is a product gap, not a tracking gap.
       memory_reused: unavailable(),
       reminder_return: reminderReturnObservation,
       opportunity_repeat: opportunityRepeat,
       responses_complete: responsesComplete,
       responses_failed: responsesFailed,
-      // No retry event exists in the current instrumentation — never
-      // approximated from another signal.
-      responses_retried: unavailable(),
+      responses_retried: responsesRetriedObservation,
       total_messages_sent: totalMessages
     },
     topUsers: topUsers.status === "available" ? topUsers.users : [],

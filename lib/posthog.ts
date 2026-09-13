@@ -223,6 +223,74 @@ export async function dayWindowReturn(
   }
 }
 
+/** request_days_2 / request_days_3: how many users sent a message on at
+ * least `minDays` distinct calendar days within their own first 3 days
+ * since first_open. Project-wide, live — grows as it happens rather than
+ * waiting for the full 3-day window to close, same philosophy as
+ * dayWindowReturn. Denominator is everyone with a first_open at all, since
+ * day 0 (today) is immediately in scope. */
+export async function daysActiveWithinWindow(minDays: 2 | 3): Promise<Observation> {
+  try {
+    // Validated against live PostHog data before landing here (join-based,
+    // no correlated subqueries — see dayWindowReturn's comment).
+    const rows = await postHogQuery(
+      `WITH first_opens AS (
+         SELECT distinct_id, min(timestamp) AS first_open_at
+         FROM events WHERE event = 'first_open' AND ${phase0Filter()}
+         GROUP BY distinct_id
+       ),
+       daily AS (
+         SELECT e.distinct_id AS distinct_id,
+                intDiv(dateDiff('second', fo.first_open_at, e.timestamp), 86400) AS day_index
+         FROM events AS e
+         INNER JOIN first_opens AS fo ON e.distinct_id = fo.distinct_id
+         WHERE e.event = 'response_started' AND ${phase0Filter("e.")}
+           AND e.timestamp >= fo.first_open_at AND e.timestamp < fo.first_open_at + INTERVAL 72 HOUR
+       ),
+       distinct_days AS (
+         SELECT distinct_id, count(DISTINCT day_index) AS days_active FROM daily GROUP BY distinct_id
+       )
+       SELECT (SELECT count() FROM first_opens) AS total_first_opens,
+              (SELECT count() FROM distinct_days WHERE days_active >= ${minDays}) AS reached_count`,
+    );
+    const [totalFirstOpens, reached] = (rows[0] as [number, number] | undefined) ?? [0, 0];
+    return { count: reached ?? null, denominator: totalFirstOpens ?? null, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: null, status: "error", source: "posthog" };
+  }
+}
+
+/** person_reused: someone who saved a contact and, in a *later* response
+ * (not the same request that created it), had that saved context used
+ * again — the honest "technical reuse" signal, never presented as proof of
+ * usefulness. Project-wide. */
+export async function personReused(): Promise<Observation> {
+  try {
+    const rows = await postHogQuery(
+      `WITH first_person AS (
+         SELECT distinct_id, min(timestamp) AS created_at
+         FROM events WHERE event = 'person_context_created' AND ${phase0Filter()}
+         GROUP BY distinct_id
+       ),
+       reused AS (
+         SELECT DISTINCT e.distinct_id AS distinct_id
+         FROM events AS e
+         INNER JOIN first_person AS fp ON e.distinct_id = fp.distinct_id
+         WHERE e.event IN ('response_completed', 'response_failed')
+           AND ${phase0Filter("e.")}
+           AND e.properties.used_person_context = true
+           AND e.timestamp > fp.created_at
+       )
+       SELECT (SELECT count() FROM first_person) AS total_with_person,
+              (SELECT count() FROM reused) AS reused_count`,
+    );
+    const [totalWithPerson, reused] = (rows[0] as [number, number] | undefined) ?? [0, 0];
+    return { count: reused ?? null, denominator: totalWithPerson ?? null, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: null, status: "error", source: "posthog" };
+  }
+}
+
 /** organic_second: a second genuine situation within 72h of the first,
  * attributed organic, project-wide — mirrors the "Second genuine situation
  * within 72h" PostHog funnel already validated in the PostHog UI. */
@@ -305,6 +373,21 @@ export async function requestCount(event: "response_completed" | "response_faile
 export async function totalMessagesSent(): Promise<Observation> {
   try {
     const count = await scalar(`SELECT count() FROM events WHERE event = 'response_started' AND ${phase0Filter()}`);
+    return { count, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, status: "error", source: "posthog" };
+  }
+}
+
+/** responses_retried: requests where the backend needed an internal
+ * provider-call recovery within the same turn (recovery_triggered=true on
+ * response_completed/response_failed) — surfaced by sparkeefy-backend PR #100.
+ * A request count, not a user count: retries never count as new messages. */
+export async function responsesRetried(): Promise<Observation> {
+  try {
+    const count = await scalar(
+      `SELECT count() FROM events WHERE event IN ('response_completed', 'response_failed') AND ${phase0Filter()} AND properties.recovery_triggered = true`,
+    );
     return { count, status: "available", source: "posthog" };
   } catch {
     return { count: null, status: "error", source: "posthog" };

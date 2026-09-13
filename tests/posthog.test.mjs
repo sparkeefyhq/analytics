@@ -24,6 +24,9 @@ const {
   requestCount,
   totalMessagesSent,
   topUsersByMessages,
+  daysActiveWithinWindow,
+  personReused,
+  responsesRetried,
 } = await import(pathToFileURL(outfile));
 
 test('unavailable() never fabricates a count', () => {
@@ -41,9 +44,86 @@ test('every project-wide metric degrades to error without credentials, never a f
     activeUsersForPeriod('today'),
     requestCount('response_completed'),
     totalMessagesSent(),
+    daysActiveWithinWindow(2),
+    daysActiveWithinWindow(3),
+    personReused(),
+    responsesRetried(),
   ])) {
     assert.equal(observation.status, 'error');
     assert.equal(observation.count, null);
+  }
+});
+
+test('daysActiveWithinWindow reports live progress against everyone with a first_open', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  global.fetch = async () => new Response(JSON.stringify({ results: [[8, 3]] }), { status: 200 });
+  try {
+    const result = await daysActiveWithinWindow(2);
+    assert.equal(result.count, 3);
+    assert.equal(result.denominator, 8);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('personReused only counts reuse in a later response, scoped by who has ever saved a person', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  global.fetch = async () => new Response(JSON.stringify({ results: [[4, 3]] }), { status: 200 });
+  try {
+    const result = await personReused();
+    assert.equal(result.count, 3);
+    assert.equal(result.denominator, 4);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('responsesRetried is a request count, not a user count', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  let query = '';
+  global.fetch = async (_url, init) => {
+    query = JSON.parse(init.body).query.query;
+    return new Response(JSON.stringify({ results: [[7]] }), { status: 200 });
+  };
+  try {
+    const result = await responsesRetried();
+    assert.equal(result.count, 7);
+    assert.match(query, /recovery_triggered = true/);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 
