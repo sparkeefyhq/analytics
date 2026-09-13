@@ -17,6 +17,8 @@ import {
   organicSecondSituation,
   reminderReturn,
   requestCount,
+  topUsersByMessages,
+  totalMessagesSent,
   unavailable,
   type Observation,
   type Phase0Snapshot,
@@ -831,10 +833,12 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     reminderReturnObservation,
     responsesComplete,
     responsesFailed,
+    totalMessages,
     activeToday,
     activeWeek,
     activeMonth,
     activeAll,
+    topUsers,
   ] = await Promise.all([
     milestone("first_open"),
     milestone("onboarding_completed"),
@@ -858,10 +862,12 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     reminderReturn(),
     requestCount("response_completed"),
     requestCount("response_failed"),
+    totalMessagesSent(),
     activeUsersForPeriod("today"),
     activeUsersForPeriod("week"),
     activeUsersForPeriod("month"),
     activeUsersForPeriod("all"),
+    topUsersByMessages(10),
   ]);
 
   const snapshot: Phase0Snapshot = {
@@ -907,7 +913,9 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
       // No retry event exists in the current instrumentation — never
       // approximated from another signal.
       responses_retried: unavailable(),
+      total_messages_sent: totalMessages,
     },
+    topUsers: topUsers.status === "available" ? topUsers.users : [],
     activeUsers: {
       today: activeToday,
       week: activeWeek,

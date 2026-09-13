@@ -32,6 +32,10 @@ export type Phase0Snapshot = {
   updatedAt: string | null;
   metrics: Record<string, Observation>;
   activeUsers: Record<ActivePeriod, Observation>;
+  /** "Which user used Wingman most" — ranked by raw message volume,
+   * project-wide, straight from PostHog. Populated once TopUser is defined
+   * further down this file. */
+  topUsers?: TopUser[];
 };
 
 export const unavailable = (source: ObservationSource = "posthog"): Observation => ({
@@ -157,8 +161,18 @@ export function ordinalMilestone(
 
 /** Day-N return window since each user's own first_open, N in [1,2,3,4]
  * mapping to Analytics' [0,24h)/[24,48h)/[48,72h)/[72,96h) convention.
- * Project-wide: denominator is everyone whose window has fully elapsed, not
- * gated behind manual cohort linking. */
+ * Project-wide, not gated behind manual cohort linking.
+ *
+ * IMPORTANT: the numerator counts anyone who already fired the event within
+ * the *elapsed* portion of their own window — it does NOT wait for the full
+ * window to close first. A launch-day founder needs to see "3 people opened
+ * Wingman on Day 1" grow live as it happens, not a stuck 0 until 24 hours
+ * have passed for every single person. The denominator (`eligible`) is
+ * everyone whose window has at least *started* (for Day 1 that's
+ * everyone with a first_open, immediately); `pending` is how many people
+ * haven't reached that window yet at all. This never fabricates a rate —
+ * it just stops conflating "hasn't happened yet" with "window not done."
+ */
 export async function dayWindowReturn(
   returningEvent: string,
   dayIndex: number,
@@ -177,28 +191,30 @@ export async function dayWindowReturn(
          FROM events WHERE event = 'first_open' AND ${phase0Filter()}
          GROUP BY distinct_id
        ),
-       window_closed AS (
+       eligible AS (
          SELECT distinct_id, first_open_at FROM first_opens
-         WHERE now() >= first_open_at + INTERVAL ${windowEndHours} HOUR
+         WHERE now() >= first_open_at + INTERVAL ${windowStartHours} HOUR
        ),
        returned AS (
          SELECT e.distinct_id AS distinct_id
          FROM events AS e
-         INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
+         INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
          WHERE e.event = '${returningEvent}'
            AND ${phase0Filter("e.")}
-           AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
-           AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
+           AND e.timestamp >= el.first_open_at + INTERVAL ${windowStartHours} HOUR
+           AND e.timestamp < el.first_open_at + INTERVAL ${windowEndHours} HOUR
          GROUP BY e.distinct_id
          HAVING count() >= ${Math.max(1, Math.floor(minimumEvents))}
        )
-       SELECT (SELECT count() FROM window_closed) AS window_closed_count,
+       SELECT (SELECT count() FROM first_opens) AS total_first_opens,
+              (SELECT count() FROM eligible) AS eligible_count,
               (SELECT count() FROM returned) AS returned_count`,
     );
-    const [windowClosed, returned] = (rows[0] as [number, number] | undefined) ?? [0, 0];
+    const [totalFirstOpens, eligible, returned] = (rows[0] as [number, number, number] | undefined) ?? [0, 0, 0];
     return {
       count: returned ?? null,
-      denominator: windowClosed ?? null,
+      denominator: eligible ?? null,
+      pending: Math.max(0, (totalFirstOpens ?? 0) - (eligible ?? 0)),
       status: "available",
       source: "posthog",
     };
@@ -280,6 +296,41 @@ export async function requestCount(event: "response_completed" | "response_faile
     return { count, status: "available", source: "posthog" };
   } catch {
     return { count: null, status: "error", source: "posthog" };
+  }
+}
+
+/** total_messages_sent: every Wingman request that was ever sent, project-wide
+ * — not a user count, a raw message-volume count ("how many messages are we
+ * sending"). */
+export async function totalMessagesSent(): Promise<Observation> {
+  try {
+    const count = await scalar(`SELECT count() FROM events WHERE event = 'response_started' AND ${phase0Filter()}`);
+    return { count, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, status: "error", source: "posthog" };
+  }
+}
+
+export type TopUser = { distinctId: string; email: string | null; messageCount: number };
+
+/** "Which user used Wingman most" — ranked by raw message volume,
+ * project-wide, straight from PostHog. Email comes from whatever the app
+ * already sent PostHog via $identify; genuinely anonymous distinct_ids show
+ * up with a null email rather than a fabricated name. */
+export async function topUsersByMessages(limit = 10): Promise<{ users: TopUser[]; status: "available" | "error" }> {
+  try {
+    const rows = await postHogQuery(
+      `SELECT distinct_id, count() AS messages, any(person.properties.email) AS email
+       FROM events WHERE event = 'response_started' AND ${phase0Filter()}
+       GROUP BY distinct_id ORDER BY messages DESC LIMIT ${Math.max(1, Math.floor(limit))}`,
+    );
+    const users = rows.map((row) => {
+      const [distinctId, messageCount, email] = row as [string, number, string | null];
+      return { distinctId, messageCount, email: email ?? null };
+    });
+    return { users, status: "available" };
+  } catch {
+    return { users: [], status: "error" };
   }
 }
 

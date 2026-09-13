@@ -7,6 +7,8 @@ export type Observation = {
   status: 'available' | 'pending' | 'unavailable' | 'error';
   source: 'posthog' | 'play-console' | 'manual' | 'reconciled';
 };
+export type TopUser = { distinctId: string; email: string | null; messageCount: number };
+
 /** Optional, additive GET /api/tracker.analytics.phase0 contract. */
 export type Phase0Snapshot = {
   version: 1;
@@ -14,6 +16,7 @@ export type Phase0Snapshot = {
   updatedAt: string | null;
   metrics: Record<string, Observation>;
   activeUsers?: Partial<Record<Period, Observation>>;
+  topUsers?: TopUser[];
 };
 export const groups = [
   { title: 'Getting started', rows: [
@@ -43,6 +46,7 @@ export const groups = [
     ['opportunity_repeat', 'Returned when a new situation arose', 'Interview-confirmed opportunity'],
   ] },
   { title: 'Response health', rows: [
+    ['total_messages_sent', 'Total messages sent', 'Every Wingman request, all users'],
     ['responses_complete', 'Complete responses', 'Completed / accepted requests'],
     ['responses_failed', 'Failed responses', 'Unique requests with a terminal failure'],
     ['responses_retried', 'Retried requests', 'Retries do not count as new messages'],

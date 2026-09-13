@@ -265,28 +265,30 @@ async function dayWindowReturn(returningEvent, dayIndex, minimumEvents = 1) {
          FROM events WHERE event = 'first_open' AND ${phase0Filter()}
          GROUP BY distinct_id
        ),
-       window_closed AS (
+       eligible AS (
          SELECT distinct_id, first_open_at FROM first_opens
-         WHERE now() >= first_open_at + INTERVAL ${windowEndHours} HOUR
+         WHERE now() >= first_open_at + INTERVAL ${windowStartHours} HOUR
        ),
        returned AS (
          SELECT e.distinct_id AS distinct_id
          FROM events AS e
-         INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
+         INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
          WHERE e.event = '${returningEvent}'
            AND ${phase0Filter("e.")}
-           AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
-           AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
+           AND e.timestamp >= el.first_open_at + INTERVAL ${windowStartHours} HOUR
+           AND e.timestamp < el.first_open_at + INTERVAL ${windowEndHours} HOUR
          GROUP BY e.distinct_id
          HAVING count() >= ${Math.max(1, Math.floor(minimumEvents))}
        )
-       SELECT (SELECT count() FROM window_closed) AS window_closed_count,
+       SELECT (SELECT count() FROM first_opens) AS total_first_opens,
+              (SELECT count() FROM eligible) AS eligible_count,
               (SELECT count() FROM returned) AS returned_count`
     );
-    const [windowClosed, returned] = rows[0] ?? [0, 0];
+    const [totalFirstOpens, eligible, returned] = rows[0] ?? [0, 0, 0];
     return {
       count: returned ?? null,
-      denominator: windowClosed ?? null,
+      denominator: eligible ?? null,
+      pending: Math.max(0, (totalFirstOpens ?? 0) - (eligible ?? 0)),
       status: "available",
       source: "posthog"
     };
@@ -354,6 +356,30 @@ async function requestCount(event) {
     return { count, status: "available", source: "posthog" };
   } catch {
     return { count: null, status: "error", source: "posthog" };
+  }
+}
+async function totalMessagesSent() {
+  try {
+    const count = await scalar(`SELECT count() FROM events WHERE event = 'response_started' AND ${phase0Filter()}`);
+    return { count, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, status: "error", source: "posthog" };
+  }
+}
+async function topUsersByMessages(limit = 10) {
+  try {
+    const rows = await postHogQuery(
+      `SELECT distinct_id, count() AS messages, any(person.properties.email) AS email
+       FROM events WHERE event = 'response_started' AND ${phase0Filter()}
+       GROUP BY distinct_id ORDER BY messages DESC LIMIT ${Math.max(1, Math.floor(limit))}`
+    );
+    const users = rows.map((row) => {
+      const [distinctId, messageCount, email] = row;
+      return { distinctId, messageCount, email: email ?? null };
+    });
+    return { users, status: "available" };
+  } catch {
+    return { users: [], status: "error" };
   }
 }
 var IST_TZ = "Asia/Kolkata";
@@ -1031,10 +1057,12 @@ async function loadPhase0Analytics() {
     reminderReturnObservation,
     responsesComplete,
     responsesFailed,
+    totalMessages,
     activeToday,
     activeWeek,
     activeMonth,
-    activeAll
+    activeAll,
+    topUsers
   ] = await Promise.all([
     milestone("first_open"),
     milestone("onboarding_completed"),
@@ -1058,10 +1086,12 @@ async function loadPhase0Analytics() {
     reminderReturn(),
     requestCount("response_completed"),
     requestCount("response_failed"),
+    totalMessagesSent(),
     activeUsersForPeriod("today"),
     activeUsersForPeriod("week"),
     activeUsersForPeriod("month"),
-    activeUsersForPeriod("all")
+    activeUsersForPeriod("all"),
+    topUsersByMessages(10)
   ]);
   const snapshot = {
     version: 1,
@@ -1105,8 +1135,10 @@ async function loadPhase0Analytics() {
       responses_failed: responsesFailed,
       // No retry event exists in the current instrumentation — never
       // approximated from another signal.
-      responses_retried: unavailable()
+      responses_retried: unavailable(),
+      total_messages_sent: totalMessages
     },
+    topUsers: topUsers.status === "available" ? topUsers.users : [],
     activeUsers: {
       today: activeToday,
       week: activeWeek,

@@ -22,6 +22,8 @@ const {
   reminderReturn,
   activeUsersForPeriod,
   requestCount,
+  totalMessagesSent,
+  topUsersByMessages,
 } = await import(pathToFileURL(outfile));
 
 test('unavailable() never fabricates a count', () => {
@@ -38,9 +40,51 @@ test('every project-wide metric degrades to error without credentials, never a f
     reminderReturn(),
     activeUsersForPeriod('today'),
     requestCount('response_completed'),
+    totalMessagesSent(),
   ])) {
     assert.equal(observation.status, 'error');
     assert.equal(observation.count, null);
+  }
+});
+
+test('topUsersByMessages degrades to an empty error result without credentials, never fabricated rows', async () => {
+  const result = await topUsersByMessages(10);
+  assert.equal(result.status, 'error');
+  assert.deepEqual(result.users, []);
+});
+
+test('topUsersByMessages ranks by message volume and passes through a null email honestly', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  global.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        results: [
+          ['user-a', 33, 'sarthakverma0802@gmail.com'],
+          ['user-b', 3, null],
+        ],
+      }),
+      { status: 200 },
+    );
+  try {
+    const result = await topUsersByMessages(10);
+    assert.equal(result.status, 'available');
+    assert.deepEqual(result.users, [
+      { distinctId: 'user-a', messageCount: 33, email: 'sarthakverma0802@gmail.com' },
+      { distinctId: 'user-b', messageCount: 3, email: null },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
   }
 });
 
@@ -57,13 +101,44 @@ test('five-message Day 1 measurement requires five events, not merely one', asyn
   let query = '';
   global.fetch = async (_url, init) => {
     query = JSON.parse(init.body).query.query;
-    return new Response(JSON.stringify({ results: [[1, 1]] }), { status: 200 });
+    // [total_first_opens, eligible, returned]
+    return new Response(JSON.stringify({ results: [[1, 1, 1]] }), { status: 200 });
   };
   try {
     const result = await dayWindowReturn('response_started', 1, 5);
     assert.match(query, /HAVING count\(\) >= 5/);
     assert.equal(result.count, 1);
     assert.equal(result.denominator, 1);
+    assert.equal(result.pending, 0);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('dayWindowReturn counts progress live instead of waiting for the whole window to close', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  global.fetch = async () =>
+    // 5 people ever opened the app, but only 2 have reached this window at
+    // all (e.g. Day 1 = everyone immediately; here simulating a later day
+    // where most people's window hasn't started yet), and 1 of those 2
+    // already fired the event today — well before the window would close.
+    new Response(JSON.stringify({ results: [[5, 2, 1]] }), { status: 200 });
+  try {
+    const result = await dayWindowReturn('wingman_opened', 1);
+    assert.equal(result.count, 1, 'numerator must reflect what already happened, not wait for window close');
+    assert.equal(result.denominator, 2, 'denominator is who is eligible so far, not who is done');
+    assert.equal(result.pending, 3, 'the other 3 have not reached this window yet');
   } finally {
     global.fetch = originalFetch;
     for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {

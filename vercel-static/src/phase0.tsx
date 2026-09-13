@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { countText, groups, observation, statusText, type Observation, type Period, type Phase0Snapshot } from './phase0-data';
+import { countText, groups, observation, statusText, type Observation, type Period, type Phase0Snapshot, type TopUser } from './phase0-data';
 import './phase0.css';
 
 function Count({ item }: { item?: Observation }) {
@@ -15,11 +15,20 @@ export function Phase0Tracking({ snapshot, target = 15 }: { snapshot?: Phase0Sna
       <div className="card-row"><h2>Retention</h2><span className="data-chip">Organic returns</span></div>
       <div className="p0-tabs" aria-label="Return activity">{[['open','Opened Wingman'],['request','Sent a message']].map(([id,label]) => <button key={id} aria-pressed={returnType === id} onClick={() => setReturnType(id)}>{label}</button>)}</div>
       <div className="p0-return-grid">{[['day2','Day 2','24–48h'],['day3','Day 3','48–72h'],['day4','Day 4','72–96h']].map(([key,label,window]) => <div key={key}><span>{label}</span><Count item={observation(snapshot,`return_${returnType}_${key}`)} /><small>{window} after first app open</small></div>)}</div>
-      <p className="p0-caption">Day 1 = first 24h after app open. Return counts include only users whose window has finished.</p>
+      <p className="p0-caption">Day 1 = first 24h after app open. Counts update live as it happens — the denominator is how many people have reached that window so far, not how many have finished it.</p>
     </section>
     <div className="p0-groups">{groups.map(group => <section key={group.title} className="signal-card p0-group"><h2>{group.title}</h2>{group.rows.map(([id,label,hint]) => <div className="p0-row" key={id}><div><b>{label}</b><small>{hint}</small></div><Count item={observation(snapshot,id)} /></div>)}</section>)}</div>
     <p className="p0-caption">Tracking and verified launch gates are separate.</p>
   </div>;
+}
+
+function TopUsers({ users }: { users?: TopUser[] }) {
+  return <section className="signal-card p0-top-users">
+    <div className="card-row"><h2>Most active users</h2><span className="data-chip">PostHog</span></div>
+    {!users || users.length === 0
+      ? <p className="p0-caption">No Wingman requests recorded yet.</p>
+      : <ol className="p0-top-users-list">{users.map(user => <li key={user.distinctId}><span>{user.email || `${user.distinctId.slice(0, 12)}…`}</span><strong>{user.messageCount.toLocaleString('en-IN')}<small> messages</small></strong></li>)}</ol>}
+  </section>;
 }
 
 export function Phase0Analytics({ snapshot, target }: { snapshot?: Phase0Snapshot; target?: number }) {
@@ -36,6 +45,7 @@ export function Phase0Analytics({ snapshot, target }: { snapshot?: Phase0Snapsho
     <article className="signal-card users-card p0-users"><div className="card-row"><h2>Users</h2><span className="data-chip">{statusText(snapshot?.activeUsers?.[period])}</span></div><div className="users-number">{countText(snapshot?.activeUsers?.[period])}<small>active users</small></div>
       <div className="user-period" onKeyDown={event => {if(event.key==='Escape')setOpen(false);}} onBlur={event => {if(!event.currentTarget.contains(event.relatedTarget))setOpen(false);}}><button className="period-toggle" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>{periods.find(([id])=>id===period)?.[1]}<span aria-hidden="true">⌃</span></button>{open && <div className="period-menu" role="menu" aria-label="Active user period">{periods.map(([id,label])=><button key={id} role="menuitemradio" aria-checked={period===id} onClick={()=>{setPeriod(id);setOpen(false);}}>{label}</button>)}</div>}</div>
     </article>
+    <TopUsers users={snapshot?.topUsers} />
     <Phase0Tracking snapshot={snapshot} target={target} />
     <article className="signal-card p0-economics"><div><h2>AI cost</h2><p className="p0-caption">Awaiting usage & billing data</p></div><label>Projected users<input aria-label="Projected users" inputMode="numeric" value={projection} aria-invalid={!valid} onChange={event=>setProjection(event.target.value)} />{!valid && <small>Enter a positive whole number.</small>}</label><strong>—</strong></article>
   </section>;
