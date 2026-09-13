@@ -99,7 +99,8 @@ The typed server adapter lives in `lib/analytics-v2/source.ts`; calculations in 
 | Memory 1/3/5/20 | Existing `memory_added.memory_count_after`. Same coverage requirement. |
 | Wingman open/message/response | Existing `wingman_opened`, `response_started`, `response_completed`, `response_failed`. Missing request IDs disable message/response metrics rather than inflate them. |
 | Retries | Existing outcome `recovery_triggered` flag, deduplicated by request. |
-| App/Wingman retention | Existing activity/request events plus reconciled first-open and complete time coverage. |
+| Wingman retention | Existing request events plus reconciled first-open and complete time coverage. |
+| App return | Awaiting verified general app foreground/return instrumentation. Wingman opens alone must not be presented as all-app retention. |
 | Downloads | Play Console connector, store population/date context. Cannot join downloads one-to-one to users. |
 | Meaningful activation / genuine situations / organic repeat | Verified qualification, stable opaque situation ID, organic vs prompted attribution and assistance fields. No ratings assumed. |
 | Sessions / foreground time | Stable session IDs and deduplicated foreground intervals with app lifecycle handling. |

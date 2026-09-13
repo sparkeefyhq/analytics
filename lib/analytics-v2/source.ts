@@ -10,7 +10,6 @@ import {
 
 const EVENTS: Record<string, string> = {
   first_open: 'first_open',
-  app_opened: 'app',
   onboarding_completed: 'onboarding',
   person_context_created: 'person',
   memory_added: 'memory',

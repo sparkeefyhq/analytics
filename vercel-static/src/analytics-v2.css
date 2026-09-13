@@ -163,7 +163,7 @@
   background: #1d1e24;
 }
 .v2-definition {
-  position: relative;
+  position: static;
   flex-shrink: 0;
 }
 .v2-definition summary {
@@ -173,10 +173,11 @@
 }
 .v2-definition p {
   position: absolute;
-  right: 0;
-  top: 10px;
-  width: 240px;
-  max-width: 65vw;
+  right: 12px;
+  left: 12px;
+  top: 40px;
+  width: auto;
+  max-width: none;
   background: #27282e;
   border: 1px solid #51525b;
   padding: 14px;

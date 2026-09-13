@@ -34,6 +34,7 @@ export const DAYS = [1, 3, 7, 15, 30] as const;
 export type ReturnType = 'app' | 'wingman' | 'situation';
 export type Capability =
   | 'activity'
+  | 'app-return'
   | 'onboarding'
   | 'people'
   | 'memory'
@@ -291,7 +292,7 @@ export function calculate(
   ): Metric => {
     const cap: Capability =
       type === 'app'
-        ? 'activity'
+        ? 'app-return'
         : type === 'wingman'
           ? 'wingman'
           : 'situations';

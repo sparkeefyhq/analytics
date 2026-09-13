@@ -13,6 +13,7 @@ export function fixture(now = Date.now()): Dataset {
     facts: [],
     capabilities: [
       'activity',
+      'app-return',
       'onboarding',
       'people',
       'memory',

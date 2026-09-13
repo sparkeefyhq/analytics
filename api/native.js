@@ -2369,7 +2369,7 @@ function calculate(data, cohort, period) {
     (m) => selected(m).some((f) => activeKinds.has(f.kind))
   );
   const retained = (type, day, population = observed) => {
-    const cap = type === "app" ? "activity" : type === "wingman" ? "wingman" : "situations";
+    const cap = type === "app" ? "app-return" : type === "wingman" ? "wingman" : "situations";
     if (data.state !== "available" || !has(cap)) return unavailable2(cap);
     let eligible = 0, returned = 0, pending2 = 0;
     for (const m of population) {
@@ -2745,7 +2745,6 @@ function calculate(data, cohort, period) {
 import { createHmac } from "node:crypto";
 var EVENTS = {
   first_open: "first_open",
-  app_opened: "app",
   onboarding_completed: "onboarding",
   person_context_created: "person",
   memory_added: "memory",
@@ -2953,6 +2952,7 @@ function fixture(now3 = Date.now()) {
     facts: [],
     capabilities: [
       "activity",
+      "app-return",
       "onboarding",
       "people",
       "memory",
