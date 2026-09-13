@@ -3,6 +3,7 @@ import { emailIsAllowed, normaliseEmail, passwordMatches, sessionCookie, EDITOR_
 export const runtime = 'edge';
 
 export async function POST(request: Request) {
+  if (!process.env.SPARKEEFY_LOGIN_PASSWORD) return Response.json({error:'Password login is disabled. This deployment is view-only.'},{status:403});
   try {
     const body = await request.json() as { email?: unknown; password?: unknown };
     const email = typeof body.email === 'string' ? normaliseEmail(body.email) : '';

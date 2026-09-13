@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { env } from './runtime-env';
 
 export const EDITOR_EMAIL = 'sarthakverma0802@gmail.com';
 export const SESSION_COOKIE = 'sparkeefy_launch_session';
@@ -83,6 +83,7 @@ export function clearSessionCookie() {
 }
 
 export async function getSession(request: Request): Promise<SessionPayload | null> {
+  if (!process.env.SPARKEEFY_LOGIN_PASSWORD) return null;
   try {
     const session = cookieValue(request, SESSION_COOKIE);
     if (!session) return null;

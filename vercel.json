@@ -1,10 +1,9 @@
 {
   "version": 2,
-  "buildCommand": "npx vite build --config vercel-static/vite.config.ts",
+  "buildCommand": "node scripts/build-vercel-api.mjs && npx vite build --config vercel-static/vite.config.ts",
   "outputDirectory": "vercel-static/dist",
   "rewrites": [
-    { "source": "/api/control/users", "destination": "/api/control-users" },
-    { "source": "/api/(.*)", "destination": "/api/proxy?path=api/$1" },
+    { "source": "/api/(.*)", "destination": "/api/native?path=/api/$1" },
     { "source": "/analytics", "destination": "/index.html" },
     { "source": "/plan", "destination": "/index.html" },
     { "source": "/users", "destination": "/index.html" },

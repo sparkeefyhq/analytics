@@ -1,5 +1,6 @@
-# Vercel hosts only the static Control bundle and API proxy.
+# Vercel hosts the Control frontend and native API; private exports never deploy.
 .openai
+.migration
 .wrangler
 .vinext
 .sites-runtime

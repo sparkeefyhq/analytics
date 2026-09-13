@@ -1,5 +1,7 @@
 # Control compatibility preview audit
 
+> Historical pre-migration audit. See README.md for the current Vercel-native deployment; the proxy and Sites architecture below are no longer used.
+
 ## Deployment architecture verified
 
 - Vercel project: `prj_jnhFefxVNmT70PzO2gED37mHtCti`, team `team_sypLNO52lHCpU82bDyEkp2ri`.

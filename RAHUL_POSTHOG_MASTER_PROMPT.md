@@ -4,21 +4,17 @@ You are implementing the backend integration for the existing Sparkeefy Control 
 
 ## 1. Establish the exact code and deployment
 
-The owner's local Control checkout is `/Users/sarthak/Developer/Sparkeefy/sparkeefy-launch-tracker`.
-Repository: `https://git.chatgpt-team.site/c394e6b7-4f7c-4777-b303-38bcb729a4e4/appgprj_6a9dc13c638c8191ac21a0b81d55e02a.git`.
-Base HEAD at handoff: `5dc000d46242049b99efe1346314db4f374257ff`.
-IMPORTANT: the current UI/integration changes are uncommitted local changes deployed by Vercel CLI. That SHA alone does NOT contain this implementation. Obtain the current source bundle or a new reviewed commit from the owner before starting. Do not reset the working tree or assume this private repository is accessible from your account.
+Repository: https://github.com/sparkeefyhq/analytics (private), branch main. Use the latest migration commit; older Sites SHAs and proxy instructions are obsolete.
 
-Read these current files first:
-- `CONTROL_PHASE0_API_CONTRACT.md` — aggregate definitions, field IDs and denominators.
-- `USERS_POSTHOG_HANDOFF.md` — private list/detail JSON contracts and measurements.
-- `vercel-static/src/phase0-data.ts`, `phase0.tsx`, `users.tsx`, `live-data.ts`, `control.tsx`.
-- `api/proxy.js`, `api/control-users.js`, `vercel.json` and existing backend tracker/auth code.
+Read README.md, CONTROL_PHASE0_API_CONTRACT.md, USERS_POSTHOG_HANDOFF.md, vercel-static/src/phase0-data.ts, phase0.tsx, users.tsx, live-data.ts, control.tsx, server/vercel-handler.ts, lib/vercel-database.ts and app/api/tracker/route.ts.
 
-The Vercel project is `sparkeefy-launch-control`, project ID `prj_jnhFefxVNmT70PzO2gED37mHtCti`, team ID `team_sypLNO52lHCpU82bDyEkp2ri`.
-The isolated preview backend is `https://sparkeefy-control-preview-backend.samarthvm-0302.chatgpt.site`.
-The production backend is `https://sparkeefy-launch-control.samarthvm-0302.chatgpt.site` — do not point preview tests at it.
-Inspect actual deployment configuration before changing anything. Preview uses server-only `SPARKEEFY_BACKEND_ORIGIN` and `SPARKEEFY_BACKEND_ACCESS_TOKEN`; preserve these through deployment. Never print or commit secret values. Reuse the simple existing proxy architecture.
+Vercel account: sparkeefy@gmail.com. Team: sparkeefys-projects. Project: sparkeefy-launch-control. Project ID: prj_jnhFefxVNmT70PzO2gED37mHtCti. Live URL: https://sparkeefy-launch-control.vercel.app. Frontend AND backend now run on Vercel. Turso database resource: sparkeefy-analytics. No ChatGPT runtime or proxy credentials are needed.
+
+The owner removed password login. Public analytics are view-only; editing and personal user analytics are denied. Before enabling Users list/detail with email, phone or individual behavior, establish an owner-approved staff authentication mechanism. Never remove authorization merely to populate that screen.
+
+TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are server-only environment variables supplied by the Vercel integration. Keep SPARKEEFY_DATABASE_IMPORTED=true and SPARKEEFY_PUBLIC_READONLY=true. Never reset/import over the launch database. Use an isolated development/preview database for mutation tests. The initial migration preview reads the migrated database, so it is NOT a writable sandbox.
+
+Implement API handlers here directly; do not restore api/proxy.js, api/control-users.js, or SPARKEEFY_BACKEND_ORIGIN. The /api/control/users handler in server/vercel-handler.ts currently returns unavailable for authorized users, not real measurements. The aggregate adapter belongs in the server tracker response as analytics.phase0.
 
 ## 2. Audit PostHog before writing queries
 
@@ -70,7 +66,7 @@ C. `GET /api/control/users?id=<opaque user ID>`: return `{version:1,status,updat
 
 Public tracker data must contain only approved aggregates: never names, emails, phones, raw events identifying users, chat text, memory content, contact names or calendar titles. Names/contact and individual analytics belong only in the private Users endpoint.
 
-The Vercel Users gateway already checks `canEdit` with the existing trusted backend on each request. Implement the same staff authorization and cohort/tenant restrictions on the backend endpoint itself: the gateway must not be the only protection. Public, signed-out, expired and non-editor sessions must fail closed before any private lookup. Return private/no-store headers, never public CDN-cache private responses, and do not log personal details or credentials. Test direct backend access as well as the Vercel route. Do not broaden the existing staff role or introduce a public query proxy.
+The native Vercel Users handler checks `canEdit` before any lookup. Password login is now disabled at the owner's request, so the public deployment denies this endpoint. Establish owner-approved staff authentication before wiring personal data, then enforce staff authorization and cohort/tenant restrictions inside every handler. Public, signed-out, expired and non-editor sessions must fail closed before any private lookup. Return private/no-store headers, never public CDN-cache private responses, and do not log personal details or credentials. Test direct `/api/native?path=/api/control/users` access as well as the friendly route. Do not introduce a public query proxy.
 
 ## 6. Make the existing refresh path work
 

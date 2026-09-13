@@ -1,5 +1,7 @@
 # Sparkeefy Control — PostHog backend handoff
 
+> Historical pre-migration document. Hosting, repository, authentication and deployment instructions below are obsolete. Use README.md and RAHUL_POSTHOG_MASTER_PROMPT.md for the current Vercel/Turso architecture.
+
 ## Repository and deployed surfaces
 
 | Item | Value |

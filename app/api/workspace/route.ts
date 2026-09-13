@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:workers';
+import { env } from '@/lib/runtime-env';
 import { EDITOR_EMAIL, trackerAccess } from '@/lib/auth';
 
 export const runtime = 'edge';

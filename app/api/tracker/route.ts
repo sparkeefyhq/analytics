@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env } from "@/lib/runtime-env";
 import { trackerAccess } from "@/lib/auth";
 import type {
   CohortParticipant,
@@ -473,6 +473,9 @@ async function initializeDatabase() {
 // failure so a transient D1 error can recover on the next request.
 let databaseSetup: Promise<void> | null = null;
 function ensureDatabase() {
+  // Imported databases already have their original records and current schema.
+  // Never replay legacy seed/update logic over a migrated launch.
+  if (env.SPARKEEFY_DATABASE_IMPORTED === 'true') return Promise.resolve();
   if (!databaseSetup) {
     databaseSetup = initializeDatabase().catch((error) => {
       databaseSetup = null;
@@ -967,7 +970,7 @@ const bindParticipant = (
 export async function GET(request: Request) {
   try {
     const access = await trackerAccess(request);
-    if (!access.authenticated)
+    if (!access.authenticated && env.SPARKEEFY_PUBLIC_READONLY !== 'true')
       return Response.json(
         { authenticated: false },
         { status: 401, headers: { "Cache-Control": "no-store" } },
