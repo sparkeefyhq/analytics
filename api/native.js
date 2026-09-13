@@ -187,6 +187,197 @@ function metricPassed(metric) {
   return metric.actual >= metric.target;
 }
 
+// lib/posthog.ts
+var unavailable = (source = "posthog") => ({
+  count: null,
+  status: "unavailable",
+  source
+});
+var PostHogUnavailableError = class extends Error {
+};
+function posthogConfig() {
+  const record = env;
+  const host = record.POSTHOG_HOST;
+  const projectId = record.POSTHOG_PROJECT_ID;
+  const apiKey = record.POSTHOG_API_KEY;
+  if (!host || !projectId || !apiKey) return null;
+  return { host, projectId, apiKey };
+}
+async function postHogQuery(hogql) {
+  const config = posthogConfig();
+  if (!config) throw new PostHogUnavailableError("PostHog is not configured.");
+  let response;
+  try {
+    response = await fetch(`${config.host}/api/projects/${config.projectId}/query/`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql } }),
+      signal: AbortSignal.timeout(15e3)
+    });
+  } catch (error) {
+    throw new PostHogUnavailableError(
+      error instanceof Error ? error.message : "PostHog request failed."
+    );
+  }
+  if (!response.ok) {
+    throw new PostHogUnavailableError(`PostHog query failed with status ${response.status}.`);
+  }
+  const body = await response.json();
+  if (!Array.isArray(body.results)) throw new PostHogUnavailableError("Malformed PostHog response.");
+  return body.results;
+}
+async function scalar(hogql) {
+  const rows = await postHogQuery(hogql);
+  const value = rows[0]?.[0];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function idList(distinctIds) {
+  return distinctIds.map((id2) => `'${id2.replace(/'/g, "''")}'`).join(",");
+}
+function splitCohort(cohort) {
+  const mapped = cohort.filter((p) => p.distinctId !== null);
+  const unmapped = cohort.length - mapped.length;
+  return { mapped, unmapped };
+}
+async function cohortMilestone(cohort, event, extraWhere = "") {
+  const { mapped, unmapped } = splitCohort(cohort);
+  if (mapped.length === 0) return { count: null, denominator: cohort.length || null, pending: unmapped, status: "pending", source: "posthog" };
+  try {
+    const count = await scalar(
+      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})${extraWhere ? ` AND ${extraWhere}` : ""}`
+    );
+    return { count, denominator: cohort.length || null, pending: unmapped, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: cohort.length || null, pending: unmapped, status: "error", source: "posthog" };
+  }
+}
+function cohortOrdinalMilestone(cohort, event, property, atLeast) {
+  return cohortMilestone(cohort, event, `properties.${property} >= ${atLeast}`);
+}
+async function cohortDayWindowReturn(cohort, returningEvent, dayIndex) {
+  const { mapped, unmapped } = splitCohort(cohort);
+  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+  const windowStartHours = (dayIndex - 1) * 24;
+  const windowEndHours = dayIndex * 24;
+  try {
+    const rows = await postHogQuery(
+      `WITH first_opens AS (
+         SELECT distinct_id, min(timestamp) AS first_open_at
+         FROM events WHERE event = 'first_open' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         GROUP BY distinct_id
+       ),
+       window_closed AS (
+         SELECT distinct_id, first_open_at FROM first_opens
+         WHERE now() >= first_open_at + INTERVAL ${windowEndHours} HOUR
+       ),
+       returned AS (
+         SELECT DISTINCT e.distinct_id AS distinct_id
+         FROM events AS e
+         INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
+         WHERE e.event = '${returningEvent}'
+           AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
+           AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
+       )
+       SELECT (SELECT count() FROM window_closed) AS window_closed_count,
+              (SELECT count() FROM returned) AS returned_count`
+    );
+    const [windowClosed, returned] = rows[0] ?? [0, 0];
+    return {
+      count: returned ?? null,
+      denominator: windowClosed ?? null,
+      pending: mapped.length - (windowClosed ?? 0) + unmapped,
+      status: "available",
+      source: "posthog"
+    };
+  } catch {
+    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+  }
+}
+async function organicSecondSituation(cohort) {
+  const { mapped, unmapped } = splitCohort(cohort);
+  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+  try {
+    const rows = await postHogQuery(
+      `WITH firsts AS (
+         SELECT distinct_id, min(timestamp) AS first_at
+         FROM events WHERE event = 'genuine_situation_started' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         GROUP BY distinct_id
+       ),
+       eligible AS (
+         SELECT distinct_id, first_at FROM firsts WHERE now() >= first_at + INTERVAL 72 HOUR
+       ),
+       organic_second AS (
+         SELECT DISTINCT e.distinct_id AS distinct_id
+         FROM events AS e
+         INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
+         WHERE e.event = 'second_situation_started'
+           AND e.properties.return_source = 'organic'
+           AND e.timestamp < el.first_at + INTERVAL 72 HOUR
+       )
+       SELECT (SELECT count() FROM eligible) AS eligible_count,
+              (SELECT count() FROM organic_second) AS organic_second_count`
+    );
+    const [eligible, organicSecond] = rows[0] ?? [0, 0];
+    return { count: organicSecond ?? null, denominator: eligible ?? null, pending: unmapped, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+  }
+}
+async function reminderReturn(cohort) {
+  const { mapped, unmapped } = splitCohort(cohort);
+  if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
+  try {
+    const rows = await postHogQuery(
+      `WITH opens AS (
+         SELECT distinct_id, timestamp AS opened_at
+         FROM events WHERE event = 'reminder_opened' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+       ),
+       matched AS (
+         SELECT DISTINCT opens.distinct_id AS distinct_id
+         FROM opens
+         INNER JOIN events AS r ON r.distinct_id = opens.distinct_id
+         WHERE r.event = 'response_started'
+           AND r.timestamp >= opens.opened_at AND r.timestamp < opens.opened_at + INTERVAL 30 MINUTE
+       )
+       SELECT (SELECT count(DISTINCT distinct_id) FROM opens) AS opened_count,
+              (SELECT count() FROM matched) AS returned_count`
+    );
+    const [openedCount, returnedCount] = rows[0] ?? [0, 0];
+    if (!openedCount) return { count: null, denominator: null, pending: cohort.length, status: "unavailable", source: "posthog" };
+    return { count: returnedCount ?? null, denominator: openedCount ?? null, pending: unmapped, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, denominator: null, pending: cohort.length, status: "error", source: "posthog" };
+  }
+}
+async function requestCount(event) {
+  try {
+    const count = await scalar(`SELECT count() FROM events WHERE event = '${event}'`);
+    return { count, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, status: "error", source: "posthog" };
+  }
+}
+var IST_TZ = "Asia/Kolkata";
+var MEASUREMENT_START = "2026-09-13T00:00:00+05:30";
+async function activeUsersForPeriod(cohort, period) {
+  const { mapped, unmapped } = splitCohort(cohort);
+  if (mapped.length === 0) return { count: null, pending: cohort.length, status: "pending", source: "posthog" };
+  const boundary = period === "today" ? `toStartOfDay(toTimeZone(now(), '${IST_TZ}'))` : period === "week" ? `toStartOfWeek(toTimeZone(now(), '${IST_TZ}'), 1)` : period === "month" ? `toStartOfMonth(toTimeZone(now(), '${IST_TZ}'))` : `toDateTime('${MEASUREMENT_START}')`;
+  try {
+    const count = await scalar(
+      `SELECT count(DISTINCT distinct_id) FROM events
+       WHERE event = 'wingman_opened' AND distinct_id IN (${idList(mapped.map((p) => p.distinctId))})
+         AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`
+    );
+    return { count, pending: unmapped, status: "available", source: "posthog" };
+  } catch {
+    return { count: null, pending: cohort.length, status: "error", source: "posthog" };
+  }
+}
+
 // app/api/tracker/route.ts
 var phase0Metrics = [
   {
@@ -364,6 +555,11 @@ async function addMetricColumn(database3, name, definition) {
   const result2 = await database3.prepare("PRAGMA table_info(metrics)").all();
   if (!result2.results.some((column) => column.name === name))
     await database3.prepare(`ALTER TABLE metrics ADD COLUMN ${definition}`).run();
+}
+async function addColumnIfMissing(database3, table, name, definition) {
+  const result2 = await database3.prepare(`PRAGMA table_info(${table})`).all();
+  if (!result2.results.some((column) => column.name === name))
+    await database3.prepare(`ALTER TABLE ${table} ADD COLUMN ${definition}`).run();
 }
 async function initializeDatabase() {
   const database3 = db();
@@ -578,6 +774,27 @@ async function initializeDatabase() {
       )
     );
 }
+var phase0SchemaReady = null;
+function ensurePhase0PostHogSchema() {
+  if (!phase0SchemaReady) {
+    phase0SchemaReady = (async () => {
+      const database3 = db();
+      await addColumnIfMissing(
+        database3,
+        "cohort_evidence",
+        "posthog_distinct_id",
+        "posthog_distinct_id TEXT"
+      );
+      await database3.prepare(
+        "CREATE TABLE IF NOT EXISTS posthog_metric_cache (key TEXT PRIMARY KEY, payload TEXT NOT NULL, computed_at TEXT NOT NULL)"
+      ).run();
+    })().catch((error) => {
+      phase0SchemaReady = null;
+      throw error;
+    });
+  }
+  return phase0SchemaReady;
+}
 var databaseSetup = null;
 function ensureDatabase() {
   if (env.SPARKEEFY_DATABASE_IMPORTED === "true") return Promise.resolve();
@@ -779,6 +996,144 @@ async function loadAnalyticsSnapshot() {
     aiCost: null
   };
 }
+var PHASE0_CACHE_KEY = "phase0-analytics-v1";
+var PHASE0_CACHE_TTL_MS = 45e3;
+async function loadPhase0Analytics() {
+  await ensureDatabase();
+  await ensurePhase0PostHogSchema();
+  const database3 = db();
+  const cached = await database3.prepare("SELECT payload, computed_at FROM posthog_metric_cache WHERE key = ?").bind(PHASE0_CACHE_KEY).first();
+  if (cached && Date.now() - Date.parse(cached.computed_at) < PHASE0_CACHE_TTL_MS) {
+    return JSON.parse(cached.payload);
+  }
+  const cohortRows = await database3.prepare(
+    "SELECT participant_id, posthog_distinct_id FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'"
+  ).all();
+  const cohort = cohortRows.results.map((row) => ({
+    participantId: row.participant_id,
+    distinctId: row.posthog_distinct_id
+  }));
+  const interviewRows = await database3.prepare(
+    "SELECT founder_suggested_situation FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'"
+  ).all();
+  const interviewed = interviewRows.results.length;
+  const opportunityRepeat = interviewed ? {
+    count: interviewRows.results.filter((row) => row.founder_suggested_situation === 1).length,
+    denominator: interviewed,
+    status: "available",
+    source: "manual"
+  } : { count: null, status: "pending", source: "manual" };
+  const [
+    firstOpen,
+    onboarding,
+    firstAnswer,
+    calendarCreated,
+    person1,
+    person2,
+    person3,
+    memory1,
+    memory2,
+    wingmanOpenDay1,
+    firstMessageDay1,
+    fiveMessagesDay1,
+    returnOpenDay2,
+    returnOpenDay3,
+    returnOpenDay4,
+    returnRequestDay2,
+    returnRequestDay3,
+    returnRequestDay4,
+    organicSecond,
+    reminderReturnObservation,
+    responsesComplete,
+    responsesFailed,
+    activeToday,
+    activeWeek,
+    activeMonth,
+    activeAll
+  ] = await Promise.all([
+    cohortMilestone(cohort, "first_open"),
+    cohortMilestone(cohort, "onboarding_completed"),
+    cohortMilestone(cohort, "response_completed"),
+    cohortMilestone(cohort, "calendar_event_created"),
+    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 1),
+    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 2),
+    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 3),
+    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 1),
+    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 2),
+    cohortDayWindowReturn(cohort, "wingman_opened", 1),
+    cohortDayWindowReturn(cohort, "response_started", 1),
+    cohortDayWindowReturn(cohort, "response_started", 1),
+    cohortDayWindowReturn(cohort, "wingman_opened", 2),
+    cohortDayWindowReturn(cohort, "wingman_opened", 3),
+    cohortDayWindowReturn(cohort, "wingman_opened", 4),
+    cohortDayWindowReturn(cohort, "response_started", 2),
+    cohortDayWindowReturn(cohort, "response_started", 3),
+    cohortDayWindowReturn(cohort, "response_started", 4),
+    organicSecondSituation(cohort),
+    reminderReturn(cohort),
+    requestCount("response_completed"),
+    requestCount("response_failed"),
+    activeUsersForPeriod(cohort, "today"),
+    activeUsersForPeriod(cohort, "week"),
+    activeUsersForPeriod(cohort, "month"),
+    activeUsersForPeriod(cohort, "all")
+  ]);
+  const snapshot = {
+    version: 1,
+    cohort: "phase-0",
+    updatedAt: now(),
+    metrics: {
+      // Google Play downloads have no connector in this codebase and are
+      // never substituted with first_open — see CONTROL_PHASE0_API_CONTRACT.md.
+      downloads: unavailable("play-console"),
+      first_open: firstOpen,
+      onboarding,
+      first_answer: firstAnswer,
+      wingman_open_day1: wingmanOpenDay1,
+      first_message_day1: firstMessageDay1,
+      five_messages_day1: fiveMessagesDay1,
+      person_1: person1,
+      person_2: person2,
+      person_3: person3,
+      memory_1: memory1,
+      memory_2: memory2,
+      calendar_created: calendarCreated,
+      return_open_day2: returnOpenDay2,
+      return_open_day3: returnOpenDay3,
+      return_open_day4: returnOpenDay4,
+      return_request_day2: returnRequestDay2,
+      return_request_day3: returnRequestDay3,
+      return_request_day4: returnRequestDay4,
+      organic_second: organicSecond,
+      // request_days_2/3 and person_reused/memory_reused need a slightly
+      // different windowed-days join than the boolean return-window helper
+      // above provides; left unavailable rather than approximated until a
+      // dedicated query is written and validated the same way as the rest
+      // of this file's queries were before landing.
+      request_days_2: unavailable(),
+      request_days_3: unavailable(),
+      person_reused: unavailable(),
+      memory_reused: unavailable(),
+      reminder_return: reminderReturnObservation,
+      opportunity_repeat: opportunityRepeat,
+      responses_complete: responsesComplete,
+      responses_failed: responsesFailed,
+      // No retry event exists in the current instrumentation — never
+      // approximated from another signal.
+      responses_retried: unavailable()
+    },
+    activeUsers: {
+      today: activeToday,
+      week: activeWeek,
+      month: activeMonth,
+      all: activeAll
+    }
+  };
+  await database3.prepare(
+    "INSERT INTO posthog_metric_cache (key,payload,computed_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,computed_at=excluded.computed_at"
+  ).bind(PHASE0_CACHE_KEY, JSON.stringify(snapshot), now()).run();
+  return snapshot;
+}
 function phase0Unmet(phase, releaseGates = []) {
   const unmet = phase.metrics.filter((metric) => !metricPassed(metric)).map((metric) => `${metric.name} has not passed`);
   unmet.push(
@@ -824,11 +1179,30 @@ async function loadPhase1State(phase) {
     phase1Unmet
   };
 }
+async function safeLoadPhase0Analytics() {
+  try {
+    return await loadPhase0Analytics();
+  } catch {
+    return {
+      version: 1,
+      cohort: "phase-0",
+      updatedAt: null,
+      metrics: {},
+      activeUsers: {
+        today: unavailable(),
+        week: unavailable(),
+        month: unavailable(),
+        all: unavailable()
+      }
+    };
+  }
+}
 async function trackerResponse(request) {
-  const [tracker, access, analytics] = await Promise.all([
+  const [tracker, access, analytics, phase0] = await Promise.all([
     loadTracker(),
     trackerAccess(request),
-    loadAnalyticsSnapshot()
+    loadAnalyticsSnapshot(),
+    safeLoadPhase0Analytics()
   ]);
   const phase = tracker.phases.find((item) => item.id === "phase-0");
   const phase1 = tracker.phases.find((item) => item.id === "phase-1");
@@ -837,7 +1211,7 @@ async function trackerResponse(request) {
   return {
     ...tracker,
     ...access,
-    analytics,
+    analytics: { ...analytics, phase0 },
     phase0Unmet: access.canEdit && phase ? phase0Unmet(phase, tracker.releaseGates) : [],
     phase1: {
       ...phase1State,
@@ -1141,7 +1515,16 @@ async function PATCH(request) {
       await database3.prepare(
         "DELETE FROM cohort_evidence WHERE id=? AND phase_id='phase-0'"
       ).bind(body.id).run();
-    else if (body.action === "advance" && body.phaseId && body.patch?.confirmed === true) {
+    else if (body.action === "cohort_link_posthog" && body.id) {
+      const distinctId = safeString(body.patch?.posthogDistinctId).trim().slice(0, 256);
+      if (distinctId.length === 0)
+        return Response.json({ error: "Provide a PostHog distinct_id." }, { status: 400 });
+      const row = await database3.prepare("SELECT id FROM cohort_evidence WHERE id=? AND phase_id='phase-0'").bind(body.id).first();
+      if (!row) return Response.json({ error: "Participant not found." }, { status: 404 });
+      await database3.prepare(
+        "UPDATE cohort_evidence SET posthog_distinct_id=?, updated_at=? WHERE id=?"
+      ).bind(distinctId, timestamp, body.id).run();
+    } else if (body.action === "advance" && body.phaseId && body.patch?.confirmed === true) {
       const tracker = await loadTracker();
       const phase = tracker.phases.find((item) => item.id === body.phaseId);
       if (!phase)
@@ -1250,53 +1633,53 @@ function indiaDate() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(/* @__PURE__ */ new Date());
 }
 async function initializeWorkspace() {
-  const db2 = database2();
-  await db2.batch([
-    db2.prepare(`CREATE TABLE IF NOT EXISTS routines (
+  const db3 = database2();
+  await db3.batch([
+    db3.prepare(`CREATE TABLE IF NOT EXISTS routines (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, title TEXT NOT NULL, time TEXT NOT NULL,
       position INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS routine_occurrences (
+    db3.prepare(`CREATE TABLE IF NOT EXISTS routine_occurrences (
       id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, owner_email TEXT NOT NULL, date TEXT NOT NULL,
       title TEXT NOT NULL, time TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '',
       completed_at TEXT, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_occurrence_unique ON routine_occurrences(routine_id, date)`),
-    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_routine_occurrence_owner_date ON routine_occurrences(owner_email, date)`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS founder_tasks (
+    db3.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_occurrence_unique ON routine_occurrences(routine_id, date)`),
+    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_routine_occurrence_owner_date ON routine_occurrences(owner_email, date)`),
+    db3.prepare(`CREATE TABLE IF NOT EXISTS founder_tasks (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       due_date TEXT, due_time TEXT, priority TEXT NOT NULL DEFAULT 'medium', category TEXT NOT NULL DEFAULT 'General',
       status TEXT NOT NULL DEFAULT 'open', link TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL, completed_at TEXT, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_founder_tasks_owner_status_due ON founder_tasks(owner_email, status, due_date)`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS diary_entries (
+    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_founder_tasks_owner_status_due ON founder_tasks(owner_email, status, due_date)`),
+    db3.prepare(`CREATE TABLE IF NOT EXISTS diary_entries (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, entry_date TEXT NOT NULL, completed TEXT NOT NULL DEFAULT '',
       moved_forward TEXT NOT NULL DEFAULT '', learned TEXT NOT NULL DEFAULT '', blocker TEXT NOT NULL DEFAULT '',
       insight TEXT NOT NULL DEFAULT '', tomorrow TEXT NOT NULL DEFAULT '', mood TEXT NOT NULL DEFAULT 'Focused',
       notes TEXT NOT NULL DEFAULT '', finished_at TEXT, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_owner_date ON diary_entries(owner_email, entry_date)`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS suggestions (
+    db3.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_owner_date ON diary_entries(owner_email, entry_date)`),
+    db3.prepare(`CREATE TABLE IF NOT EXISTS suggestions (
       id TEXT PRIMARY KEY, author_email TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'Other', priority TEXT NOT NULL DEFAULT 'medium', phase_id TEXT,
       status TEXT NOT NULL DEFAULT 'new', pinned INTEGER NOT NULL DEFAULT 0, founder_priority INTEGER NOT NULL DEFAULT 0,
       founder_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestions_status_created ON suggestions(status, created_at DESC)`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS suggestion_replies (
+    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestions_status_created ON suggestions(status, created_at DESC)`),
+    db3.prepare(`CREATE TABLE IF NOT EXISTS suggestion_replies (
       id TEXT PRIMARY KEY, suggestion_id TEXT NOT NULL, author_email TEXT NOT NULL, body TEXT NOT NULL,
       parent_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestion_replies_suggestion ON suggestion_replies(suggestion_id, created_at)`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS suggestion_votes (
+    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestion_replies_suggestion ON suggestion_replies(suggestion_id, created_at)`),
+    db3.prepare(`CREATE TABLE IF NOT EXISTS suggestion_votes (
       suggestion_id TEXT NOT NULL, author_email TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (suggestion_id, author_email)
     )`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS founder_settings (
+    db3.prepare(`CREATE TABLE IF NOT EXISTS founder_settings (
       owner_email TEXT PRIMARY KEY, launch_date TEXT, updated_at TEXT NOT NULL
     )`),
-    db2.prepare(`CREATE TABLE IF NOT EXISTS founder_meetings (
+    db3.prepare(`CREATE TABLE IF NOT EXISTS founder_meetings (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'Other',
       contact TEXT NOT NULL DEFAULT '', scheduled_date TEXT NOT NULL, scheduled_time TEXT NOT NULL,
       meeting_link TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'scheduled',
@@ -1304,50 +1687,50 @@ async function initializeWorkspace() {
       desired_next_step TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', next_step TEXT NOT NULL DEFAULT '',
       follow_up_date TEXT, private_notes TEXT NOT NULL DEFAULT '', deleted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db2.prepare("CREATE INDEX IF NOT EXISTS idx_founder_meetings_owner_date ON founder_meetings(owner_email, scheduled_date, scheduled_time)")
+    db3.prepare("CREATE INDEX IF NOT EXISTS idx_founder_meetings_owner_date ON founder_meetings(owner_email, scheduled_date, scheduled_time)")
   ]);
-  const taskColumns = await db2.prepare("PRAGMA table_info(founder_tasks)").all();
+  const taskColumns = await db3.prepare("PRAGMA table_info(founder_tasks)").all();
   if (!taskColumns.results.some((column) => column.name === "deleted_at")) {
-    await db2.prepare("ALTER TABLE founder_tasks ADD COLUMN deleted_at TEXT").run();
+    await db3.prepare("ALTER TABLE founder_tasks ADD COLUMN deleted_at TEXT").run();
   }
-  const routineColumns = await db2.prepare("PRAGMA table_info(routines)").all();
+  const routineColumns = await db3.prepare("PRAGMA table_info(routines)").all();
   const taskAdditions = ["icon_type TEXT", "icon_source TEXT NOT NULL DEFAULT 'inferred'"];
   const routineAdditions = ["icon_type TEXT", "icon_source TEXT NOT NULL DEFAULT 'inferred'", "link TEXT NOT NULL DEFAULT ''"];
   for (const addition of taskAdditions) {
     const name = addition.split(" ")[0];
-    if (!taskColumns.results.some((column) => column.name === name)) await db2.prepare(`ALTER TABLE founder_tasks ADD COLUMN ${addition}`).run();
+    if (!taskColumns.results.some((column) => column.name === name)) await db3.prepare(`ALTER TABLE founder_tasks ADD COLUMN ${addition}`).run();
   }
   for (const addition of routineAdditions) {
     const name = addition.split(" ")[0];
-    if (!routineColumns.results.some((column) => column.name === name)) await db2.prepare(`ALTER TABLE routines ADD COLUMN ${addition}`).run();
+    if (!routineColumns.results.some((column) => column.name === name)) await db3.prepare(`ALTER TABLE routines ADD COLUMN ${addition}`).run();
   }
-  const untitledTaskIcons = await db2.prepare(`SELECT id, title FROM founder_tasks WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
-  const untitledRoutineIcons = await db2.prepare(`SELECT id, title FROM routines WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
+  const untitledTaskIcons = await db3.prepare(`SELECT id, title FROM founder_tasks WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
+  const untitledRoutineIcons = await db3.prepare(`SELECT id, title FROM routines WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
   if (untitledTaskIcons.results.length || untitledRoutineIcons.results.length) {
-    await db2.batch([
-      ...untitledTaskIcons.results.map((item) => db2.prepare("UPDATE founder_tasks SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id)),
-      ...untitledRoutineIcons.results.map((item) => db2.prepare("UPDATE routines SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id))
+    await db3.batch([
+      ...untitledTaskIcons.results.map((item) => db3.prepare("UPDATE founder_tasks SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id)),
+      ...untitledRoutineIcons.results.map((item) => db3.prepare("UPDATE routines SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id))
     ]);
   }
-  const count = await db2.prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
+  const count = await db3.prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
   if ((count?.count ?? 0) === 0) {
     const timestamp = now2();
-    await db2.batch([
-      db2.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-morning", EDITOR_EMAIL, "Morning Reddit post", "10:00", 0, timestamp, timestamp),
-      db2.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-evening", EDITOR_EMAIL, "Evening Reddit post", "19:00", 1, timestamp, timestamp),
-      db2.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-night", EDITOR_EMAIL, "Night Reddit post", "22:00", 2, timestamp, timestamp)
+    await db3.batch([
+      db3.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-morning", EDITOR_EMAIL, "Morning Reddit post", "10:00", 0, timestamp, timestamp),
+      db3.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-evening", EDITOR_EMAIL, "Evening Reddit post", "19:00", 1, timestamp, timestamp),
+      db3.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-night", EDITOR_EMAIL, "Night Reddit post", "22:00", 2, timestamp, timestamp)
     ]);
   }
-  const misplaced = await db2.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all'").bind(EDITOR_EMAIL).all();
+  const misplaced = await db3.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all'").bind(EDITOR_EMAIL).all();
   if (misplaced.results.length) {
     const timestamp = now2();
     const date = indiaDate();
-    await db2.batch(misplaced.results.flatMap((routine) => [
-      db2.prepare(`INSERT OR IGNORE INTO founder_tasks
+    await db3.batch(misplaced.results.flatMap((routine) => [
+      db3.prepare(`INSERT OR IGNORE INTO founder_tasks
         (id, owner_email, title, description, due_date, due_time, priority, category, status, link, position, created_at, updated_at)
         VALUES (?, ?, ?, '', ?, ?, 'medium', 'Founder', 'open', '', 0, ?, ?)`).bind(`migrated-${String(routine.id)}`, EDITOR_EMAIL, String(routine.title), date, String(routine.time), timestamp, timestamp),
-      db2.prepare("DELETE FROM routine_occurrences WHERE routine_id = ? AND owner_email = ? AND date = ?").bind(String(routine.id), EDITOR_EMAIL, date),
-      db2.prepare("UPDATE routines SET active = 0, updated_at = ? WHERE id = ?").bind(timestamp, String(routine.id))
+      db3.prepare("DELETE FROM routine_occurrences WHERE routine_id = ? AND owner_email = ? AND date = ?").bind(String(routine.id), EDITOR_EMAIL, date),
+      db3.prepare("UPDATE routines SET active = 0, updated_at = ? WHERE id = ?").bind(timestamp, String(routine.id))
     ]));
   }
 }
@@ -1362,11 +1745,11 @@ function ensureWorkspace() {
   return workspaceSetup;
 }
 async function ensureToday(ownerEmail) {
-  const db2 = database2();
+  const db3 = database2();
   const date = indiaDate();
-  const routines = await db2.prepare("SELECT * FROM routines WHERE owner_email = ? AND active = 1 ORDER BY position").bind(ownerEmail).all();
+  const routines = await db3.prepare("SELECT * FROM routines WHERE owner_email = ? AND active = 1 ORDER BY position").bind(ownerEmail).all();
   const timestamp = now2();
-  await db2.batch(routines.results.map((routine) => db2.prepare(`INSERT OR IGNORE INTO routine_occurrences
+  await db3.batch(routines.results.map((routine) => db3.prepare(`INSERT OR IGNORE INTO routine_occurrences
     (id, routine_id, owner_email, date, title, time, status, note, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?)`).bind(`${String(routine.id)}-${date}`, String(routine.id), ownerEmail, date, String(routine.title), String(routine.time), timestamp)));
   return date;
 }
@@ -1377,27 +1760,27 @@ async function founderData(access) {
   requireEditor(access);
   await ensureWorkspace();
   const date = await ensureToday(EDITOR_EMAIL);
-  const db2 = database2();
+  const db3 = database2();
   const [routines, tasks, diary, diaryHistory, meetings, settings] = await Promise.all([
-    db2.prepare(`SELECT routine_occurrences.*, routines.icon_type, routines.icon_source, routines.link
+    db3.prepare(`SELECT routine_occurrences.*, routines.icon_type, routines.icon_source, routines.link
       FROM routine_occurrences LEFT JOIN routines ON routines.id = routine_occurrences.routine_id
       WHERE routine_occurrences.owner_email = ? AND routine_occurrences.date = ? ORDER BY routine_occurrences.time`).bind(EDITOR_EMAIL, date).all(),
-    db2.prepare(`SELECT * FROM founder_tasks WHERE owner_email = ? AND deleted_at IS NULL
+    db3.prepare(`SELECT * FROM founder_tasks WHERE owner_email = ? AND deleted_at IS NULL
       ORDER BY CASE status WHEN 'complete' THEN 1 ELSE 0 END, due_date IS NULL, due_date, due_time IS NULL, due_time, position, created_at DESC`).bind(EDITOR_EMAIL).all(),
-    db2.prepare("SELECT * FROM diary_entries WHERE owner_email = ? AND entry_date = ?").bind(EDITOR_EMAIL, date).first(),
-    db2.prepare("SELECT entry_date, mood, finished_at FROM diary_entries WHERE owner_email = ? ORDER BY entry_date DESC LIMIT 14").bind(EDITOR_EMAIL).all(),
-    db2.prepare("SELECT * FROM founder_meetings WHERE owner_email = ? AND deleted_at IS NULL ORDER BY scheduled_date, scheduled_time").bind(EDITOR_EMAIL).all(),
-    db2.prepare("SELECT launch_date FROM founder_settings WHERE owner_email = ?").bind(EDITOR_EMAIL).first()
+    db3.prepare("SELECT * FROM diary_entries WHERE owner_email = ? AND entry_date = ?").bind(EDITOR_EMAIL, date).first(),
+    db3.prepare("SELECT entry_date, mood, finished_at FROM diary_entries WHERE owner_email = ? ORDER BY entry_date DESC LIMIT 14").bind(EDITOR_EMAIL).all(),
+    db3.prepare("SELECT * FROM founder_meetings WHERE owner_email = ? AND deleted_at IS NULL ORDER BY scheduled_date, scheduled_time").bind(EDITOR_EMAIL).all(),
+    db3.prepare("SELECT launch_date FROM founder_settings WHERE owner_email = ?").bind(EDITOR_EMAIL).first()
   ]);
   return { date, routines: routines.results, tasks: tasks.results, diary: diary ?? null, diaryHistory: diaryHistory.results, meetings: meetings.results, launchDate: settings?.launch_date ?? null, integrations: { googleCalendar: false, zohoEmail: false } };
 }
 async function suggestionData(access) {
   await ensureWorkspace();
-  const db2 = database2();
+  const db3 = database2();
   const [suggestions, replies, votes] = await Promise.all([
-    db2.prepare("SELECT * FROM suggestions ORDER BY pinned DESC, founder_priority DESC, created_at DESC").all(),
-    db2.prepare("SELECT * FROM suggestion_replies ORDER BY created_at").all(),
-    db2.prepare("SELECT suggestion_id, COUNT(*) AS count FROM suggestion_votes GROUP BY suggestion_id").all()
+    db3.prepare("SELECT * FROM suggestions ORDER BY pinned DESC, founder_priority DESC, created_at DESC").all(),
+    db3.prepare("SELECT * FROM suggestion_replies ORDER BY created_at").all(),
+    db3.prepare("SELECT suggestion_id, COUNT(*) AS count FROM suggestion_votes GROUP BY suggestion_id").all()
   ]);
   return { suggestions: suggestions.results, replies: replies.results, votes: votes.results, viewerEmail: access.viewerEmail, canEdit: access.canEdit };
 }
@@ -1421,7 +1804,7 @@ async function POST(request) {
     if (!access.authenticated) return Response.json({ error: "Sign in required." }, { status: 401 });
     await ensureWorkspace();
     const body = await request.json();
-    const db2 = database2();
+    const db3 = database2();
     const timestamp = now2();
     if (body.action.startsWith("task_") || body.action.startsWith("routine_") || body.action.startsWith("diary_") || body.action.startsWith("meeting_") || body.action === "settings_update") requireEditor(access);
     if (body.action === "task_create") {
@@ -1431,12 +1814,12 @@ async function POST(request) {
       if (!TASK_PRIORITIES.has(priority)) throw new Error("Use a valid priority.");
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
       const iconType = iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title);
-      await db2.prepare(`INSERT INTO founder_tasks (id, owner_email, title, description, due_date, due_time, priority, category, status, link, icon_type, icon_source, position, created_at, updated_at)
+      await db3.prepare(`INSERT INTO founder_tasks (id, owner_email, title, description, due_date, due_time, priority, category, status, link, icon_type, icon_source, position, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 0, ?, ?)`).bind(id("task"), EDITOR_EMAIL, title, String(p.description ?? ""), cleanDate(p.dueDate), cleanTime(p.dueTime), priority, String(p.category ?? "General"), cleanUrl(p.link), iconType, iconSource, timestamp, timestamp).run();
     } else if (body.action === "task_reorder") {
       const order = Array.isArray(body.patch?.order) ? body.patch.order.map(String) : [];
       if (order.length) {
-        await db2.batch(order.map((taskId, position) => db2.prepare(`UPDATE founder_tasks
+        await db3.batch(order.map((taskId, position) => db3.prepare(`UPDATE founder_tasks
           SET position = ?, updated_at = ?
           WHERE id = ? AND owner_email = ? AND deleted_at IS NULL`).bind(position, timestamp, taskId, EDITOR_EMAIL)));
       }
@@ -1448,43 +1831,43 @@ async function POST(request) {
       if (!TASK_PRIORITIES.has(priority) || !["open", "complete"].includes(status)) throw new Error("Use valid task details.");
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
       const iconType = iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title);
-      await db2.prepare(`UPDATE founder_tasks SET title=?, description=?, due_date=?, due_time=?, priority=?, category=?, status=?, link=?, icon_type=?, icon_source=?, completed_at=?, updated_at=? WHERE id=? AND owner_email=?`).bind(title, String(p.description ?? ""), cleanDate(p.dueDate), cleanTime(p.dueTime), priority, String(p.category ?? "General"), status, cleanUrl(p.link), iconType, iconSource, status === "complete" ? timestamp : null, timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare(`UPDATE founder_tasks SET title=?, description=?, due_date=?, due_time=?, priority=?, category=?, status=?, link=?, icon_type=?, icon_source=?, completed_at=?, updated_at=? WHERE id=? AND owner_email=?`).bind(title, String(p.description ?? ""), cleanDate(p.dueDate), cleanTime(p.dueTime), priority, String(p.category ?? "General"), status, cleanUrl(p.link), iconType, iconSource, status === "complete" ? timestamp : null, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "task_delete" && body.id) {
-      await db2.prepare("UPDATE founder_tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare("UPDATE founder_tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "task_restore" && body.id) {
-      await db2.prepare("UPDATE founder_tasks SET deleted_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare("UPDATE founder_tasks SET deleted_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "routine_create") {
       const p = body.patch ?? {};
-      const next = await db2.prepare("SELECT COALESCE(MAX(position), -1) AS position FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
+      const next = await db3.prepare("SELECT COALESCE(MAX(position), -1) AS position FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
       const title = cleanTitle(p.title);
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
-      await db2.prepare("INSERT INTO routines (id, owner_email, title, time, icon_type, icon_source, link, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").bind(id("routine"), EDITOR_EMAIL, title, cleanTime(p.time) ?? "09:00", iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), Number(next?.position ?? -1) + 1, timestamp, timestamp).run();
+      await db3.prepare("INSERT INTO routines (id, owner_email, title, time, icon_type, icon_source, link, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").bind(id("routine"), EDITOR_EMAIL, title, cleanTime(p.time) ?? "09:00", iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), Number(next?.position ?? -1) + 1, timestamp, timestamp).run();
     } else if (body.action === "routine_update" && body.id) {
       const p = body.patch ?? {};
-      await db2.prepare("UPDATE routine_occurrences SET status=?, note=?, updated_at=?, completed_at=? WHERE id=? AND owner_email=?").bind(String(p.status ?? "pending"), String(p.note ?? ""), timestamp, p.status === "completed" || p.status === "skipped" ? timestamp : null, body.id, EDITOR_EMAIL).run();
+      await db3.prepare("UPDATE routine_occurrences SET status=?, note=?, updated_at=?, completed_at=? WHERE id=? AND owner_email=?").bind(String(p.status ?? "pending"), String(p.note ?? ""), timestamp, p.status === "completed" || p.status === "skipped" ? timestamp : null, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "routine_edit" && body.id) {
       const p = body.patch ?? {};
       const date = indiaDate();
       const title = cleanTitle(p.title);
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
       const time = cleanTime(p.time) ?? "09:00";
-      await db2.batch([
-        db2.prepare("UPDATE routines SET title=?, time=?, icon_type=?, icon_source=?, link=?, updated_at=? WHERE id=? AND owner_email=?").bind(title, time, iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), timestamp, body.id, EDITOR_EMAIL),
-        db2.prepare("UPDATE routine_occurrences SET title=?, time=?, updated_at=? WHERE routine_id=? AND owner_email=? AND date=?").bind(title, time, timestamp, body.id, EDITOR_EMAIL, date)
+      await db3.batch([
+        db3.prepare("UPDATE routines SET title=?, time=?, icon_type=?, icon_source=?, link=?, updated_at=? WHERE id=? AND owner_email=?").bind(title, time, iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), timestamp, body.id, EDITOR_EMAIL),
+        db3.prepare("UPDATE routine_occurrences SET title=?, time=?, updated_at=? WHERE routine_id=? AND owner_email=? AND date=?").bind(title, time, timestamp, body.id, EDITOR_EMAIL, date)
       ]);
     } else if (body.action === "routine_delete" && body.id) {
       const date = indiaDate();
-      await db2.batch([
-        db2.prepare("UPDATE routines SET active=0, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL),
-        db2.prepare("DELETE FROM routine_occurrences WHERE routine_id=? AND owner_email=? AND date=?").bind(body.id, EDITOR_EMAIL, date)
+      await db3.batch([
+        db3.prepare("UPDATE routines SET active=0, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL),
+        db3.prepare("DELETE FROM routine_occurrences WHERE routine_id=? AND owner_email=? AND date=?").bind(body.id, EDITOR_EMAIL, date)
       ]);
     } else if (body.action === "routine_restore" && body.id) {
-      await db2.prepare("UPDATE routines SET active=1, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare("UPDATE routines SET active=1, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "meeting_create") {
       const p = body.patch ?? {};
       const category = String(p.category ?? "Other");
       if (!MEETING_CATEGORIES.has(category)) throw new Error("Use a valid meeting category.");
-      await db2.prepare(`INSERT INTO founder_meetings
+      await db3.prepare(`INSERT INTO founder_meetings
         (id, owner_email, title, category, contact, scheduled_date, scheduled_time, meeting_link, description, status, preparation_goal, talking_points, questions, desired_next_step, outcome, next_step, follow_up_date, private_notes, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', '', '', '', '', '', '', NULL, '', ?, ?)`).bind(id("meeting"), EDITOR_EMAIL, cleanTitle(p.title), category, String(p.contact ?? ""), cleanDate(p.date) ?? indiaDate(), cleanTime(p.time) ?? "09:00", cleanUrl(p.meetingLink), String(p.description ?? ""), timestamp, timestamp).run();
     } else if (body.action === "meeting_update" && body.id) {
@@ -1492,14 +1875,14 @@ async function POST(request) {
       const category = String(p.category ?? "Other");
       const status = String(p.status ?? "scheduled");
       if (!MEETING_CATEGORIES.has(category) || !["scheduled", "follow-up", "followed-up", "cancelled"].includes(status)) throw new Error("Use valid meeting details.");
-      await db2.prepare(`UPDATE founder_meetings SET title=?, category=?, contact=?, scheduled_date=?, scheduled_time=?, meeting_link=?, description=?, status=?, preparation_goal=?, talking_points=?, questions=?, desired_next_step=?, outcome=?, next_step=?, follow_up_date=?, private_notes=?, updated_at=? WHERE id=? AND owner_email=?`).bind(cleanTitle(p.title), category, String(p.contact ?? ""), cleanDate(p.date) ?? indiaDate(), cleanTime(p.time) ?? "09:00", cleanUrl(p.meetingLink), String(p.description ?? ""), status, String(p.preparationGoal ?? ""), String(p.talkingPoints ?? ""), String(p.questions ?? ""), String(p.desiredNextStep ?? ""), String(p.outcome ?? ""), String(p.nextStep ?? ""), cleanDate(p.followUpDate), String(p.privateNotes ?? ""), timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare(`UPDATE founder_meetings SET title=?, category=?, contact=?, scheduled_date=?, scheduled_time=?, meeting_link=?, description=?, status=?, preparation_goal=?, talking_points=?, questions=?, desired_next_step=?, outcome=?, next_step=?, follow_up_date=?, private_notes=?, updated_at=? WHERE id=? AND owner_email=?`).bind(cleanTitle(p.title), category, String(p.contact ?? ""), cleanDate(p.date) ?? indiaDate(), cleanTime(p.time) ?? "09:00", cleanUrl(p.meetingLink), String(p.description ?? ""), status, String(p.preparationGoal ?? ""), String(p.talkingPoints ?? ""), String(p.questions ?? ""), String(p.desiredNextStep ?? ""), String(p.outcome ?? ""), String(p.nextStep ?? ""), cleanDate(p.followUpDate), String(p.privateNotes ?? ""), timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "meeting_delete" && body.id) {
-      await db2.prepare("UPDATE founder_meetings SET deleted_at=?, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare("UPDATE founder_meetings SET deleted_at=?, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "meeting_restore" && body.id) {
-      await db2.prepare("UPDATE founder_meetings SET deleted_at=NULL, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
+      await db3.prepare("UPDATE founder_meetings SET deleted_at=NULL, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "settings_update") {
       const p = body.patch ?? {};
-      await db2.prepare(`INSERT INTO founder_settings (owner_email, launch_date, updated_at) VALUES (?, ?, ?)
+      await db3.prepare(`INSERT INTO founder_settings (owner_email, launch_date, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(owner_email) DO UPDATE SET launch_date=excluded.launch_date, updated_at=excluded.updated_at`).bind(EDITOR_EMAIL, cleanDate(p.launchDate), timestamp).run();
     } else if (body.action === "diary_save") {
       const p = body.patch ?? {};
@@ -1507,29 +1890,29 @@ async function POST(request) {
       let completed = String(p.completed ?? "");
       if (p.finished && !completed) {
         const [finishedTasks, finishedRoutines] = await Promise.all([
-          db2.prepare(`SELECT title FROM founder_tasks WHERE owner_email=? AND status='complete' AND deleted_at IS NULL AND (due_date IS NULL OR due_date <= ?) ORDER BY completed_at`).bind(EDITOR_EMAIL, entryDate).all(),
-          db2.prepare(`SELECT title, status FROM routine_occurrences WHERE owner_email=? AND date=? AND status IN ('completed', 'skipped') ORDER BY time`).bind(EDITOR_EMAIL, entryDate).all()
+          db3.prepare(`SELECT title FROM founder_tasks WHERE owner_email=? AND status='complete' AND deleted_at IS NULL AND (due_date IS NULL OR due_date <= ?) ORDER BY completed_at`).bind(EDITOR_EMAIL, entryDate).all(),
+          db3.prepare(`SELECT title, status FROM routine_occurrences WHERE owner_email=? AND date=? AND status IN ('completed', 'skipped') ORDER BY time`).bind(EDITOR_EMAIL, entryDate).all()
         ]);
         completed = [...finishedTasks.results.map((item) => item.title), ...finishedRoutines.results.map((item) => `${item.title}${item.status === "skipped" ? " (Skipped)" : ""}`)].join(" \xB7 ");
       }
-      await db2.prepare(`INSERT INTO diary_entries (id, owner_email, entry_date, completed, moved_forward, learned, blocker, insight, tomorrow, mood, notes, finished_at, updated_at)
+      await db3.prepare(`INSERT INTO diary_entries (id, owner_email, entry_date, completed, moved_forward, learned, blocker, insight, tomorrow, mood, notes, finished_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(owner_email, entry_date) DO UPDATE SET completed=excluded.completed, moved_forward=excluded.moved_forward, learned=excluded.learned, blocker=excluded.blocker, insight=excluded.insight, tomorrow=excluded.tomorrow, mood=excluded.mood, notes=excluded.notes, finished_at=excluded.finished_at, updated_at=excluded.updated_at`).bind(`diary-${entryDate}`, EDITOR_EMAIL, entryDate, completed, String(p.movedForward ?? ""), String(p.learned ?? ""), String(p.blocker ?? ""), String(p.insight ?? ""), String(p.tomorrow ?? ""), String(p.mood ?? "Focused"), String(p.notes ?? ""), p.finished ? timestamp : null, timestamp).run();
     } else if (body.action === "suggestion_create") {
       const p = body.patch ?? {};
-      await db2.prepare(`INSERT INTO suggestions (id, author_email, title, body, category, priority, phase_id, status, created_at, updated_at)
+      await db3.prepare(`INSERT INTO suggestions (id, author_email, title, body, category, priority, phase_id, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`).bind(id("suggestion"), access.viewerEmail, String(p.title ?? "").trim(), String(p.body ?? "").trim(), String(p.category ?? "Other"), String(p.priority ?? "medium"), p.phaseId ? String(p.phaseId) : null, timestamp, timestamp).run();
     } else if (body.action === "suggestion_reply" && body.suggestionId) {
       const p = body.patch ?? {};
-      await db2.prepare("INSERT INTO suggestion_replies (id, suggestion_id, author_email, body, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id("reply"), body.suggestionId, access.viewerEmail, String(p.body ?? "").trim(), p.parentId ? String(p.parentId) : null, timestamp, timestamp).run();
+      await db3.prepare("INSERT INTO suggestion_replies (id, suggestion_id, author_email, body, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id("reply"), body.suggestionId, access.viewerEmail, String(p.body ?? "").trim(), p.parentId ? String(p.parentId) : null, timestamp, timestamp).run();
     } else if (body.action === "suggestion_vote" && body.suggestionId) {
-      const existing = await db2.prepare("SELECT suggestion_id FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).first();
-      if (existing) await db2.prepare("DELETE FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).run();
-      else await db2.prepare("INSERT INTO suggestion_votes (suggestion_id, author_email, created_at) VALUES (?, ?, ?)").bind(body.suggestionId, access.viewerEmail, timestamp).run();
+      const existing = await db3.prepare("SELECT suggestion_id FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).first();
+      if (existing) await db3.prepare("DELETE FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).run();
+      else await db3.prepare("INSERT INTO suggestion_votes (suggestion_id, author_email, created_at) VALUES (?, ?, ?)").bind(body.suggestionId, access.viewerEmail, timestamp).run();
     } else if (body.action === "suggestion_manage" && body.suggestionId) {
       requireEditor(access);
       const p = body.patch ?? {};
-      await db2.prepare("UPDATE suggestions SET status=?, pinned=?, founder_priority=?, founder_note=?, phase_id=?, updated_at=? WHERE id=?").bind(String(p.status ?? "new"), p.pinned ? 1 : 0, p.founderPriority ? 1 : 0, String(p.founderNote ?? ""), p.phaseId ? String(p.phaseId) : null, timestamp, body.suggestionId).run();
+      await db3.prepare("UPDATE suggestions SET status=?, pinned=?, founder_priority=?, founder_note=?, phase_id=?, updated_at=? WHERE id=?").bind(String(p.status ?? "new"), p.pinned ? 1 : 0, p.founderPriority ? 1 : 0, String(p.founderNote ?? ""), p.phaseId ? String(p.phaseId) : null, timestamp, body.suggestionId).run();
     } else {
       return Response.json({ error: "Unsupported action." }, { status: 400 });
     }
@@ -1566,6 +1949,228 @@ async function POST3() {
   return Response.json({ ok: true }, { headers: { "Set-Cookie": clearSessionCookie(), "Cache-Control": "no-store" } });
 }
 
+// app/api/control/users/route.ts
+function db2() {
+  if (!env.DB) throw new Error("Database is unavailable.");
+  return env.DB;
+}
+function userSummary(row, firstOpenAt, lastActiveAt) {
+  return {
+    id: row.id,
+    name: row.participant_id,
+    email: null,
+    phone: null,
+    onboardedAt: row.onboarding_completed ? row.updated_at : null,
+    firstOpenAt,
+    lastActiveAt
+  };
+}
+async function firstOpenAndLastActive(distinctId) {
+  if (!distinctId) return { firstOpenAt: null, lastActiveAt: null };
+  try {
+    const rows = await postHogQuery(
+      `SELECT
+         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = '${distinctId}') AS first_open_at,
+         (SELECT max(timestamp) FROM events WHERE event = 'wingman_opened' AND distinct_id = '${distinctId}') AS last_active_at`
+    );
+    const [firstOpenAt, lastActiveAt] = rows[0] ?? [null, null];
+    return { firstOpenAt, lastActiveAt };
+  } catch {
+    return { firstOpenAt: null, lastActiveAt: null };
+  }
+}
+var PAGE_SIZE = 50;
+async function listUsers(cursor) {
+  await ensurePhase0PostHogSchema();
+  const database3 = db2();
+  const offset = cursor ? Math.max(0, parseInt(Buffer.from(cursor, "base64url").toString("utf8"), 10) || 0) : 0;
+  const rows = await database3.prepare(
+    "SELECT id, participant_id, posthog_distinct_id, onboarding_completed, created_at, updated_at FROM cohort_evidence WHERE phase_id='phase-0' AND onboarding_completed=1 ORDER BY participant_id LIMIT ? OFFSET ?"
+  ).bind(PAGE_SIZE + 1, offset).all();
+  const page = rows.results.slice(0, PAGE_SIZE);
+  const hasMore = rows.results.length > PAGE_SIZE;
+  const users = await Promise.all(
+    page.map(async (row) => {
+      const { firstOpenAt, lastActiveAt } = await firstOpenAndLastActive(row.posthog_distinct_id);
+      return userSummary(row, firstOpenAt, lastActiveAt);
+    })
+  );
+  return {
+    version: 1,
+    status: "available",
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    users,
+    nextCursor: hasMore ? Buffer.from(String(offset + PAGE_SIZE)).toString("base64url") : null
+  };
+}
+async function userDetail(id2) {
+  await ensurePhase0PostHogSchema();
+  const database3 = db2();
+  const row = await database3.prepare(
+    "SELECT id, participant_id, posthog_distinct_id, onboarding_completed, created_at, updated_at FROM cohort_evidence WHERE phase_id='phase-0' AND id=?"
+  ).bind(id2).first();
+  if (!row) return null;
+  if (!row.posthog_distinct_id) {
+    return {
+      version: 1,
+      status: "pending",
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      user: userSummary(row, null, null),
+      totals: { wingmanSessions: null, messages: null, activeSeconds: null, profiles: null, memories: null, calendarEvents: null },
+      days: [],
+      activities: [],
+      activityTruncated: false
+    };
+  }
+  const distinctId = row.posthog_distinct_id;
+  try {
+    const totalsRows = await postHogQuery(
+      `SELECT
+         countIf(event = 'response_started') AS messages,
+         countIf(event = 'person_context_created') AS profiles,
+         countIf(event = 'memory_added') AS memories,
+         countIf(event = 'calendar_event_created') AS calendar_events,
+         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = '${distinctId}') AS first_open_at
+       FROM events WHERE distinct_id = '${distinctId}'`
+    );
+    const [messages, profiles, memories, calendarEvents, firstOpenAt] = totalsRows[0] ?? [0, 0, 0, 0, null];
+    const sessionRows = firstOpenAt ? await postHogQuery(
+      `SELECT count(DISTINCT toDate(timestamp)) FROM events WHERE event = 'response_started' AND distinct_id = '${distinctId}'`
+    ) : [[0]];
+    const wingmanSessions = sessionRows[0]?.[0] ?? null;
+    const activityRows = firstOpenAt ? await postHogQuery(
+      `SELECT timestamp, event FROM events
+           WHERE distinct_id = '${distinctId}'
+             AND event IN ('response_started','response_completed','person_context_created','memory_added','calendar_event_created')
+           ORDER BY timestamp DESC LIMIT 101`
+    ) : [];
+    const activityLabels = {
+      response_started: "Sent a Wingman message",
+      response_completed: "Received a Wingman reply",
+      person_context_created: "Added a person",
+      memory_added: "Added a memory",
+      calendar_event_created: "Added a calendar event"
+    };
+    const activityTruncated = activityRows.length > 100;
+    const activities = activityRows.slice(0, 100).map((activityRow, index) => {
+      const [timestamp, event] = activityRow;
+      return { id: `${distinctId}-${index}`, at: timestamp, label: activityLabels[event] ?? "Activity" };
+    });
+    const days = [];
+    if (firstOpenAt) {
+      const firstOpenMs = Date.parse(firstOpenAt);
+      for (let day = 0; day < 4; day += 1) {
+        const startMs = firstOpenMs + day * 24 * 60 * 60 * 1e3;
+        const endMs = startMs + 24 * 60 * 60 * 1e3;
+        const closed = Date.now() >= endMs;
+        const dayRows = await postHogQuery(
+          `SELECT
+             countIf(event='response_started') AS messages,
+             countIf(event='person_context_created') AS profiles,
+             countIf(event='memory_added') AS memories,
+             countIf(event='calendar_event_created') AS calendar_events
+           FROM events
+           WHERE distinct_id = '${distinctId}'
+             AND timestamp >= toDateTime('${new Date(startMs).toISOString()}')
+             AND timestamp < toDateTime('${new Date(endMs).toISOString()}')`
+        );
+        const [dayMessages, dayProfiles, dayMemories, dayCalendar] = dayRows[0] ?? [0, 0, 0, 0];
+        days.push({
+          day,
+          startedAt: new Date(startMs).toISOString(),
+          status: closed ? "available" : "pending",
+          wingmanSessions: null,
+          messages: dayMessages ?? null,
+          activeSeconds: null,
+          profiles: dayProfiles ?? null,
+          memories: dayMemories ?? null,
+          calendarEvents: dayCalendar ?? null
+        });
+      }
+    }
+    return {
+      version: 1,
+      status: "available",
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      user: userSummary(row, firstOpenAt, activities[0]?.at ?? null),
+      totals: {
+        wingmanSessions,
+        messages,
+        // activeSeconds requires foreground heartbeat instrumentation that
+        // doesn't exist yet — never approximated from session duration.
+        activeSeconds: null,
+        profiles,
+        memories,
+        calendarEvents
+      },
+      days,
+      activities,
+      activityTruncated
+    };
+  } catch (error) {
+    if (error instanceof PostHogUnavailableError) {
+      return {
+        version: 1,
+        status: "unavailable",
+        updatedAt: null,
+        user: userSummary(row, null, null),
+        totals: { wingmanSessions: null, messages: null, activeSeconds: null, profiles: null, memories: null, calendarEvents: null },
+        days: [],
+        activities: [],
+        activityTruncated: false
+      };
+    }
+    throw error;
+  }
+}
+async function GET3(request) {
+  const access = await trackerAccess(request);
+  if (!access.canEdit) {
+    return Response.json(
+      { error: "Sign in with an authorized staff account." },
+      { status: 403, headers: { "Cache-Control": "private, no-store" } }
+    );
+  }
+  const url = new URL(request.url);
+  const id2 = url.searchParams.get("id");
+  const cursor = url.searchParams.get("cursor");
+  if (id2 && id2.length > 256) {
+    return Response.json({ error: "Invalid request." }, { status: 400, headers: { "Cache-Control": "private, no-store" } });
+  }
+  if (id2) {
+    try {
+      const detail = await userDetail(id2);
+      if (!detail) {
+        return Response.json({ error: "Not found." }, { status: 404, headers: { "Cache-Control": "private, no-store" } });
+      }
+      return Response.json(detail, { headers: { "Cache-Control": "private, no-store" } });
+    } catch {
+      return Response.json(
+        {
+          version: 1,
+          status: "unavailable",
+          updatedAt: null,
+          user: null,
+          totals: { wingmanSessions: null, messages: null, activeSeconds: null, profiles: null, memories: null, calendarEvents: null },
+          days: [],
+          activities: [],
+          activityTruncated: false
+        },
+        { headers: { "Cache-Control": "private, no-store" } }
+      );
+    }
+  }
+  try {
+    const list = await listUsers(cursor);
+    return Response.json(list, { headers: { "Cache-Control": "private, no-store" } });
+  } catch {
+    return Response.json(
+      { version: 1, status: "unavailable", updatedAt: null, users: [], nextCursor: null },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
+  }
+}
+
 // server/vercel-handler.ts
 async function handle(request) {
   const url = new URL(request.url);
@@ -1573,17 +2178,16 @@ async function handle(request) {
   const method = request.method;
   const json = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   if (path === "/api/health") return json({ host: "vercel", database: process.env.TURSO_DATABASE_URL ? "configured" : "missing", sitesDependency: false });
-  if (path === "/api/control/users") {
-    if (method !== "GET") return json({ error: "Method not allowed" }, 405);
-    const access = await trackerAccess(request);
-    if (!access.canEdit) return json({ error: "Sign in with an authorized staff account." }, 403);
-    return json({ version: 1, status: "unavailable", updatedAt: null, users: [], nextCursor: null });
-  }
   const handlers = {
     "/api/tracker": { GET, PATCH },
     "/api/workspace": { GET: GET2, POST },
     "/api/auth/login": { POST: POST2 },
-    "/api/auth/logout": { POST: POST3 }
+    "/api/auth/logout": { POST: POST3 },
+    // control/users enforces its own staff-only access check internally
+    // (see app/api/control/users/route.ts) — not gated here, matching the
+    // "backend verifies access itself, the gateway is defense in depth"
+    // requirement in USERS_POSTHOG_HANDOFF.md.
+    "/api/control/users": { GET: GET3 }
   };
   const route = handlers[path];
   if (!route) return json({ error: "Not found" }, 404);

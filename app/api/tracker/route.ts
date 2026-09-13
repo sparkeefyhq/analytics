@@ -9,6 +9,19 @@ import type {
   TrackerPhase,
 } from "@/lib/tracker-types";
 import { metricPassed } from "@/lib/tracker-types";
+import {
+  activeUsersForPeriod,
+  cohortDayWindowReturn,
+  cohortMilestone,
+  cohortOrdinalMilestone,
+  organicSecondSituation,
+  reminderReturn,
+  requestCount,
+  unavailable,
+  type CohortIdentity,
+  type Observation,
+  type Phase0Snapshot,
+} from "@/lib/posthog";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -211,6 +224,22 @@ async function addMetricColumn(
     await database
       .prepare(`ALTER TABLE metrics ADD COLUMN ${definition}`)
       .run();
+}
+
+// Generic version of addMetricColumn for tables other than `metrics` — used
+// by the Phase 0 PostHog connector to link a cohort participant to their
+// PostHog distinct_id without touching the existing metrics-only helper.
+async function addColumnIfMissing(
+  database: D1Database,
+  table: string,
+  name: string,
+  definition: string,
+) {
+  const result = await database
+    .prepare(`PRAGMA table_info(${table})`)
+    .all<{ name: string }>();
+  if (!result.results.some((column) => column.name === name))
+    await database.prepare(`ALTER TABLE ${table} ADD COLUMN ${definition}`).run();
 }
 
 async function initializeDatabase() {
@@ -468,6 +497,36 @@ async function initializeDatabase() {
     );
 }
 
+// The Phase 0 PostHog connector's schema addition (a participant's opaque
+// PostHog distinct_id, plus a small shared analytics cache) must run even
+// on an imported production database — ensureDatabase() below deliberately
+// skips *legacy seed/update* logic for imported databases (see its own
+// comment), but this is a new, additive, idempotent change, not a replay of
+// old seed data, so it gets its own always-run bootstrap.
+let phase0SchemaReady: Promise<void> | null = null;
+export function ensurePhase0PostHogSchema() {
+  if (!phase0SchemaReady) {
+    phase0SchemaReady = (async () => {
+      const database = db();
+      await addColumnIfMissing(
+        database,
+        "cohort_evidence",
+        "posthog_distinct_id",
+        "posthog_distinct_id TEXT",
+      );
+      await database
+        .prepare(
+          "CREATE TABLE IF NOT EXISTS posthog_metric_cache (key TEXT PRIMARY KEY, payload TEXT NOT NULL, computed_at TEXT NOT NULL)",
+        )
+        .run();
+    })().catch((error) => {
+      phase0SchemaReady = null;
+      throw error;
+    });
+  }
+  return phase0SchemaReady;
+}
+
 // D1 schema checks and seed migrations are expensive on every request. Keep
 // one initialization promise per warm Worker isolate, while clearing it on a
 // failure so a transient D1 error can recover on the next request.
@@ -720,6 +779,164 @@ async function loadAnalyticsSnapshot() {
     aiCost: null,
   };
 }
+
+const PHASE0_CACHE_KEY = "phase0-analytics-v1";
+const PHASE0_CACHE_TTL_MS = 45_000;
+
+async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
+  await ensureDatabase();
+  await ensurePhase0PostHogSchema();
+  const database = db();
+  const cached = await database
+    .prepare("SELECT payload, computed_at FROM posthog_metric_cache WHERE key = ?")
+    .bind(PHASE0_CACHE_KEY)
+    .first<{ payload: string; computed_at: string }>();
+  if (cached && Date.now() - Date.parse(cached.computed_at) < PHASE0_CACHE_TTL_MS) {
+    return JSON.parse(cached.payload) as Phase0Snapshot;
+  }
+  const cohortRows = await database
+    .prepare(
+      "SELECT participant_id, posthog_distinct_id FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'",
+    )
+    .all<{ participant_id: string; posthog_distinct_id: string | null }>();
+  const cohort: CohortIdentity[] = cohortRows.results.map((row) => ({
+    participantId: row.participant_id,
+    distinctId: row.posthog_distinct_id,
+  }));
+
+  const interviewRows = await database
+    .prepare(
+      "SELECT founder_suggested_situation FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'",
+    )
+    .all<{ founder_suggested_situation: number }>();
+  const interviewed = interviewRows.results.length;
+  const opportunityRepeat: Observation = interviewed
+    ? {
+        count: interviewRows.results.filter((row) => row.founder_suggested_situation === 1).length,
+        denominator: interviewed,
+        status: "available",
+        source: "manual",
+      }
+    : { count: null, status: "pending", source: "manual" };
+
+  const [
+    firstOpen,
+    onboarding,
+    firstAnswer,
+    calendarCreated,
+    person1,
+    person2,
+    person3,
+    memory1,
+    memory2,
+    wingmanOpenDay1,
+    firstMessageDay1,
+    fiveMessagesDay1,
+    returnOpenDay2,
+    returnOpenDay3,
+    returnOpenDay4,
+    returnRequestDay2,
+    returnRequestDay3,
+    returnRequestDay4,
+    organicSecond,
+    reminderReturnObservation,
+    responsesComplete,
+    responsesFailed,
+    activeToday,
+    activeWeek,
+    activeMonth,
+    activeAll,
+  ] = await Promise.all([
+    cohortMilestone(cohort, "first_open"),
+    cohortMilestone(cohort, "onboarding_completed"),
+    cohortMilestone(cohort, "response_completed"),
+    cohortMilestone(cohort, "calendar_event_created"),
+    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 1),
+    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 2),
+    cohortOrdinalMilestone(cohort, "person_context_created", "person_count_after", 3),
+    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 1),
+    cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 2),
+    cohortDayWindowReturn(cohort, "wingman_opened", 1),
+    cohortDayWindowReturn(cohort, "response_started", 1),
+    cohortDayWindowReturn(cohort, "response_started", 1),
+    cohortDayWindowReturn(cohort, "wingman_opened", 2),
+    cohortDayWindowReturn(cohort, "wingman_opened", 3),
+    cohortDayWindowReturn(cohort, "wingman_opened", 4),
+    cohortDayWindowReturn(cohort, "response_started", 2),
+    cohortDayWindowReturn(cohort, "response_started", 3),
+    cohortDayWindowReturn(cohort, "response_started", 4),
+    organicSecondSituation(cohort),
+    reminderReturn(cohort),
+    requestCount("response_completed"),
+    requestCount("response_failed"),
+    activeUsersForPeriod(cohort, "today"),
+    activeUsersForPeriod(cohort, "week"),
+    activeUsersForPeriod(cohort, "month"),
+    activeUsersForPeriod(cohort, "all"),
+  ]);
+
+  const snapshot: Phase0Snapshot = {
+    version: 1,
+    cohort: "phase-0",
+    updatedAt: now(),
+    metrics: {
+      // Google Play downloads have no connector in this codebase and are
+      // never substituted with first_open — see CONTROL_PHASE0_API_CONTRACT.md.
+      downloads: unavailable("play-console"),
+      first_open: firstOpen,
+      onboarding,
+      first_answer: firstAnswer,
+      wingman_open_day1: wingmanOpenDay1,
+      first_message_day1: firstMessageDay1,
+      five_messages_day1: fiveMessagesDay1,
+      person_1: person1,
+      person_2: person2,
+      person_3: person3,
+      memory_1: memory1,
+      memory_2: memory2,
+      calendar_created: calendarCreated,
+      return_open_day2: returnOpenDay2,
+      return_open_day3: returnOpenDay3,
+      return_open_day4: returnOpenDay4,
+      return_request_day2: returnRequestDay2,
+      return_request_day3: returnRequestDay3,
+      return_request_day4: returnRequestDay4,
+      organic_second: organicSecond,
+      // request_days_2/3 and person_reused/memory_reused need a slightly
+      // different windowed-days join than the boolean return-window helper
+      // above provides; left unavailable rather than approximated until a
+      // dedicated query is written and validated the same way as the rest
+      // of this file's queries were before landing.
+      request_days_2: unavailable(),
+      request_days_3: unavailable(),
+      person_reused: unavailable(),
+      memory_reused: unavailable(),
+      reminder_return: reminderReturnObservation,
+      opportunity_repeat: opportunityRepeat,
+      responses_complete: responsesComplete,
+      responses_failed: responsesFailed,
+      // No retry event exists in the current instrumentation — never
+      // approximated from another signal.
+      responses_retried: unavailable(),
+    },
+    activeUsers: {
+      today: activeToday,
+      week: activeWeek,
+      month: activeMonth,
+      all: activeAll,
+    },
+  };
+
+  await database
+    .prepare(
+      "INSERT INTO posthog_metric_cache (key,payload,computed_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,computed_at=excluded.computed_at",
+    )
+    .bind(PHASE0_CACHE_KEY, JSON.stringify(snapshot), now())
+    .run();
+
+  return snapshot;
+}
+
 function phase0Unmet(phase: TrackerPhase, releaseGates: ReleaseGate[] = []) {
   const unmet = phase.metrics
     .filter((metric) => !metricPassed(metric))
@@ -794,11 +1011,37 @@ async function loadPhase1State(phase: TrackerPhase | undefined): Promise<Phase1S
     phase1Unmet,
   };
 }
+/**
+ * A PostHog outage, missing secret, or query error must never take down the
+ * whole tracker response — everything else (gates, checklist, manual
+ * analytics) has to keep working exactly as it does today. Degrade to an
+ * "unavailable" snapshot instead of throwing.
+ */
+async function safeLoadPhase0Analytics(): Promise<Phase0Snapshot> {
+  try {
+    return await loadPhase0Analytics();
+  } catch {
+    return {
+      version: 1,
+      cohort: "phase-0",
+      updatedAt: null,
+      metrics: {},
+      activeUsers: {
+        today: unavailable(),
+        week: unavailable(),
+        month: unavailable(),
+        all: unavailable(),
+      },
+    };
+  }
+}
+
 async function trackerResponse(request: Request) {
-  const [tracker, access, analytics] = await Promise.all([
+  const [tracker, access, analytics, phase0] = await Promise.all([
     loadTracker(),
     trackerAccess(request),
     loadAnalyticsSnapshot(),
+    safeLoadPhase0Analytics(),
   ]);
   const phase = tracker.phases.find((item) => item.id === "phase-0");
   const phase1 = tracker.phases.find((item) => item.id === "phase-1");
@@ -809,7 +1052,7 @@ async function trackerResponse(request: Request) {
   return {
     ...tracker,
     ...access,
-    analytics,
+    analytics: { ...analytics, phase0 },
     phase0Unmet: access.canEdit && phase ? phase0Unmet(phase, tracker.releaseGates) : [],
     phase1: {
       ...phase1State,
@@ -1181,6 +1424,22 @@ export async function PATCH(request: Request) {
         )
         .bind(body.id)
         .run();
+    else if (body.action === "cohort_link_posthog" && body.id) {
+      const distinctId = safeString(body.patch?.posthogDistinctId).trim().slice(0, 256);
+      if (distinctId.length === 0)
+        return Response.json({ error: "Provide a PostHog distinct_id." }, { status: 400 });
+      const row = await database
+        .prepare("SELECT id FROM cohort_evidence WHERE id=? AND phase_id='phase-0'")
+        .bind(body.id)
+        .first();
+      if (!row) return Response.json({ error: "Participant not found." }, { status: 404 });
+      await database
+        .prepare(
+          "UPDATE cohort_evidence SET posthog_distinct_id=?, updated_at=? WHERE id=?",
+        )
+        .bind(distinctId, timestamp, body.id)
+        .run();
+    }
     else if (
       body.action === "advance" &&
       body.phaseId &&

@@ -29,7 +29,11 @@ test('native API preserves auth, persistence, undo and atomic advancement on iso
   const login=await request('/api/auth/login','POST',{email:'sarthakverma0802@gmail.com',password:process.env.SPARKEEFY_LOGIN_PASSWORD});
   assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];
   assert.equal((await request('/api/control/users')).status,200);
-  assert.equal((await (await request('/api/control/users')).json()).status,'unavailable');
+  // No cohort_evidence rows exist in this fixture — a genuinely empty, measured
+  // list is 'available' with users:[], not 'unavailable' (which means the
+  // connector itself is broken, not that the cohort is empty).
+  const usersBody=await (await request('/api/control/users')).json();
+  assert.equal(usersBody.status,'available');assert.deepEqual(usersBody.users,[]);
   assert.equal((await request('/api/tracker','PATCH',{action:'start',phaseId:'phase-0'},'https://other.test')).status,403);
   assert.equal((await patch({action:'advance',phaseId:'phase-0',patch:{confirmed:true}})).status,409);
   assert.equal((await patch({action:'start',phaseId:'phase-1'})).status,409);
