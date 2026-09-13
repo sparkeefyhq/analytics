@@ -17,6 +17,7 @@ const {
   cohortMilestone,
   cohortOrdinalMilestone,
   cohortDayWindowReturn,
+  hogqlString,
   organicSecondSituation,
   reminderReturn,
   activeUsersForPeriod,
@@ -61,4 +62,36 @@ test('requestCount (no cohort scoping) also degrades to error without credential
   const observation = await requestCount('response_completed');
   assert.equal(observation.status, 'error');
   assert.equal(observation.count, null);
+});
+
+test('five-message Day 1 measurement requires five events, not merely one', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  let query = '';
+  global.fetch = async (_url, init) => {
+    query = JSON.parse(init.body).query.query;
+    return new Response(JSON.stringify({ results: [[1, 1]] }), { status: 200 });
+  };
+  try {
+    const result = await cohortDayWindowReturn([{ participantId: 'P0-001', distinctId: 'user-1' }], 'response_started', 1, 5);
+    assert.match(query, /HAVING count\(\) >= 5/);
+    assert.equal(result.count, 1);
+    assert.equal(result.denominator, 1);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('PostHog distinct IDs are safely quoted before forming HogQL', () => {
+  assert.equal(hogqlString("person' OR 1=1"), "'person'' OR 1=1'");
 });

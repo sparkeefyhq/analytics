@@ -234,8 +234,11 @@ async function scalar(hogql) {
   const value = rows[0]?.[0];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
+function hogqlString(value) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 function idList(distinctIds) {
-  return distinctIds.map((id2) => `'${id2.replace(/'/g, "''")}'`).join(",");
+  return distinctIds.map(hogqlString).join(",");
 }
 function splitCohort(cohort) {
   const mapped = cohort.filter((p) => p.distinctId !== null);
@@ -257,7 +260,7 @@ async function cohortMilestone(cohort, event, extraWhere = "") {
 function cohortOrdinalMilestone(cohort, event, property, atLeast) {
   return cohortMilestone(cohort, event, `properties.${property} >= ${atLeast}`);
 }
-async function cohortDayWindowReturn(cohort, returningEvent, dayIndex) {
+async function cohortDayWindowReturn(cohort, returningEvent, dayIndex, minimumEvents = 1) {
   const { mapped, unmapped } = splitCohort(cohort);
   if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
   const windowStartHours = (dayIndex - 1) * 24;
@@ -274,12 +277,14 @@ async function cohortDayWindowReturn(cohort, returningEvent, dayIndex) {
          WHERE now() >= first_open_at + INTERVAL ${windowEndHours} HOUR
        ),
        returned AS (
-         SELECT DISTINCT e.distinct_id AS distinct_id
+         SELECT e.distinct_id AS distinct_id
          FROM events AS e
          INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
          WHERE e.event = '${returningEvent}'
            AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
            AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
+         GROUP BY e.distinct_id
+         HAVING count() >= ${Math.max(1, Math.floor(minimumEvents))}
        )
        SELECT (SELECT count() FROM window_closed) AS window_closed_count,
               (SELECT count() FROM returned) AS returned_count`
@@ -1061,7 +1066,7 @@ async function loadPhase0Analytics() {
     cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 1),
     cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 2),
     cohortDayWindowReturn(cohort, "wingman_opened", 1),
-    cohortDayWindowReturn(cohort, "response_started", 1),
+    cohortDayWindowReturn(cohort, "response_started", 1, 5),
     cohortDayWindowReturn(cohort, "response_started", 1),
     cohortDayWindowReturn(cohort, "wingman_opened", 2),
     cohortDayWindowReturn(cohort, "wingman_opened", 3),
@@ -1967,11 +1972,12 @@ function userSummary(row, firstOpenAt, lastActiveAt) {
 }
 async function firstOpenAndLastActive(distinctId) {
   if (!distinctId) return { firstOpenAt: null, lastActiveAt: null };
+  const identity = hogqlString(distinctId);
   try {
     const rows = await postHogQuery(
       `SELECT
-         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = '${distinctId}') AS first_open_at,
-         (SELECT max(timestamp) FROM events WHERE event = 'wingman_opened' AND distinct_id = '${distinctId}') AS last_active_at`
+         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = ${identity}) AS first_open_at,
+         (SELECT max(timestamp) FROM events WHERE event = 'wingman_opened' AND distinct_id = ${identity}) AS last_active_at`
     );
     const [firstOpenAt, lastActiveAt] = rows[0] ?? [null, null];
     return { firstOpenAt, lastActiveAt };
@@ -2023,6 +2029,7 @@ async function userDetail(id2) {
     };
   }
   const distinctId = row.posthog_distinct_id;
+  const identity = hogqlString(distinctId);
   try {
     const totalsRows = await postHogQuery(
       `SELECT
@@ -2030,17 +2037,17 @@ async function userDetail(id2) {
          countIf(event = 'person_context_created') AS profiles,
          countIf(event = 'memory_added') AS memories,
          countIf(event = 'calendar_event_created') AS calendar_events,
-         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = '${distinctId}') AS first_open_at
-       FROM events WHERE distinct_id = '${distinctId}'`
+         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = ${identity}) AS first_open_at
+       FROM events WHERE distinct_id = ${identity}`
     );
     const [messages, profiles, memories, calendarEvents, firstOpenAt] = totalsRows[0] ?? [0, 0, 0, 0, null];
     const sessionRows = firstOpenAt ? await postHogQuery(
-      `SELECT count(DISTINCT toDate(timestamp)) FROM events WHERE event = 'response_started' AND distinct_id = '${distinctId}'`
+      `SELECT count(DISTINCT toDate(timestamp)) FROM events WHERE event = 'response_started' AND distinct_id = ${identity}`
     ) : [[0]];
     const wingmanSessions = sessionRows[0]?.[0] ?? null;
     const activityRows = firstOpenAt ? await postHogQuery(
       `SELECT timestamp, event FROM events
-           WHERE distinct_id = '${distinctId}'
+           WHERE distinct_id = ${identity}
              AND event IN ('response_started','response_completed','person_context_created','memory_added','calendar_event_created')
            ORDER BY timestamp DESC LIMIT 101`
     ) : [];
@@ -2070,7 +2077,7 @@ async function userDetail(id2) {
              countIf(event='memory_added') AS memories,
              countIf(event='calendar_event_created') AS calendar_events
            FROM events
-           WHERE distinct_id = '${distinctId}'
+           WHERE distinct_id = ${identity}
              AND timestamp >= toDateTime('${new Date(startMs).toISOString()}')
              AND timestamp < toDateTime('${new Date(endMs).toISOString()}')`
         );

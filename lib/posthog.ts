@@ -4,8 +4,8 @@ import { env } from "@/lib/runtime-env";
  * Server-only PostHog query client + Phase 0 metric builders.
  *
  * This module never runs in a browser and its credential (POSTHOG_API_KEY)
- * must only ever exist as a Cloudflare Worker secret — never a Vercel env
- * var, never a Vite public env var. See CONTROL_PHASE0_API_CONTRACT.md and
+ * must only ever exist as a server-side secret — never a Vite public env
+ * var. See CONTROL_PHASE0_API_CONTRACT.md and
  * USERS_POSTHOG_HANDOFF.md for the full contract this implements.
  */
 
@@ -92,8 +92,12 @@ async function scalar(hogql: string): Promise<number | null> {
 /** Escapes a distinct_id list for a HogQL `IN (...)` clause. Values here are
  * opaque distinct_ids we ourselves stored in D1, never end-user free text,
  * but this still avoids building HogQL by naive string concatenation. */
+export function hogqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 function idList(distinctIds: string[]): string {
-  return distinctIds.map((id) => `'${id.replace(/'/g, "''")}'`).join(",");
+  return distinctIds.map(hogqlString).join(",");
 }
 
 export type CohortIdentity = { participantId: string; distinctId: string | null };
@@ -149,6 +153,7 @@ export async function cohortDayWindowReturn(
   cohort: CohortIdentity[],
   returningEvent: string,
   dayIndex: number,
+  minimumEvents = 1,
 ): Promise<Observation> {
   const { mapped, unmapped } = splitCohort(cohort);
   if (mapped.length === 0) return { count: null, denominator: null, pending: cohort.length, status: "pending", source: "posthog" };
@@ -170,12 +175,14 @@ export async function cohortDayWindowReturn(
          WHERE now() >= first_open_at + INTERVAL ${windowEndHours} HOUR
        ),
        returned AS (
-         SELECT DISTINCT e.distinct_id AS distinct_id
+         SELECT e.distinct_id AS distinct_id
          FROM events AS e
          INNER JOIN window_closed AS w ON e.distinct_id = w.distinct_id
          WHERE e.event = '${returningEvent}'
            AND e.timestamp >= w.first_open_at + INTERVAL ${windowStartHours} HOUR
            AND e.timestamp < w.first_open_at + INTERVAL ${windowEndHours} HOUR
+         GROUP BY e.distinct_id
+         HAVING count() >= ${Math.max(1, Math.floor(minimumEvents))}
        )
        SELECT (SELECT count() FROM window_closed) AS window_closed_count,
               (SELECT count() FROM returned) AS returned_count`,

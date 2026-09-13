@@ -1,6 +1,6 @@
 import { env } from "@/lib/runtime-env";
 import { trackerAccess } from "@/lib/auth";
-import { postHogQuery, PostHogUnavailableError } from "@/lib/posthog";
+import { hogqlString, postHogQuery, PostHogUnavailableError } from "@/lib/posthog";
 import { ensurePhase0PostHogSchema } from "@/app/api/tracker/route";
 
 export const dynamic = "force-dynamic";
@@ -41,11 +41,12 @@ function userSummary(row: CohortRow, firstOpenAt: string | null, lastActiveAt: s
 
 async function firstOpenAndLastActive(distinctId: string | null): Promise<{ firstOpenAt: string | null; lastActiveAt: string | null }> {
   if (!distinctId) return { firstOpenAt: null, lastActiveAt: null };
+  const identity = hogqlString(distinctId);
   try {
     const rows = await postHogQuery(
       `SELECT
-         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = '${distinctId}') AS first_open_at,
-         (SELECT max(timestamp) FROM events WHERE event = 'wingman_opened' AND distinct_id = '${distinctId}') AS last_active_at`,
+         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = ${identity}) AS first_open_at,
+         (SELECT max(timestamp) FROM events WHERE event = 'wingman_opened' AND distinct_id = ${identity}) AS last_active_at`,
     );
     const [firstOpenAt, lastActiveAt] = (rows[0] as [string | null, string | null] | undefined) ?? [null, null];
     return { firstOpenAt, lastActiveAt };
@@ -120,6 +121,7 @@ async function userDetail(id: string) {
   }
 
   const distinctId = row.posthog_distinct_id;
+  const identity = hogqlString(distinctId);
   try {
     const totalsRows = await postHogQuery(
       `SELECT
@@ -127,8 +129,8 @@ async function userDetail(id: string) {
          countIf(event = 'person_context_created') AS profiles,
          countIf(event = 'memory_added') AS memories,
          countIf(event = 'calendar_event_created') AS calendar_events,
-         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = '${distinctId}') AS first_open_at
-       FROM events WHERE distinct_id = '${distinctId}'`,
+         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = ${identity}) AS first_open_at
+       FROM events WHERE distinct_id = ${identity}`,
     );
     const [messages, profiles, memories, calendarEvents, firstOpenAt] =
       (totalsRows[0] as [number, number, number, number, string | null] | undefined) ?? [0, 0, 0, 0, null];
@@ -138,7 +140,7 @@ async function userDetail(id: string) {
     // which is the closest signal available without a stored session ID.
     const sessionRows = firstOpenAt
       ? await postHogQuery(
-          `SELECT count(DISTINCT toDate(timestamp)) FROM events WHERE event = 'response_started' AND distinct_id = '${distinctId}'`,
+          `SELECT count(DISTINCT toDate(timestamp)) FROM events WHERE event = 'response_started' AND distinct_id = ${identity}`,
         )
       : [[0]];
     const wingmanSessions = (sessionRows[0]?.[0] as number | undefined) ?? null;
@@ -146,7 +148,7 @@ async function userDetail(id: string) {
     const activityRows = firstOpenAt
       ? await postHogQuery(
           `SELECT timestamp, event FROM events
-           WHERE distinct_id = '${distinctId}'
+           WHERE distinct_id = ${identity}
              AND event IN ('response_started','response_completed','person_context_created','memory_added','calendar_event_created')
            ORDER BY timestamp DESC LIMIT 101`,
         )
@@ -179,7 +181,7 @@ async function userDetail(id: string) {
              countIf(event='memory_added') AS memories,
              countIf(event='calendar_event_created') AS calendar_events
            FROM events
-           WHERE distinct_id = '${distinctId}'
+           WHERE distinct_id = ${identity}
              AND timestamp >= toDateTime('${new Date(startMs).toISOString()}')
              AND timestamp < toDateTime('${new Date(endMs).toISOString()}')`,
         );

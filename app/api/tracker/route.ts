@@ -857,7 +857,7 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 1),
     cohortOrdinalMilestone(cohort, "memory_added", "memory_count_after", 2),
     cohortDayWindowReturn(cohort, "wingman_opened", 1),
-    cohortDayWindowReturn(cohort, "response_started", 1),
+    cohortDayWindowReturn(cohort, "response_started", 1, 5),
     cohortDayWindowReturn(cohort, "response_started", 1),
     cohortDayWindowReturn(cohort, "wingman_opened", 2),
     cohortDayWindowReturn(cohort, "wingman_opened", 3),
