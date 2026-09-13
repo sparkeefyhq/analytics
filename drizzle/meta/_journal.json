@@ -43,6 +43,13 @@
       "when": 1788737517131,
       "tag": "0005_big_swordsman",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789242477032,
+      "tag": "0006_superb_mysterio",
+      "breakpoints": true
     }
   ]
 }

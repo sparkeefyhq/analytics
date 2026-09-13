@@ -1,4 +1,4 @@
-export type PhaseStatus = "active" | "locked" | "complete";
+export type PhaseStatus = "ready" | "active" | "locked" | "complete";
 export type Comparator = "gte" | "lte" | "eq";
 
 export type TrackerMetric = {
@@ -84,12 +84,18 @@ export type TrackerPhase = {
   status: PhaseStatus;
   features: string[];
   notes: string;
+  /** Server-recorded start time. Never derived from a browser clock. */
+  startedAt: string | null;
   updatedAt: string;
   metrics: TrackerMetric[];
   checks: TrackerCheck[];
 };
 
-export type TrackerData = { phases: TrackerPhase[] };
+export type TrackerData = {
+  phases: TrackerPhase[];
+  /** Phase 0 safety gates: every item must remain at zero to advance. */
+  releaseGates: ReleaseGate[];
+};
 
 export function metricPassed(metric: TrackerMetric) {
   if (metric.actual === null || Number.isNaN(metric.actual)) return false;

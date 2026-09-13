@@ -1,0 +1,95 @@
+/* Quiet surfaces, readable type, and consistent controls. */
+.control-shell{--cb:#101113;--cp:#17181b;--cr:#1d1f23;--cl:#ffffff10;--ci:#eeefef;--cm:#999da5;--ca:#b5bde0;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+.control-sidebar{width:208px;background:#121315;padding:26px 16px}
+.control-brand>span{background:#e1e3e8;border-radius:8px;color:#202226}
+.control-brand b{font-weight:600;letter-spacing:-.02em}
+.control-nav{padding:12px;font-weight:500;font-size:13px}
+.control-nav.active{background:#ffffff09;color:#f1f2f4}
+.control-sidebar-foot{font-size:11px;line-height:1.7}
+.control-main{margin-left:208px;width:calc(100% - 208px)}
+.control-page{max-width:1510px;padding:44px 40px 64px}
+.control-header{align-items:center;margin-bottom:32px}
+.control-header h1{font-size:36px;letter-spacing:-.045em;font-weight:650}
+.signal-card{border-radius:12px;box-shadow:none}
+.card-row h2,.analytics-page h2,.analytics-page .card-row h2,.analytics-page .section-heading h2{font-size:24px;font-weight:650;letter-spacing:-.035em}
+.data-chip{background:none;border:1px solid var(--cl);font-size:10px;font-weight:400;border-radius:5px;white-space:nowrap}
+.header-tools select{font-size:12px;border-radius:7px;min-height:38px}
+.analytics-section{margin-top:30px}
+.analytics-page .users-card,.analytics-page .retention-card,.analytics-page .analytics-columns .signal-card{padding:24px}
+.analytics-page .users-number{font-size:60px;font-weight:500;letter-spacing:-.05em}
+.analytics-page .segment{background:transparent;border-color:var(--cl);border-radius:7px}
+.analytics-page .segment button{font-size:11px;padding:7px 10px}
+.segment button.active{background:#e0e3ea;color:#24262b}
+.retention-tabs button{font-size:11px}
+.ring-track{stroke:#ffffff0c}.ring-fill{stroke:#b5bde0;stroke-width:5}
+.ring-visual strong{font-size:23px;font-weight:500}
+.metric-ring>span,.analytics-page .mini-kpi .metric-ring>span{font-weight:500}
+.analytics-page .kpi-grid{gap:0;border:1px solid var(--cl);border-radius:12px;overflow:hidden;background:var(--cp)}
+.analytics-page .mini-kpi{border:0;border-right:1px solid var(--cl);border-bottom:1px solid var(--cl);border-radius:0;padding:24px 16px;background:none}
+.analytics-page .mini-kpi:nth-child(3n){border-right:0}.analytics-page .mini-kpi:nth-last-child(-n+3){border-bottom:0}
+.metric-definition{color:#858992}.funnel-index{color:var(--cm)}
+.funnel-stage{padding:18px 16px}.funnel-stage b{font-weight:500}.analytics-page .funnel-stage strong{font-size:25px;font-weight:500}
+.reliability-numbers strong,.ai-cost-total,.analytics-page .economics-values b,.projection .projection-result{font-weight:500}
+.projection{border:0;border-left:1px solid var(--cl);border-radius:0;background:none;padding:0 0 0 24px}
+.phase-status{display:flex;align-items:center;justify-content:center;gap:9px;min-width:112px;min-height:44px;padding:12px 20px;border:1px solid #ffffff18;border-radius:8px;font-size:14px;font-weight:600;background:#ffffff06;color:#e0e2e7}
+.phase-status:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.phase-status.active{background:#70c99a0a;border-color:#70c99a25;color:#a4d5bb}
+.phase-overview{padding:26px 0;border:0;border-top:1px solid var(--cl);border-bottom:1px solid var(--cl);border-radius:0;background:none}
+.phase-overview small,.phase-facts small{font-size:11px;font-weight:400;letter-spacing:0}
+.phase-overview h2{font-size:32px;font-weight:550;margin:12px 0 0;letter-spacing:-.04em}
+.phase-facts{gap:18px 32px}.phase-facts b{font-size:13px;font-weight:500}
+.phase-stepper{gap:0;margin:24px 0 4px;border:1px solid var(--cl);border-radius:9px;overflow:hidden}
+.phase-stepper button{border:0;border-right:1px solid var(--cl);border-radius:0;background:transparent;padding:15px 12px}
+.phase-stepper button:last-child{border-right:0}.phase-stepper button.selected{background:#ffffff07;color:#f0f1f5;box-shadow:inset 0 -2px #b5bde0}
+.phase-stepper b{font-size:12px;font-weight:600}.phase-stepper small{font-size:10px;margin-top:4px}
+.phase-stepper em{font-size:10px}.phase-stepper button>span{background:none;color:#90949c}
+.plan-actions{padding:20px 0}.control-primary,.control-secondary{padding:11px 16px;font-size:12px;border-radius:7px;font-weight:600}
+.control-primary{background:#dce0ec}.control-secondary{background:#ffffff04}
+.plan-grid{grid-template-columns:minmax(0,1fr) 250px;align-items:start;gap:24px}
+.gates-card,.checklist-card{padding:24px}.blockers-card{padding:20px 0 20px 20px;border:0;border-left:1px solid var(--cl);border-radius:0;background:none}
+.blockers-card h2{margin:0;font-size:15px;font-weight:600;letter-spacing:-.02em}.blockers-card li{font-size:12px;line-height:1.55}.blockers-card li:before{color:#8f949e}.blockers-card ul{gap:14px}
+.gate-table{border:0;border-radius:0;margin-top:22px;overflow:auto}
+.gate-row{grid-template-columns:minmax(180px,1.8fr) .65fr .65fr .65fr .8fr;min-height:62px;padding:10px 0;gap:12px;font-size:12px}
+.gate-row>div b{font-size:12px;font-weight:500;line-height:1.45}
+.gate-row.heading{background:none;letter-spacing:0;text-transform:none;font-size:11px;font-weight:400;padding-top:0}
+.gate-row em{padding:5px 7px;font-size:10px;background:none;color:#b6a387}.gate-row em.pass{background:none;color:#9bc4ad}
+.metric-editor-input{min-height:34px;padding:7px 9px;background:#101113;border:1px solid #ffffff12;border-radius:5px;font-size:12px}
+.checklist-card{margin-top:24px}.checklist-card .card-row>span{font-size:12px;color:var(--cm)}
+.plan-check{font-size:13px;min-height:48px;line-height:1.5}.plan-check input{width:16px;height:16px;flex-shrink:0}
+.control-shell :is(button,input,select,summary):focus-visible{outline:2px solid var(--ca);outline-offset:3px}
+@media(max-width:1200px){.plan-grid{grid-template-columns:minmax(0,1fr)}.blockers-card{border-left:0;border-top:1px solid var(--cl);padding:20px 0}.blockers-card ul{grid-template-columns:1fr 1fr;gap:12px 24px}.gate-row{min-width:620px}}
+@media(max-width:760px){.control-sidebar{width:100%;padding:7px 10px}.control-main{margin:0;width:100%}.control-page{padding:24px 18px 40px}.control-header h1{font-size:30px}.plan-page .control-header{flex-direction:row;align-items:center}.phase-status{min-width:105px;min-height:44px}.phase-overview{padding:22px 0;gap:24px}.phase-facts{gap:18px}.phase-stepper button{padding:12px 8px}.phase-stepper button:nth-child(2){border-right:0}.phase-stepper button:nth-child(-n+2){border-bottom:1px solid var(--cl)}.gates-card,.checklist-card{padding:20px 16px}.blockers-card ul{grid-template-columns:1fr}.analytics-page .mini-kpi{padding:20px 10px}.analytics-page .mini-kpi:nth-child(3n){border-right:1px solid var(--cl)}.analytics-page .mini-kpi:nth-child(2n){border-right:0}.analytics-page .mini-kpi:nth-last-child(-n+3){border-bottom:1px solid var(--cl)}.analytics-page .mini-kpi:nth-last-child(-n+2){border-bottom:0}.projection{border-left:0;border-top:1px solid var(--cl);padding:22px 0 0}.phase-facts b{font-size:12px}.plan-actions>div:last-child{flex-wrap:wrap}}
+.phase-stepper button>div{min-width:0}
+.analytics-page .users-card{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:20px;align-items:center}
+.users-card>.card-row,.users-card>.users-ledger{grid-column:1/-1}
+.analytics-page .users-card .users-number{margin:34px 0 24px;min-width:0}
+.users-card .users-number small{display:block;margin:12px 0 0}
+.user-period{position:relative;width:max-content;justify-self:end;align-self:end;margin-bottom:24px}
+.period-toggle{display:flex;align-items:center;justify-content:space-between;gap:24px;min-width:140px;padding:9px 12px;border:1px solid var(--cl);border-radius:7px;background:var(--cr);color:var(--ci);font-size:12px}
+.period-menu{position:absolute;bottom:calc(100% + 8px);right:0;z-index:4;width:140px;padding:5px;border:1px solid #ffffff20;border-radius:9px;background:#23252a;box-shadow:0 8px 28px #0006}
+.period-menu button{display:flex;justify-content:space-between;width:100%;padding:10px;border:0;border-radius:5px;background:none;color:var(--ci);font-size:12px;text-align:left}
+.period-menu button:hover,.period-menu button:focus-visible{background:#ffffff0c}
+.journey-card{padding:0 24px}.journey-step{display:grid;grid-template-columns:26px minmax(0,1fr) 60px;gap:16px;align-items:center;padding:17px 0;border-bottom:1px solid var(--cl)}
+.journey-step:last-child{border-bottom:0}.journey-index{color:#777d88;font-size:11px}.journey-step b{font-size:13px;font-weight:500}.journey-step p{margin:5px 0 0;color:var(--cm);font-size:12px;line-height:1.45}.journey-step strong{text-align:right;font-size:22px;font-weight:500}.journey-step small{display:block;margin-top:4px;color:var(--cm);font-size:10px;font-weight:400}
+@media(max-width:760px){.journey-card{padding:0 16px}.journey-step{gap:10px;grid-template-columns:22px minmax(0,1fr) 48px}.section-heading{gap:12px}.section-heading>span{text-align:right}}
+.control-brand img{width:44px;height:44px;object-fit:contain;border-radius:9px;flex-shrink:0}
+.phase-header-controls{display:flex;align-items:center;gap:24px}
+.phase-clock{display:flex;align-items:center;gap:12px;color:#a4a9b2}
+.phase-clock>div{display:grid;gap:5px}.phase-clock span{font-size:10px}.phase-clock time{font-size:24px;line-height:1.1;color:var(--ci);font-variant-numeric:tabular-nums;letter-spacing:-.025em}
+.phase-clock.overdue time{color:#d5ad73}.phase-status.ready{cursor:pointer;background:#e7e9ee;color:#202329;border-color:transparent;min-height:48px;transition:background .12s}
+.phase-status.ready:hover{background:#fff}.phase-status.ready:disabled{cursor:wait}
+.phase-overview{display:block;padding:30px 0}.phase-cohort h2{margin:0;font-size:25px;font-weight:500}.cohort-hero{display:flex;align-items:baseline;gap:16px;margin-top:18px}.cohort-hero strong{font-size:100px;line-height:1;font-weight:600;letter-spacing:-.075em}.cohort-hero>span{color:var(--cm);font-size:20px}
+.plan-check{cursor:pointer;padding:10px 4px;min-height:48px}.plan-check:has(input:disabled){cursor:default}.plan-check input{width:20px;height:20px;cursor:inherit}
+.plan-check.completed{animation:check-arrive .18s ease-out}.check-undo,.checklist-edit-link{border:0;background:transparent;color:#c7cee6;font-size:12px;padding:8px;cursor:pointer}.check-undo{margin-left:auto;text-decoration:none}.checklist-edit-link{margin:12px 0 0;padding:6px 0}.check-undo:hover,.checklist-edit-link:hover{color:white}
+.save-status{position:fixed;bottom:18px;left:24px;z-index:8;font-size:11px;color:#b8c1d0;background:#17181b;border:1px solid #ffffff16;padding:7px 10px;border-radius:6px}
+@keyframes check-arrive{from{opacity:.5;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:760px){.control-sidebar .control-brand{display:flex;padding:0;margin-right:8px}.control-sidebar .control-brand img{width:36px;height:36px}.control-sidebar .control-brand b{display:none}.control-sidebar nav{flex:1;min-width:0}.plan-page .control-header{flex-wrap:wrap;gap:22px}.phase-header-controls{margin-left:auto;gap:14px}.phase-clock{gap:8px}.phase-clock time{font-size:20px}.phase-status{min-width:92px;padding:12px 14px}.cohort-hero strong{font-size:84px}.phase-overview{padding:26px 0}.save-status{bottom:12px;left:12px}.plan-check span{line-height:1.5}}
+.phase-clock .clock-digits{display:flex;align-items:flex-start;gap:11px}
+.phase-clock .clock-part{position:relative;display:grid;justify-items:center;gap:6px;font-size:inherit;min-width:2ch}
+.clock-part b,.clock-plus{font-weight:500;font-size:inherit;line-height:1}
+.clock-part+.clock-part:before{content:":";position:absolute;left:-8px;top:0;color:#777d88;font-size:inherit;line-height:1}
+.phase-clock .clock-part small{font-size:8px;line-height:1;letter-spacing:.13em;font-weight:500;color:#8f96a2}
+@media(max-width:760px){.phase-header-controls{gap:12px}.phase-clock .clock-digits{gap:9px}.clock-part+.clock-part:before{left:-7px}.phase-clock .clock-part small{font-size:7px}}
+.plan-page .phase-overview{display:flex;align-items:center;justify-content:space-between;gap:32px}
+.phase-scope{width:360px;max-width:48%}.phase-scope h3{margin:0 0 10px;font-size:11px;font-weight:500;color:#9da2ab}.phase-scope p{margin:0;font-size:14px;line-height:1.7;color:#d7d9df}.phase-scope small{display:block;margin-top:10px;font-size:11px;font-weight:400;letter-spacing:0;line-height:1.5;color:#9096a1}
+@media(max-width:760px){.plan-page .phase-overview{align-items:stretch;flex-direction:column;gap:22px}.phase-scope{width:100%;max-width:none}.phase-scope p{font-size:13px}.phase-scope h3{margin-bottom:6px}}

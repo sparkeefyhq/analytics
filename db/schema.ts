@@ -2,6 +2,7 @@ import {
   index,
   integer,
   real,
+  primaryKey,
   sqliteTable,
   text,
 } from "drizzle-orm/sqlite-core";
@@ -22,7 +23,23 @@ export const phases = sqliteTable("phases", {
   features: text("features").notNull(),
   notes: text("notes").notNull().default(""),
   updatedAt: text("updated_at").notNull(),
+  startedAt: text("started_at"),
 });
+
+export const phase1State = sqliteTable("phase1_state", {
+  phaseId: text("phase_id").primaryKey(),
+  decision1A: text("decision_1a"),
+  finalDecision: text("final_decision"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const phase1WedgeSignals = sqliteTable("phase1_wedge_signals", {
+  wedge: text("wedge").notNull(),
+  field: text("field").notNull(),
+  numericValue: real("numeric_value"),
+  textValue: text("text_value").notNull().default(""),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.wedge, table.field] })]);
 
 export const metrics = sqliteTable(
   "metrics",

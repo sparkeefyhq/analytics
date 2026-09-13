@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { pickTodaysFocus } from "./focus";
+import { ControlApp, type ControlTracker } from "./control";
+import { createTrackerQueue } from "./control-state";
 import "./style.css";
 
 type Metric = {
@@ -17,6 +19,16 @@ type Metric = {
   minimumDenominator?: number | null;
   definition?: string;
 };
+const phaseOneFallbackMetrics: Metric[] = [
+  { id: "phase-1a-metric-0", category: "Cohort", name: "Eligible cohort completed", target: 50, actual: null, unit: "count", comparator: "eq", valueType: "number", definition: "Eligible Indian men aged 18–28 who complete the Phase 1A observation protocol." },
+  { id: "phase-1a-metric-1", category: "Activation", name: "Meaningful activation", target: 70, actual: null, unit: "%", comparator: "gte", valueType: "percent", minimumDenominator: 50, definition: "Eligible participants who submit a genuine situation, receive a complete Wingman response and report it clearly or somewhat helped." },
+  { id: "phase-1a-metric-2", category: "Independence", name: "Independent share of meaningful activations", target: 80, actual: null, unit: "%", comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Independent meaningful activations divided by all meaningful activations." },
+  { id: "phase-1a-metric-3", category: "Value", name: "First-answer usefulness", target: 75, actual: null, unit: "%", comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Useful or somewhat-useful first answers divided by all completed genuine first answers." },
+  { id: "phase-1a-metric-4", category: "Behavior", name: "Organic second-situation rate", target: 40, actual: null, unit: "%", comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Organic second-situation users divided by meaningfully activated users." },
+  { id: "phase-1a-metric-5", category: "Reliability", name: "Genuine Wingman response success", target: 95, actual: null, unit: "%", comparator: "gte", valueType: "percent", minimumDenominator: 35, definition: "Genuine requests returning a complete usable response without error or manual retry." },
+  { id: "phase-1a-metric-6", category: "Trust & safety", name: "Critical trust/safety incidents", target: 0, actual: null, unit: "count", comparator: "eq", valueType: "number", definition: "Privacy, memory, safety or critical deletion failures." },
+  { id: "phase-1a-metric-7", category: "Measurement", name: "Analytics / participant-state reconciliation", target: 100, actual: null, unit: "%", comparator: "gte", valueType: "percent", minimumDenominator: 50, definition: "Every eligible participant has a valid final measurement state and correct denominator, source and version fields." },
+];
 // Kept only for backwards-compatible action handling; the Phase 0 UI no longer
 // renders participant evidence or release-gate controls.
 type ReleaseGate = { id: string; actual: number };
@@ -35,6 +47,7 @@ type Phase = {
   durationMax: number;
   durationUnit: string;
   status: string;
+  startedAt?: string | null;
   features: string[];
   metrics: Metric[];
   checks: Check[];
@@ -58,6 +71,7 @@ type Tracker = {
       textValue: string;
     }[];
   };
+  analytics?: ControlTracker["analytics"];
 };
 type Routine = {
   id: string;
@@ -198,7 +212,7 @@ const blankDiary: Diary = {
   finished_at: null,
 };
 
-function Login({ onSuccess }: { onSuccess: () => void }) {
+function Login({ onSuccess, onCancel }: { onSuccess: () => void; onCancel?: () => void }) {
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [error, setError] = useState(""),
@@ -226,7 +240,7 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
     <main className="login">
       <div className="login-box">
         <div className="brand light">
-          <b>✦</b> Sparkeefy
+          <img src="/sparkeefy-logo.png" alt="" width="44" height="44" /> Sparkeefy
         </div>
         <section className="login-card">
           <span className="lock">⌁</span>
@@ -264,7 +278,7 @@ function Login({ onSuccess }: { onSuccess: () => void }) {
               {loading ? "Checking access…" : "Enter Launch Control →"}
             </button>
           </form>
-          <em>Access is limited to the Sparkeefy launch team.</em>
+          {onCancel && <button className="control-secondary" onClick={onCancel}>Back to preview</button>}<em>Access is limited to the Sparkeefy launch team.</em>
         </section>
       </div>
     </main>
@@ -2782,15 +2796,18 @@ function PhaseOnePanel({
   phaseCanAdvance: boolean;
   onAdvance: () => void;
 }) {
+  const backendAvailable = Boolean(data.phase1);
   const state = data.phase1 || {
     decision1A: null,
     finalDecision: null,
     phase1AReady: false,
     phase1BUnlocked: false,
-    phase1Unmet: ["Loading Phase 1 state…"],
+    phase1Unmet: ["Phase 1 backend support is unavailable. This view is read-only."],
     wedgeSignals: [],
   };
-  const aMetrics = phase.metrics.filter((metric) => metric.id.startsWith("phase-1a-"));
+  const aMetrics = backendAvailable
+    ? phase.metrics.filter((metric) => metric.id.startsWith("phase-1a-"))
+    : phaseOneFallbackMetrics;
   const bMetrics = phase.metrics.filter((metric) => metric.id.startsWith("phase-1b-"));
   const aChecks = phase.checks.filter((check) => check.id.startsWith("phase-1a-"));
   const bChecks = phase.checks.filter((check) => check.id.startsWith("phase-1b-"));
@@ -2801,7 +2818,7 @@ function PhaseOnePanel({
   const metricInput = (metric: Metric) => (
     <div className="metric-actual phase1-actual">
       <input
-        disabled={!data.canEdit}
+        disabled={!data.canEdit || !backendAvailable}
         type="number"
         min="0"
         aria-label={`${metric.name} numerator`}
@@ -2820,7 +2837,7 @@ function PhaseOnePanel({
         <>
           <span>/</span>
           <input
-            disabled={!data.canEdit}
+            disabled={!data.canEdit || !backendAvailable}
             type="number"
             min="0"
             aria-label={`${metric.name} denominator`}
@@ -2882,7 +2899,7 @@ function PhaseOnePanel({
   const decision = (stage: "1a" | "final", current: string | null, title: string) => (
     <article className="card phase1-decision">
       <div><p className="eyebrow">{stage === "1a" ? "PHASE 1A DECISION" : "PHASE 1 FINAL OUTCOME"}</p><h3>{title}</h3><p>{stage === "1a" ? "Phase 1B unlocks only when Phase 1A’s hard gates pass and this decision is Advance or Narrow." : "Phase 2 can unlock only after cold replication passes and this decision is Advance or Narrow."}</p></div>
-      <select disabled={!data.canEdit} value={current || ""} onChange={(event) => void save("phase1_decision", { stage, decision: event.target.value }, phase.id)}>
+      <select disabled={!data.canEdit || !backendAvailable} value={current || ""} onChange={(event) => void save("phase1_decision", { stage, decision: event.target.value }, phase.id)}>
         <option value="" disabled>Record decision…</option><option value="advance">ADVANCE</option><option value="narrow">NARROW</option><option value="repair">REPAIR</option><option value="reconsider">RECONSIDER</option>
       </select>
     </article>
@@ -2894,10 +2911,12 @@ function PhaseOnePanel({
       <details><summary>Phase 1 configuration</summary><div className="config-grid"><span><b>In scope</b>AI Wingman V3 · person context · user-controlled memory · practical reminders · usefulness feedback · analytics</span><span><b>Out of scope</b>Spark Meter · lifecycle retention notifications · referrals · pricing · monetization · public reviews · broad marketing · artificial daily engagement</span><span><b>Return rule</b>For 14 days: no return prompting, manufactured situations, lifecycle nudges, referral prompts, rewards or reviews. User-created reminders are allowed but classified as reminder-assisted.</span></div></details>
     </section>
     <section className="phase1-section"><div className="phase1-subhead"><span>1A</span><div><p className="eyebrow">WEDGE DISCOVERY</p><h2>50 eligible Indian men aged 18–28</h2><p>~25 talking-stage/dating/situationship and ~25 committed relationship; a mix of SRM/non-SRM, founder-connected/colder, English/natural Hinglish.</p></div></div>{metricTable(aMetrics, "Phase 1A")}{yieldMetric(aMetrics, "Organic Repeater Yield")}
+      {!backendAvailable ? <div className="phase1-locked-copy"><b>Phase 1 is view-only.</b><span>The current backend does not yet provide Phase 1A/1B state. Actuals, decisions and advancement remain disabled until it does.</span></div> : <>
       <article className="card wedge-comparison"><div className="card-title"><div><p className="eyebrow">PHASE 1A WEDGE COMPARISON</p><h3>Compare signal before choosing a wedge</h3><p>Do not declare a winner from tiny percentage differences. Consider repeat lead, recurring job, founder dependence, trust/safety and evidence outside SRM/friends.</p></div></div><div className="wedge-grid">{[["talking-stage", "Talking-stage / dating / situationship"], ["committed", "Committed relationship"]].map(([wedge, title]) => <section key={wedge}><h4>{title}</h4>{wedges.map(([field, label, kind]) => { const saved = signal(wedge, field); return <label key={field}><span>{label}</span><input disabled={!data.canEdit} type={kind === "number" ? "number" : "text"} min={kind === "number" ? "0" : undefined} defaultValue={kind === "number" ? (saved?.numericValue ?? "") : (saved?.textValue || "")} onBlur={(event) => void save("phase1_wedge", { wedge, field, numericValue: kind === "number" ? event.target.value : null, textValue: kind === "text" ? event.target.value : "" }, phase.id)} /></label>; })}</section>)}</div></article>
       <article className="card checklist phase1-checklist"><div className="card-title"><div><p className="eyebrow">PHASE 1A CHECKLIST</p><h3>Evidence before replication</h3></div><span>{aChecks.filter((check) => check.completed).length}/{aChecks.length}</span></div>{aChecks.map((check) => <label className={check.completed ? "checked" : ""} key={check.id}><input disabled={!data.canEdit} type="checkbox" checked={check.completed} onChange={(event) => void save("check", { completed: event.target.checked }, check.id)} />{check.label}</label>)}</article>
       <details className="phase1-diagnostics"><summary>Diagnostic signals — not advancement gates</summary><p>D1 return · D7 return · eligible situation exposure · opportunity-adjusted capture · previous default · default displacement · first/second Wingman job · same/different person · memory benefit · language/register · founder rescue minutes · response latency · abandonment · technical/session health · app version · rewrite rate · SRM/non-SRM · founder-connected/cold · recruitment mode.</p><p>Derived diagnostic: founder rescue minutes per independently activated user. Watch for a downward trend across users/cohorts; do not invent a hard target yet.</p><p>Track return states as: Organic second situation, Reminder-assisted, Founder-prompted, Referral-assisted, Second opportunity but another alternative chosen, No second opportunity, or Unknown attribution. Keep only structured pseudonymous evidence—never conversations, names, screenshots or private narratives.</p></details>
       {decision("1a", state.decision1A, "Choose what the Phase 1A evidence says")}
+      </>}
     </section>
     <section className={`phase1-section phase1b ${state.phase1BUnlocked ? "unlocked" : "locked"}`}><div className="phase1-subhead"><span>1B</span><div><p className="eyebrow">COLD REPLICATION</p><h2>~100 eligible colder waitlist users</h2><p>Reproduce the strongest Phase 1A user/job with the same rules, minimal founder involvement and reduced SRM/founder trust effects.</p></div><b>{state.phase1BUnlocked ? "Unlocked" : "Locked"}</b></div>{state.phase1BUnlocked ? <>{metricTable(bMetrics, "Phase 1B")}{yieldMetric(bMetrics, "Cold Organic Repeater Yield")}<article className="card checklist phase1-checklist"><div className="card-title"><div><p className="eyebrow">PHASE 1B CHECKLIST</p><h3>Cold replication evidence</h3></div><span>{bChecks.filter((check) => check.completed).length}/{bChecks.length}</span></div>{bChecks.map((check) => <label className={check.completed ? "checked" : ""} key={check.id}><input disabled={!data.canEdit} type="checkbox" checked={check.completed} onChange={(event) => void save("check", { completed: event.target.checked }, check.id)} />{check.label}</label>)}</article>{decision("final", state.finalDecision, "Classify Phase 1 after cold replication")}</> : <div className="phase1-locked-copy"><b>Phase 1B is locked.</b><span>Complete all Phase 1A gates and record an Advance or Narrow decision to open cold replication.</span></div>}</section>
     <article className={`advance-card phase1-advance ${phaseCanAdvance ? "ready" : ""}`}><h3>{phaseCanAdvance ? "Phase 1 earned Phase 2." : "Phase 2 stays locked."}</h3><p>{phaseCanAdvance ? "Phase 1A and cold replication both passed with a replication-permitting decision." : <><b>{state.phase1Unmet.length} exact requirements remain.</b><span className="unmet-list">{state.phase1Unmet.slice(0, 5).join(" · ")}{state.phase1Unmet.length > 5 ? " · …" : ""}</span></>}</p><button disabled={!data.canEdit || !phaseCanAdvance || phase.status === "complete"} className="primary" onClick={onAdvance}>{phase.status === "complete" ? "Phase complete" : "Advance to Phase 2 →"}</button></article>
@@ -2925,6 +2944,9 @@ function Launch({
     total = local.metrics.length + local.checks.length;
   const phaseZero = local.id === "phase-0";
   const phaseOne = local.id === "phase-1";
+  const phaseOneFallback = phaseOne && !data.phase1;
+  const displayedProgress = phaseOneFallback ? 0 : progress;
+  const displayedTotal = phaseOneFallback ? phaseOneFallbackMetrics.length : total;
   const cohortActual = phaseZero
     ? (local.metrics.find((metric) => metric.name === "Onboarding completion")
         ?.actualDenominator ?? local.actualUsers)
@@ -2969,7 +2991,7 @@ function Launch({
   const unmetRequirements = phaseZero
     ? data.phase0Unmet || []
     : phaseOne
-      ? data.phase1?.phase1Unmet || []
+      ? data.phase1?.phase1Unmet || ["Phase 1 backend support is unavailable."]
       : [
         ...local.metrics
           .filter((metric) => !passes(metric))
@@ -2989,7 +3011,7 @@ function Launch({
         </div>
         <div className="completion">
           <b>
-            {progress}/{total}
+            {displayedProgress}/{displayedTotal}
           </b>
           <span>checks passed</span>
         </div>
@@ -3016,11 +3038,13 @@ function Launch({
         <div className="phase-hero">
           <span>{local.position}</span>
           <div>
-            <h2>{local.name}</h2>
-            <p>{local.objective}</p>
+            <h2>{phaseOneFallback ? "Phase 1: Organic Wingman Pull" : local.name}</h2>
+            <p>{phaseOneFallback ? "Prove that the right user independently gets real value and chooses Wingman again for another genuine relationship situation." : local.objective}</p>
           </div>
           <b className={phaseCanAdvance ? "pass-badge" : "active-badge"}>
-            {local.status === "complete"
+            {phaseOneFallback
+              ? "View only"
+              : local.status === "complete"
               ? "Complete"
               : phaseCanAdvance
                 ? "Ready to advance"
@@ -3031,20 +3055,22 @@ function Launch({
           <div>
             Cohort
             <strong>
-              {local.userMin === local.userMax
-                ? `${cohortActual} / ${local.userMax} users`
+              {phaseOneFallback
+                ? "0 / 50 users"
+                : local.userMin === local.userMax
+                ? `${phaseOneFallback ? 0 : cohortActual} / ${phaseOneFallback ? 50 : local.userMax} users`
                 : `${cohortActual} / ${local.userMin} to ${local.userMax} users`}
             </strong>
           </div>
           <div>
             Duration
             <strong>
-              Day {local.elapsedDays} / {local.durationMin}–{local.durationMax}{" "}
+              Day {phaseOneFallback ? 0 : local.elapsedDays} / {phaseOneFallback ? 14 : local.durationMin}–{phaseOneFallback ? 14 : local.durationMax}{" "}
               {local.durationUnit}
             </strong>
           </div>
           <div>
-            Features<strong>{local.features.join(" · ")}</strong>
+            Features<strong>{phaseOneFallback ? "AI Wingman V3 · Person context · User-controlled memory · User-created practical reminders · Usefulness feedback · Required analytics" : local.features.join(" · ")}</strong>
           </div>
         </div>
       </article>
@@ -4135,7 +4161,7 @@ function Suggestions({
   );
 }
 
-function App() {
+function LegacyApp() {
   const [tracker, setTracker] = useState<Tracker | null>(null),
     [founder, setFounder] = useState<FounderData | null>(null),
     [suggestions, setSuggestions] = useState<SuggestionsData | null>(null),
@@ -4343,5 +4369,74 @@ function App() {
       </div>
     </main>
   );
+}
+
+function App() {
+  const [tracker, setTracker] = useState<Tracker | null>(null);
+  const [needsLogin, setNeedsLogin] = useState(false);
+  const [view, setView] = useState<"analytics" | "plan" | "users">(() =>
+    location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : "analytics",
+  );
+  const [error, setError] = useState("");
+
+  const [saveStatus, setSaveStatus] = useState("");
+  const mutations = useRef<ReturnType<typeof createTrackerQueue<Tracker>> | null>(null);
+  if (!mutations.current) mutations.current = createTrackerQueue<Tracker>(setTracker, setSaveStatus);
+
+  async function load() {
+    try {
+      const response = await fetch("/api/tracker");
+      if (response.status === 401) {
+        setNeedsLogin(true);
+        return;
+      }
+      if (!response.ok) throw Error("Unable to load Sparkeefy Control.");
+      mutations.current!.hydrate((await response.json()) as Tracker);
+      setNeedsLogin(false);
+      setError("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to load Sparkeefy Control.");
+    }
+  }
+  useEffect(() => {
+    // Historic workspace URLs remain valid, but their UI has intentionally
+    // moved into the two Control surfaces.
+    if (["/launch", "/sarthak", "/suggestions", "/"].includes(location.pathname))
+      history.replaceState({}, "", "/analytics");
+    void load();
+    const onPopState = () => setView(location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : "analytics");
+    addEventListener("popstate", onPopState);
+    return () => removeEventListener("popstate", onPopState);
+  }, []);
+  const navigate = (next: "analytics" | "plan" | "users") => {
+    history.pushState({}, "", `/${next}`);
+    setView(next);
+  };
+  async function save(action: string, patch?: Record<string, unknown>, id?: string) {
+    if (!tracker?.canEdit) throw Error("Sign in to edit.");
+    setError("");
+    const payload = ["metric", "check", "release_gate", "cohort_create", "cohort_update", "cohort_delete"].includes(action)
+      ? { action, id, patch }
+      : { action, phaseId: id, patch };
+    try {
+      await mutations.current!.enqueue(action, patch, id, async () => {
+        const response = await fetch("/api/tracker", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal: AbortSignal.timeout(20000) });
+        const data = (await response.json()) as Tracker & { error?: string };
+        if (!response.ok) throw Error(data.error || "Unable to save.");
+        return data;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to save. Please retry.");
+      throw cause;
+    }
+  }
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setSaveStatus("");
+    await load();
+  }
+  if (needsLogin) return <Login onCancel={() => setNeedsLogin(false)} onSuccess={() => { void load(); }} />;
+  if (!tracker) return <main className="loading">{error || "Preparing Sparkeefy Control…"}{error && <button className="control-primary" onClick={() => void load()}>Try again</button>}</main>;
+  return <><ControlApp tracker={tracker as ControlTracker} save={save} view={view} setView={navigate} onLogout={() => void logout()} onLogin={() => setNeedsLogin(true)} />{saveStatus && <div className="save-status" role="status">{saveStatus}</div>}{error && <div className="control-error">{error}</div>}</>;
 }
 createRoot(document.getElementById("root")!).render(<App />);

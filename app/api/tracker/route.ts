@@ -232,12 +232,6 @@ async function initializeDatabase() {
       `CREATE TABLE IF NOT EXISTS cohort_evidence (id TEXT PRIMARY KEY, phase_id TEXT NOT NULL, participant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'invited', age_band TEXT NOT NULL DEFAULT 'other', relationship_state TEXT NOT NULL DEFAULT 'other', recruitment_source TEXT NOT NULL DEFAULT '', close_friend_or_teammate INTEGER NOT NULL DEFAULT 0, situation_category TEXT NOT NULL DEFAULT 'other', onboarding_completed INTEGER NOT NULL DEFAULT 0, meaningful_activation INTEGER NOT NULL DEFAULT 0, independently_activated INTEGER NOT NULL DEFAULT 0, first_answer_useful TEXT NOT NULL DEFAULT 'not-rated', genuine_request_count INTEGER NOT NULL DEFAULT 0, usefulness_response_count INTEGER NOT NULL DEFAULT 0, reminder_test_count INTEGER NOT NULL DEFAULT 0, reminder_tested INTEGER NOT NULL DEFAULT 0, reminder_delivery_result TEXT NOT NULL DEFAULT 'not-tested', reminder_destination_result TEXT NOT NULL DEFAULT 'not-tested', return_source TEXT NOT NULL DEFAULT 'unknown', founder_explained_product INTEGER NOT NULL DEFAULT 0, founder_helped_onboarding INTEGER NOT NULL DEFAULT 0, founder_suggested_situation INTEGER NOT NULL DEFAULT 0, founder_helped_request INTEGER NOT NULL DEFAULT 0, founder_solved_problem INTEGER NOT NULL DEFAULT 0, founder_prompted_return INTEGER NOT NULL DEFAULT 0, trust_concern INTEGER NOT NULL DEFAULT 0, product_issue INTEGER NOT NULL DEFAULT 0, evidence_note TEXT NOT NULL DEFAULT '', notion_reference_url TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     ),
     database.prepare(
-      `CREATE TABLE IF NOT EXISTS phase1_state (phase_id TEXT PRIMARY KEY, decision_1a TEXT, final_decision TEXT, updated_at TEXT NOT NULL)`,
-    ),
-    database.prepare(
-      `CREATE TABLE IF NOT EXISTS phase1_wedge_signals (wedge TEXT NOT NULL, field TEXT NOT NULL, numeric_value REAL, text_value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY (wedge, field))`,
-    ),
-    database.prepare(
       "CREATE INDEX IF NOT EXISTS idx_metrics_phase_position ON metrics(phase_id, position)",
     ),
     database.prepare(
@@ -275,6 +269,7 @@ async function initializeDatabase() {
     "definition",
     "definition TEXT NOT NULL DEFAULT ''",
   );
+  // New schema is applied by the additive Drizzle migration before deployment.
   const phase = await database
     .prepare("SELECT id FROM phases WHERE id = 'phase-0'")
     .first();
@@ -285,7 +280,7 @@ async function initializeDatabase() {
   const timestamp = now();
   await database
     .prepare(
-      `UPDATE phases SET name=?, objective=?, user_min=15, user_max=15, duration_min=3, duration_max=5, duration_unit='days', status=CASE WHEN status='complete' THEN status ELSE 'active' END, features=?, updated_at=? WHERE id='phase-0'`,
+      `UPDATE phases SET name=?, objective=?, user_min=15, user_max=15, duration_min=3, duration_max=5, duration_unit='days', status=CASE WHEN status='locked' THEN 'ready' ELSE status END, features=?, updated_at=? WHERE id='phase-0'`,
     )
     .bind(
       "Phase 0: Power User Release Candidate",
@@ -329,14 +324,8 @@ async function initializeDatabase() {
       )
       .bind(timestamp)
       .run();
-    const phase1Marker = await database
-      .prepare("SELECT id FROM metrics WHERE id='phase-1a-metric-0'")
-      .first();
-    if (!phase1Marker)
-      await database.batch([
-        database.prepare("DELETE FROM metrics WHERE phase_id='phase-1'"),
-        database.prepare("DELETE FROM checks WHERE phase_id='phase-1'"),
-      ]);
+    // Keep legacy Phase 1 evidence and checklist history in place. The current
+    // gates already select the phase-1a-/phase-1b- IDs explicitly.
     const allPhase1Metrics = [...phase1aMetrics, ...phase1bMetrics];
     await database.batch(
       allPhase1Metrics.map((metric, position) =>
@@ -378,10 +367,9 @@ async function initializeDatabase() {
     )
     .first();
   if (!marker) {
-    const statements: D1PreparedStatement[] = [
-      database.prepare("DELETE FROM metrics WHERE phase_id='phase-0'"),
-      database.prepare("DELETE FROM checks WHERE phase_id='phase-0'"),
-    ];
+    const legacy = await database.prepare("SELECT COUNT(*) AS count FROM metrics WHERE phase_id='phase-0'").first<{ count: number }>();
+    if (legacy?.count) throw new Error("Legacy Phase 0 evidence requires an explicit non-destructive migration.");
+    const statements: D1PreparedStatement[] = [];
     phase0Metrics.forEach((metric, position) =>
       statements.push(
         database
@@ -410,7 +398,7 @@ async function initializeDatabase() {
       statements.push(
         database
           .prepare(
-            "INSERT INTO checks (id,phase_id,position,label,completed) VALUES (?, 'phase-0', ?, ?, 0)",
+            "INSERT OR IGNORE INTO checks (id,phase_id,position,label,completed) VALUES (?, 'phase-0', ?, ?, 0)",
           )
           .bind(`phase-0-check-${position}`, position, label),
       ),
@@ -524,10 +512,13 @@ function metricFromRow(row: Record<string, unknown>): TrackerMetric {
 async function loadTracker(): Promise<TrackerData> {
   await ensureDatabase();
   const database = db();
-  const [phaseRows, metricRows, checkRows] = await Promise.all([
+  const [phaseRows, metricRows, checkRows, releaseGateRows] = await Promise.all([
     database.prepare("SELECT * FROM phases ORDER BY position").all(),
     database.prepare("SELECT * FROM metrics ORDER BY phase_id,position").all(),
     database.prepare("SELECT * FROM checks ORDER BY phase_id,position").all(),
+    database
+      .prepare("SELECT * FROM release_gates WHERE phase_id='phase-0' ORDER BY position")
+      .all(),
   ]);
   const metrics = metricRows.results.map((row) =>
     metricFromRow(row as Record<string, unknown>),
@@ -540,6 +531,13 @@ async function loadTracker(): Promise<TrackerData> {
     completed: asBool(row.completed),
   }));
   return {
+    releaseGates: releaseGateRows.results.map((row) => ({
+      id: String(row.id),
+      phaseId: String(row.phase_id),
+      position: asNumber(row.position),
+      name: String(row.name),
+      actual: asNumber(row.actual),
+    })),
     phases: phaseRows.results.map((row) => ({
       id: String(row.id),
       position: asNumber(row.position),
@@ -555,6 +553,7 @@ async function loadTracker(): Promise<TrackerData> {
       status: String(row.status) as TrackerPhase["status"],
       features: JSON.parse(String(row.features)) as string[],
       notes: String(row.notes),
+      startedAt: row.started_at === null ? null : String(row.started_at),
       updatedAt: String(row.updated_at),
       metrics: metrics.filter((metric) => metric.phaseId === row.id),
       checks: checks.filter((check) => check.phaseId === row.id),
@@ -630,7 +629,95 @@ async function loadPrivatePhase0() {
     })) as ReleaseGate[],
   };
 }
-function phase0Unmet(phase: TrackerPhase) {
+
+/**
+ * The launch tracker is intentionally not a shadow copy of product telemetry.
+ * It only exposes aggregates that can be proven from its pseudonymous cohort
+ * ledger. Product events, Sentry and AI billing are represented as unavailable
+ * until a canonical, privacy-reviewed connector is configured.
+ */
+async function loadAnalyticsSnapshot() {
+  await ensureDatabase();
+  const rows = await db()
+    .prepare(
+      "SELECT phase_id,status,onboarding_completed,meaningful_activation,independently_activated,first_answer_useful,return_source,updated_at FROM cohort_evidence ORDER BY updated_at DESC",
+    )
+    .all<Record<string, unknown>>();
+  const people = rows.results;
+  const count = (predicate: (row: Record<string, unknown>) => boolean) =>
+    people.filter(predicate).length;
+  const rated = count((row) => String(row.first_answer_useful) !== "not-rated");
+  const activated = count((row) => asBool(row.meaningful_activation));
+  const organicAttributed = count(
+    (row) => String(row.return_source) === "organic",
+  );
+  const updatedAt = people[0]?.updated_at ? String(people[0].updated_at) : null;
+  const aggregate = (numerator: number | null, denominator: number | null, definition: string) => ({
+    numerator,
+    denominator,
+    definition,
+    source: "Launch Control manual cohort ledger",
+  });
+  return {
+    updatedAt,
+    source: {
+      name: "Launch Control manual cohort ledger",
+      status: people.length ? "available" : "empty",
+      description: "Pseudonymous, manually verified cohort evidence. It is not live product telemetry.",
+    },
+    cohorts: [
+      { id: "all", label: "All users", available: people.length > 0 },
+      { id: "phase-0", label: "Phase 0", available: true },
+      { id: "phase-1a", label: "Phase 1A", available: false },
+      { id: "phase-1b", label: "Phase 1B", available: false },
+    ],
+    users: {
+      registered: people.length || null,
+      active: null,
+      series: null,
+      reason: "Active-user events are not connected to this control plane yet.",
+    },
+    funnel: [
+      { key: "invited", label: "Invited", value: people.length || null, definition: "Participants recorded in the manual cohort ledger." },
+      { key: "accepted", label: "Accepted", value: people.length ? count((row) => String(row.status) !== "dropped") : null, definition: "Ledger participants not marked dropped. Acceptance is not separately instrumented." },
+      { key: "installed", label: "Play access / installed", value: null, definition: "No canonical install event is connected." },
+      { key: "onboarding", label: "Onboarding completed", value: people.length ? count((row) => asBool(row.onboarding_completed)) : null, definition: "Manual cohort-evidence field." },
+      { key: "situation", label: "Genuine situation", value: null, definition: "No separate canonical situation event is connected." },
+      { key: "wingman", label: "First Wingman complete", value: null, definition: "No response-complete event is connected." },
+      { key: "meaningful", label: "Meaningful activation", value: people.length ? activated : null, definition: "Manual cohort-evidence field; genuine situation plus a complete useful Wingman response." },
+      { key: "useful", label: "Useful answer", value: rated ? count((row) => String(row.first_answer_useful) === "yes") : null, definition: "Manual first-answer usefulness rating. ‘A bit’ is not captured by the current ledger." },
+      { key: "independent", label: "Independent activation", value: people.length ? count((row) => asBool(row.independently_activated)) : null, definition: "Manual cohort-evidence field." },
+      { key: "organic-second", label: "Organic second situation", value: null, definition: "Return attribution alone cannot prove a distinct second genuine situation." },
+    ],
+    activation: {
+      onboarding: aggregate(people.length ? count((row) => asBool(row.onboarding_completed)) : null, people.length || null, "Onboarding completion among ledger participants."),
+      meaningful: aggregate(people.length ? activated : null, people.length || null, "Meaningful activations among ledger participants."),
+      usefulness: aggregate(rated ? count((row) => String(row.first_answer_useful) === "yes") : null, rated || null, "Yes ratings among manually rated first answers. ‘A bit’ is not recorded in the current ledger."),
+      independent: aggregate(activated ? count((row) => asBool(row.independently_activated)) : null, activated || null, "Independent activations among meaningful activations."),
+      organicSecond: aggregate(null, null, "A distinct, unprompted second genuine situation requires a canonical event source."),
+      organicYield: aggregate(null, people.length || null, "Organic second-situation users divided by eligible invited users."),
+    },
+    retention: {
+      app: null,
+      wingman: null,
+      meaningfulWingman: null,
+      organicSituation: null,
+      organicAttributed: aggregate(organicAttributed || null, activated || null, "Organic return attribution. This is not counted as a second situation without separate evidence."),
+      reason: "D1/D7/D30 retention cohorts require timestamped product events, which are not connected.",
+    },
+    quality: {
+      usefulness: { yes: count((row) => String(row.first_answer_useful) === "yes"), abit: null, no: count((row) => String(row.first_answer_useful) === "no"), unrated: count((row) => String(row.first_answer_useful) === "not-rated") },
+      responseSuccess: null,
+      failures: null,
+      retries: null,
+      fallbacks: null,
+      incomplete: null,
+    },
+    reliability: null,
+    aiCost: null,
+  };
+}
+function phase0Unmet(phase: TrackerPhase, releaseGates: ReleaseGate[] = []) {
   const unmet = phase.metrics
     .filter((metric) => !metricPassed(metric))
     .map((metric) => `${metric.name} has not passed`);
@@ -638,6 +725,11 @@ function phase0Unmet(phase: TrackerPhase) {
     ...phase.checks
       .filter((check) => !check.completed)
       .map((check) => check.label),
+  );
+  unmet.push(
+    ...releaseGates
+      .filter((gate) => gate.actual !== 0)
+      .map((gate) => `${gate.name} must be zero`),
   );
   return unmet;
 }
@@ -700,9 +792,10 @@ async function loadPhase1State(phase: TrackerPhase | undefined): Promise<Phase1S
   };
 }
 async function trackerResponse(request: Request) {
-  const [tracker, access] = await Promise.all([
+  const [tracker, access, analytics] = await Promise.all([
     loadTracker(),
     trackerAccess(request),
+    loadAnalyticsSnapshot(),
   ]);
   const phase = tracker.phases.find((item) => item.id === "phase-0");
   const phase1 = tracker.phases.find((item) => item.id === "phase-1");
@@ -713,7 +806,8 @@ async function trackerResponse(request: Request) {
   return {
     ...tracker,
     ...access,
-    phase0Unmet: access.canEdit && phase ? phase0Unmet(phase) : [],
+    analytics,
+    phase0Unmet: access.canEdit && phase ? phase0Unmet(phase, tracker.releaseGates) : [],
     phase1: {
       ...phase1State,
       wedgeSignals: wedgeRows.results.map((row) => ({
@@ -918,6 +1012,12 @@ export async function PATCH(request: Request) {
     const database = db();
     const timestamp = now();
     if (body.action === "metric" && body.id && body.patch) {
+      for (const field of ["actual", "actualDenominator"]) {
+        const value = body.patch[field];
+        if (value != null && value !== "" &&
+          ((typeof value !== "number" && typeof value !== "string") || !Number.isFinite(Number(value)) || Number(value) < 0 || (field === "actualDenominator" && !Number.isSafeInteger(Number(value)))))
+          return Response.json({ error: "Use valid non-negative metric evidence." }, { status: 400 });
+      }
       const currentMetric = await database
         .prepare("SELECT phase_id,target FROM metrics WHERE id=?")
         .bind(body.id)
@@ -989,16 +1089,30 @@ export async function PATCH(request: Request) {
         .bind(wedge, field, numericValue, textValue, timestamp)
         .run();
     }
-    else if (body.action === "start" && body.phaseId)
-      await database
-        .prepare("UPDATE phases SET status='active',updated_at=? WHERE id=?")
-        .bind(timestamp, body.phaseId)
-        .run();
-    else if (body.action === "release_gate" && body.id && body.patch)
+    else if (body.action === "start" && body.phaseId) {
+      const phase = await database
+        .prepare("SELECT status,started_at FROM phases WHERE id=?")
+        .bind(body.phaseId)
+        .first<{ status: string; started_at: string | null }>();
+      if (!phase)
+        return Response.json({ error: "Phase not found." }, { status: 404 });
+      if (phase.status === "locked")
+        return Response.json({ error: "This phase is locked." }, { status: 409 });
+      if (phase.status !== "complete")
+        await database
+          .prepare("UPDATE phases SET status='active',started_at=COALESCE(started_at,?),updated_at=? WHERE id=?")
+          .bind(timestamp, timestamp, body.phaseId)
+          .run();
+    }
+    else if (body.action === "release_gate" && body.id && body.patch) {
+      const value = body.patch.actual;
+      if ((typeof value !== "number" && typeof value !== "string") || value === "" || !Number.isSafeInteger(Number(value)) || Number(value) < 0)
+        return Response.json({ error: "Incident evidence must be a non-negative whole number." }, { status: 400 });
       await database
         .prepare("UPDATE release_gates SET actual=?,updated_at=? WHERE id=?")
         .bind(Math.max(0, asNumber(body.patch.actual)), timestamp, body.id)
         .run();
+    }
     else if (body.action === "cohort_create" && body.patch) {
       const person = validateParticipant(body.patch);
       const sql = `INSERT INTO cohort_evidence (id,phase_id,participant_id,status,age_band,relationship_state,recruitment_source,close_friend_or_teammate,situation_category,onboarding_completed,meaningful_activation,independently_activated,first_answer_useful,genuine_request_count,usefulness_response_count,reminder_test_count,reminder_tested,reminder_delivery_result,reminder_destination_result,return_source,founder_explained_product,founder_helped_onboarding,founder_suggested_situation,founder_helped_request,founder_solved_problem,founder_prompted_return,trust_concern,product_issue,evidence_note,notion_reference_url,created_at,updated_at) VALUES (?, 'phase-0', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
@@ -1073,9 +1187,14 @@ export async function PATCH(request: Request) {
       const phase = tracker.phases.find((item) => item.id === body.phaseId);
       if (!phase)
         return Response.json({ error: "Phase not found." }, { status: 404 });
+      if (phase.status !== "active")
+        return Response.json(
+          { error: "Only an active phase can advance." },
+          { status: 409 },
+        );
       const unmet =
         phase.id === "phase-0"
-          ? phase0Unmet(phase)
+          ? phase0Unmet(phase, tracker.releaseGates)
           : phase.id === "phase-1"
             ? (await loadPhase1State(phase)).phase1Unmet
             : [
@@ -1105,7 +1224,7 @@ export async function PATCH(request: Request) {
         statements.push(
           database
             .prepare(
-              "UPDATE phases SET status='active',updated_at=? WHERE id=?",
+              "UPDATE phases SET status='ready',updated_at=? WHERE id=?",
             )
             .bind(timestamp, next.id),
         );

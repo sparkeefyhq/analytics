@@ -1,0 +1,17 @@
+# Vercel hosts only the static Control bundle and API proxy.
+.openai
+.wrangler
+.vinext
+.sites-runtime
+.env*
+dist
+outputs
+output
+tmp
+*.md
+work
+coverage
+tests
+*.tar
+*.sqlite*
+*.tsbuildinfo
