@@ -5,7 +5,7 @@ import {
   type Cohort,
   type Period,
 } from '../../../../lib/analytics-v2/model';
-import { liveDataset } from '../../../../lib/analytics-v2/source';
+import { liveDatasetFromBackend } from '../../../../lib/analytics-v2/source-backend';
 import { fixture } from '../../../../lib/analytics-v2/fixture';
 
 export async function GET(request: Request): Promise<Response> {
@@ -33,7 +33,7 @@ export async function GET(request: Request): Promise<Response> {
   if (users && !synthetic && !(await trackerAccess(request)).canEdit)
     return Response.json({ error: 'Admin sign-in required' }, { status: 403 });
   const result = calculate(
-    synthetic ? fixture() : await liveDataset(),
+    synthetic ? fixture() : await liveDatasetFromBackend(),
     cohort as Cohort,
     period as Period,
   );
