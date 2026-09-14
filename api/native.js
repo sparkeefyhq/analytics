@@ -2414,7 +2414,7 @@ function calculate(data, cohort, period) {
     population.map(
       (m) => selected(m, Math.max(since, start)).filter((f) => f.kind === kind).length
     ),
-    "Per active user in this time-filtered population; named window is intersected with the global time filter."
+    "Average number of Wingman messages sent per active user in this window (only users active in the window count). The named window is intersected with the global time filter \u2014 e.g. with Time = 7D, the 30D tile also covers 7 days."
   );
   const second = (m, organic = false) => {
     const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation" && f.situation).sort((a, b) => a.at.localeCompare(b.at));
@@ -2725,6 +2725,20 @@ function calculate(data, cohort, period) {
       retention: retentionFor([m])
     };
   });
+  const restamp = (record) => {
+    if (!data.source) return record;
+    for (const key of Object.keys(record))
+      if (record[key].source === "PostHog") record[key] = { ...record[key], source: data.source };
+    return record;
+  };
+  const restampRetention = (r) => {
+    for (const type of Object.keys(r)) restamp(r[type]);
+    return r;
+  };
+  for (const u of users) {
+    restamp(u.metrics);
+    restampRetention(u.retention);
+  }
   return {
     version: 2,
     mode: data.mode,
@@ -2734,8 +2748,8 @@ function calculate(data, cohort, period) {
     period,
     state: data.state,
     detail: data.detail,
-    metrics,
-    retention: retentionFor(),
+    metrics: restamp(metrics),
+    retention: restampRetention(retentionFor()),
     users,
     excluded: data.members.filter((m) => m.internal || m.test).length
   };
@@ -2812,6 +2826,7 @@ async function liveDatasetFromBackend() {
 async function load() {
   const base = {
     mode: "live",
+    source: "Backend",
     state: "not-connected",
     detail: "Awaiting backend connection configuration.",
     asOf: (/* @__PURE__ */ new Date()).toISOString(),

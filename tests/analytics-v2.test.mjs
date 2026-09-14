@@ -241,3 +241,18 @@ test('legacy Phase0 connector and Plan files unchanged by v2', () => {
     /VERCEL_ENV === 'production'/,
   );
 });
+
+test('every measured metric is stamped with the dataset source, never a source that was not queried', () => {
+  const d = { ...fixture(now), source: 'Backend' };
+  const out = calculate(d, 'all', 'all');
+  const all = [
+    ...Object.values(out.metrics),
+    ...Object.values(out.retention.wingman),
+    ...out.users.flatMap((u) => [...Object.values(u.metrics), ...Object.values(u.retention.wingman)]),
+  ];
+  assert.ok(all.length > 50);
+  assert.ok(all.every((m) => m.source !== 'PostHog'));
+  assert.ok(all.some((m) => m.source === 'Backend'));
+  // Without a declared source the original labels stay untouched.
+  assert.ok(Object.values(calculate(fixture(now), 'all', 'all').metrics).some((m) => m.source === 'PostHog'));
+});
