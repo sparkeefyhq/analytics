@@ -5,7 +5,10 @@ import {
   type Cohort,
   type Period,
 } from '../../../../lib/analytics-v2/model';
-import { liveDatasetFromBackend } from '../../../../lib/analytics-v2/source-backend';
+import {
+  backendDisplayNames,
+  liveDatasetFromBackend,
+} from '../../../../lib/analytics-v2/source-backend';
 import { fixture } from '../../../../lib/analytics-v2/fixture';
 
 export async function GET(request: Request): Promise<Response> {
@@ -37,8 +40,20 @@ export async function GET(request: Request): Promise<Response> {
     cohort as Cohort,
     period as Period,
   );
+  // Display names are attached only here: after calculation (so every
+  // aggregate stays name-free), only for the authorized live users view, and
+  // never for synthetic participants.
+  const names = users && !synthetic ? backendDisplayNames() : undefined;
   return Response.json(
-    { ...result, users: users ? result.users : [] },
+    {
+      ...result,
+      users: users
+        ? result.users.map((u) => {
+            const label = names?.get(u.id);
+            return label ? { ...u, label } : u;
+          })
+        : [],
+    },
     { headers: { 'Cache-Control': 'private, no-store' } },
   );
 }

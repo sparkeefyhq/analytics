@@ -195,6 +195,61 @@ test('backend adapter is not-connected without V2_SPARKEEFY_BACKEND_URL/KEY, nev
   assert.equal(disconnected.facts.length, 0);
 });
 
+test('backend adapter keeps display names out of the dataset, exposes them separately, and gates tokens/cost on complete usage coverage', async () => {
+  const { liveDatasetFromBackend, backendDisplayNames } = await importFreshBackendAdapter();
+  process.env.V2_SPARKEEFY_BACKEND_URL = 'https://backend.test';
+  process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY = 'super-secret-admin-key';
+  process.env.SPARKEEFY_SESSION_SECRET = randomUUID();
+  const fetchOriginal = globalThis.fetch;
+  let payload;
+  globalThis.fetch = async () => Response.json({ data: payload });
+  const member = (id, name) => ({ id, firstOpen: '2026-01-01T00:00:00Z', name });
+  const usage = (extra) => ({ user: 'u-1', at: '2026-01-02T00:00:00Z', kind: 'usage', request: 'req-1', input: 10, output: 5, ...extra });
+  try {
+    payload = {
+      generatedAt: '2026-03-03T00:00:00Z',
+      capabilities: ['activity', 'onboarding', 'tokens', 'cost'],
+      members: [member('u-1', 'Real Person Name'), member('u-2', '   '), member('u-3', null)],
+      facts: [usage({ cost: 0.00001 })],
+    };
+    const data = await liveDatasetFromBackend();
+    assert.equal(data.state, 'available');
+    assert.ok(!JSON.stringify(data).includes('Real Person Name'));
+    assert.ok(!JSON.stringify(data).includes('u-1'));
+    const names = backendDisplayNames();
+    assert.equal(names.size, 1);
+    assert.equal(names.get(data.members[0].id), 'Real Person Name');
+    assert.ok(data.capabilities.includes('tokens'));
+    assert.ok(data.capabilities.includes('cost'));
+    assert.equal(data.facts[0].cost, 0.00001);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+  // Fresh module instance so the 30-second cache does not mask the second payload.
+  const second = await importFreshBackendAdapter();
+  globalThis.fetch = async () => Response.json({ data: payload });
+  try {
+    payload = {
+      generatedAt: '2026-03-03T00:00:00Z',
+      capabilities: ['activity', 'tokens', 'cost'],
+      members: [member('u-1', 'Real Person Name')],
+      facts: [usage({ cost: 0.00001 }), usage({ request: 'req-2' })],
+    };
+    const data = await second.liveDatasetFromBackend();
+    assert.ok(data.capabilities.includes('tokens'));
+    assert.ok(!data.capabilities.includes('cost'), 'one unpriced usage record must disable cost');
+    payload = { ...payload, facts: [usage({ output: undefined })] };
+    const third = await importFreshBackendAdapter();
+    const partial = await third.liveDatasetFromBackend();
+    assert.ok(!partial.capabilities.includes('tokens'));
+    assert.ok(!partial.capabilities.includes('cost'));
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    for (const key of ['V2_SPARKEEFY_BACKEND_URL', 'V2_SPARKEEFY_BACKEND_ADMIN_KEY', 'SPARKEEFY_SESSION_SECRET'])
+      delete process.env[key];
+  }
+});
+
 test('backend adapter auto-includes every real signup, assigns cohort by date, and never leaks the raw backend URL/key', async () => {
   const { liveDatasetFromBackend } = await importFreshBackendAdapter();
   process.env.V2_SPARKEEFY_BACKEND_URL = 'https://backend.test';

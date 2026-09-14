@@ -9,6 +9,9 @@ import {
   type Snapshot,
   type User,
 } from '../../lib/analytics-v2/model';
+
+/** Display name is attached server-side for the authorized live users view only. */
+type NamedUser = User & { label?: string };
 import { useLiveData } from './live-data';
 import './analytics-v2.css';
 
@@ -165,7 +168,9 @@ export function AnalyticsV2({
   }, [cohort, period, dataset]);
   const data = live.data,
     m = data?.metrics ?? {};
-  const current = data?.users.find((u) => u.id === selected);
+  const current = (data?.users as NamedUser[] | undefined)?.find(
+    (u) => u.id === selected,
+  );
   const valid =
     /^\d+$/.test(projection) &&
     Number.isSafeInteger(Number(projection)) &&
@@ -284,15 +289,16 @@ export function AnalyticsV2({
                         : 'User data is not connected.'}
                     </div>
                   ) : (
-                    data.users.map((user) => (
+                    (data.users as NamedUser[]).map((user) => (
                       <button
                         className="v2-user-row"
                         key={user.id}
                         onClick={() => setSelected(user.id)}
                       >
                         <span>
-                          <b>{user.id}</b>
+                          <b>{user.label ?? user.id}</b>
                           <small>
+                            {user.label ? `${user.id} · ` : ''}
                             {user.cohorts.map((c) => labels[c]).join(' / ')} ·{' '}
                             {user.acquisition}
                           </small>
@@ -487,14 +493,21 @@ export function AnalyticsV2({
     </section>
   );
 }
-function UserDetail({ user, onBack }: { user: User; onBack: () => void }) {
+function UserDetail({
+  user,
+  onBack,
+}: {
+  user: NamedUser;
+  onBack: () => void;
+}) {
   return (
     <div className="v2-user-detail">
       <button className="v2-back" onClick={onBack}>
         ← All users
       </button>
-      <h2>{user.id}</h2>
+      <h2>{user.label ?? user.id}</h2>
       <p className="v2-caption">
+        {user.label ? `${user.id} · ` : ''}
         {user.cohorts.map((c) => labels[c]).join(' / ')} · {user.acquisition} ·
         First open{' '}
         {user.firstOpen

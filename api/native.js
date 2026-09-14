@@ -2753,7 +2753,8 @@ var KNOWN = [
   "retries",
   "fallbacks",
   "latency",
-  "tokens"
+  "tokens",
+  "cost"
 ];
 function backendConfig() {
   const baseUrl = process.env.V2_SPARKEEFY_BACKEND_URL;
@@ -2791,6 +2792,10 @@ function cohortFor(firstOpenMs) {
   if (phase1b !== void 0 && firstOpenMs >= phase1b) return "phase-1b";
   if (phase1a !== void 0 && firstOpenMs >= phase1a) return "phase-1a";
   return "phase-0";
+}
+var names = /* @__PURE__ */ new Map();
+function backendDisplayNames() {
+  return names;
 }
 var cached;
 var pending;
@@ -2835,6 +2840,12 @@ async function load() {
       Math.min(...realMembers.map((m) => Date.parse(m.firstOpen)))
     ).toISOString();
     const allowed2 = realMembers.filter((m) => !excluded.has(m.id));
+    const nextNames = /* @__PURE__ */ new Map();
+    for (const m of realMembers) {
+      const name = typeof m.name === "string" ? m.name.trim() : "";
+      if (name) nextNames.set(opaque(m.id), name);
+    }
+    names = nextNames;
     base.members = realMembers.map((m) => ({
       id: opaque(m.id),
       cohort: cohortFor(Date.parse(m.firstOpen)),
@@ -2877,6 +2888,8 @@ async function load() {
         fact.input = row.input;
       if (typeof row.output === "number" && Number.isFinite(row.output))
         fact.output = row.output;
+      if (typeof row.cost === "number" && Number.isFinite(row.cost) && row.cost >= 0)
+        fact.cost = row.cost;
       facts.push(fact);
     }
     let capabilities = KNOWN.filter((c) => remote.capabilities.includes(c));
@@ -2888,6 +2901,11 @@ async function load() {
       capabilities = capabilities.filter((c) => c !== "people");
     if (facts.some((f) => f.kind === "memory" && f.memories === void 0))
       capabilities = capabilities.filter((c) => c !== "memory");
+    const usage = facts.filter((f) => f.kind === "usage");
+    if (!usage.length || usage.some((f) => f.input === void 0 || f.output === void 0))
+      capabilities = capabilities.filter((c) => c !== "tokens" && c !== "cost");
+    if (usage.some((f) => f.cost === void 0))
+      capabilities = capabilities.filter((c) => c !== "cost");
     return {
       ...base,
       state: "available",
@@ -2896,6 +2914,7 @@ async function load() {
       facts
     };
   } catch {
+    names = /* @__PURE__ */ new Map();
     return {
       ...base,
       state: "query-error",
@@ -3061,8 +3080,15 @@ async function GET4(request) {
     cohort,
     period
   );
+  const names2 = users && !synthetic ? backendDisplayNames() : void 0;
   return Response.json(
-    { ...result2, users: users ? result2.users : [] },
+    {
+      ...result2,
+      users: users ? result2.users.map((u) => {
+        const label = names2?.get(u.id);
+        return label ? { ...u, label } : u;
+      }) : []
+    },
     { headers: { "Cache-Control": "private, no-store" } }
   );
 }
