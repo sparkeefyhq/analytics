@@ -56,22 +56,32 @@ const fact = (id, user, kind, at, extra = {}) => ({
   at: iso(at),
   ...extra,
 });
-test('retention only admits fully closed windows, including exact boundary; pending is not failure', () => {
+test('retention reports live progress: started windows count, returns so far count, unstarted windows are pending', () => {
   const d = base();
-  d.members = [member('mature', 2), member('pending', 1.5), member('new', 0.5)];
+  // mature: D1 window closed (returned). open: D1 window started 12h ago and
+  // already returned. new: D1 window has not started yet.
+  d.members = [member('mature', 2), member('open', 1.5), member('new', 0.5)];
   d.facts = [
     fact('a', 'mature', 'message', now - DAY, { request: 'a' }),
-    fact('b', 'pending', 'message', now - 0.2 * DAY, { request: 'b' }),
+    fact('b', 'open', 'message', now - 0.2 * DAY, { request: 'b' }),
   ];
   const r = calculate(d, 'all', 'all').retention.wingman.d1;
   assert.deepEqual(
     [r.value, r.numerator, r.denominator, r.pending],
-    [100, 1, 1, 2],
+    [100, 2, 2, 1],
   );
-  d.members.shift();
+  assert.match(r.detail, /1 of 2 windows are still open/);
+  // A member whose window has started but who has not returned yet counts in the denominator, not as pending.
+  d.facts.pop();
+  const partial = calculate(d, 'all', 'all').retention.wingman.d1;
+  assert.deepEqual([partial.numerator, partial.denominator, partial.pending], [1, 2, 1]);
+  // Nobody has reached the window: still pending, never a fabricated rate.
+  d.members = [member('new', 0.5)];
+  d.facts = [];
   const p = calculate(d, 'all', 'all').retention.wingman.d1;
   assert.equal(p.state, 'not-eligible');
   assert.equal(p.value, null);
+  assert.equal(p.pending, 1);
 });
 test('retention windows are half-open and D3/D7/D15/D30 use new v2 semantics', () => {
   for (const day of [1, 3, 7, 15, 30]) {
