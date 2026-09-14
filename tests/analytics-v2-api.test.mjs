@@ -195,22 +195,12 @@ test('backend adapter is not-connected without V2_SPARKEEFY_BACKEND_URL/KEY, nev
   assert.equal(disconnected.facts.length, 0);
 });
 
-test('backend adapter pseudonymizes identities and never leaks the raw backend URL/key', async () => {
+test('backend adapter auto-includes every real signup, assigns cohort by date, and never leaks the raw backend URL/key', async () => {
   const { liveDatasetFromBackend } = await importFreshBackendAdapter();
-  const member = {
-    id: 'real-backend-user-id',
-    distinctIds: ['real-backend-user-id'],
-    cohort: 'phase-0',
-    from: '2026-01-01T00:00:00Z',
-    firstOpen: '2026-01-01T00:00:00Z',
-    internal: false,
-    test: false,
-    acquisition: 'organic',
-  };
   process.env.V2_SPARKEEFY_BACKEND_URL = 'https://backend.test';
   process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY = 'super-secret-admin-key';
-  process.env.CONTROL_V2_COHORTS_JSON = JSON.stringify([member]);
-  process.env.CONTROL_V2_COVERAGE_FROM = member.from;
+  process.env.CONTROL_V2_INTERNAL_USER_IDS = 'internal-user-id';
+  process.env.CONTROL_V2_PHASE1_FROM = '2026-02-01T00:00:00Z';
   process.env.SPARKEEFY_SESSION_SECRET = randomUUID();
   const fetchOriginal = globalThis.fetch;
   let sawHeaderKey = null;
@@ -219,13 +209,18 @@ test('backend adapter pseudonymizes identities and never leaks the raw backend U
     assert.equal(url, 'https://backend.test/api/admin/analytics/v2');
     return Response.json({
       data: {
-        generatedAt: '2026-01-03T00:00:00Z',
+        generatedAt: '2026-03-03T00:00:00Z',
         capabilities: ['activity', 'onboarding', 'people', 'memory', 'wingman', 'responses'],
-        members: [{ id: 'real-backend-user-id', firstOpen: member.from }],
+        // No manifest supplied - every real signup is included automatically.
+        members: [
+          { id: 'real-backend-user-id', firstOpen: '2026-01-01T00:00:00Z' },
+          { id: 'internal-user-id', firstOpen: '2026-01-01T00:00:00Z' },
+          { id: 'later-signup-id', firstOpen: '2026-02-15T00:00:00Z' },
+        ],
         facts: [
           { user: 'real-backend-user-id', at: '2026-01-03T00:00:00Z', kind: 'message', request: 'req-1', session: 'sess-1' },
           { user: 'real-backend-user-id', at: '2026-01-03T00:00:01Z', kind: 'complete', request: 'req-1', latency: 500, input: 10, output: 5 },
-          { user: 'excluded-unknown-user', at: '2026-01-03T00:00:00Z', kind: 'message', request: 'req-excluded' },
+          { user: 'internal-user-id', at: '2026-01-03T00:00:00Z', kind: 'message', request: 'req-internal' },
         ],
       },
     });
@@ -234,21 +229,33 @@ test('backend adapter pseudonymizes identities and never leaks the raw backend U
     const data = await liveDatasetFromBackend();
     assert.equal(data.state, 'available');
     assert.equal(sawHeaderKey, 'super-secret-admin-key');
-    // Only the reconciled member's facts survive; the unmapped user is dropped, not auto-enrolled.
+    // All 3 real signups appear as members - none dropped, none invented.
+    assert.equal(data.members.length, 3);
+    // Cohort is purely date-derived: before CONTROL_V2_PHASE1_FROM -> phase-0, after -> phase-1a.
+    const earlySignup = data.members.find((m) => m.firstOpen === '2026-01-01T00:00:00.000Z');
+    const laterSignup = data.members.find((m) => m.firstOpen === '2026-02-15T00:00:00.000Z');
+    assert.equal(earlySignup.cohort, 'phase-0');
+    assert.equal(laterSignup.cohort, 'phase-1a');
+    // Coverage boundary is computed live from the earliest real signup, not a manually-set env var.
+    assert.equal(data.coverageFrom, '2026-01-01T00:00:00.000Z');
+    // Internal user is marked internal and excluded from facts, but still counted as a real member.
+    const internalMember = data.members.find((m) => m.internal);
+    assert.ok(internalMember);
     assert.equal(data.facts.length, 2);
-    assert.match(data.members[0].id, /^participant-[a-f0-9]{16}$/);
     assert.ok(data.facts.every((f) => /^participant-[a-f0-9]{16}$/.test(f.user)));
+    assert.match(data.members[0].id, /^participant-[a-f0-9]{16}$/);
     // Raw request/session ids must never appear verbatim - only their per-user HMAC digests.
     assert.ok(!JSON.stringify(data).includes('req-1'));
     assert.ok(!JSON.stringify(data).includes('sess-1'));
+    assert.ok(!JSON.stringify(data).includes('req-internal'));
     assert.ok(!JSON.stringify(data).includes('super-secret-admin-key'));
-    assert.ok(!JSON.stringify(data).includes('excluded-unknown-user'));
   } finally {
     globalThis.fetch = fetchOriginal;
     for (const key of [
       'V2_SPARKEEFY_BACKEND_URL',
       'V2_SPARKEEFY_BACKEND_ADMIN_KEY',
-      'CONTROL_V2_COHORTS_JSON',
+      'CONTROL_V2_INTERNAL_USER_IDS',
+      'CONTROL_V2_PHASE1_FROM',
       'CONTROL_V2_COVERAGE_FROM',
       'SPARKEEFY_SESSION_SECRET',
     ])

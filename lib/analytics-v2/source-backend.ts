@@ -1,18 +1,26 @@
 import { createHmac } from 'node:crypto';
-import type { Capability, Dataset, Fact } from './model';
-import { readMembership } from './source';
+import type { Capability, Dataset, Fact, Member } from './model';
 
 /**
  * Direct-to-production adapter: reads sparkeefy-backend's
  * `GET /api/admin/analytics/v2` (Postgres-backed, zero PostHog) instead of
- * PostHog HogQL. Same contract as `source.ts` (returns a `Dataset`) and the
- * same cohort manifest (`CONTROL_V2_COHORTS_JSON`/`CONTROL_V2_COVERAGE_FROM`,
- * `readMembership` reused as-is) — only the origin of `facts`/raw members
- * changes. `model.ts` is untouched: it already only depends on `Dataset`.
+ * PostHog HogQL. Same contract as `source.ts` (returns a `Dataset`) — only
+ * `model.ts` consumes this, and it was already source-agnostic.
  *
- * `distinctIds` in the manifest now hold real backend user ids (not PostHog
- * distinct_ids) — the backend already has canonical identities, so this is
- * an exact-match allowlist rather than an alias-reconciliation exercise.
+ * Unlike the PostHog-era `source.ts`, this adapter needs no hand-maintained
+ * per-user manifest. The backend's own `user_profiles`/`auth.users` tables
+ * are already the trustworthy identity source (one row per real human, a
+ * real signup timestamp) — there is no PostHog-style alias-reconciliation
+ * problem to solve here. Every real signup is included automatically, live,
+ * on every request. The only two things a human still configures are:
+ *
+ * - `CONTROL_V2_INTERNAL_USER_IDS`: a short, comma-separated list of the
+ *   team's own backend user ids to exclude (nothing in the schema marks an
+ *   account as internal, so this can't be derived).
+ * - `CONTROL_V2_PHASE1_FROM` / `CONTROL_V2_PHASE1B_FROM` /
+ *   `CONTROL_V2_PHASE2_FROM`: the launch date of each later phase. Cohort
+ *   membership is then purely a function of signup date vs these
+ *   boundaries — never a per-user list to maintain.
  */
 
 const KNOWN: Capability[] = [
@@ -74,6 +82,29 @@ async function fetchBackendAnalytics(): Promise<BackendResponse> {
   return body.data;
 }
 
+function internalIds(): Set<string> {
+  return new Set(
+    (process.env.CONTROL_V2_INTERNAL_USER_IDS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+function cohortFor(firstOpenMs: number): Member['cohort'] {
+  const boundary = (name: string) => {
+    const v = process.env[name];
+    return v && Number.isFinite(Date.parse(v)) ? Date.parse(v) : undefined;
+  };
+  const phase2 = boundary('CONTROL_V2_PHASE2_FROM');
+  const phase1b = boundary('CONTROL_V2_PHASE1B_FROM');
+  const phase1a = boundary('CONTROL_V2_PHASE1_FROM');
+  if (phase2 !== undefined && firstOpenMs >= phase2) return 'phase-2';
+  if (phase1b !== undefined && firstOpenMs >= phase1b) return 'phase-1b';
+  if (phase1a !== undefined && firstOpenMs >= phase1a) return 'phase-1a';
+  return 'phase-0';
+}
+
 let cached: { at: number; data: Dataset } | undefined;
 let pending: Promise<Dataset> | undefined;
 export async function liveDatasetFromBackend(): Promise<Dataset> {
@@ -91,11 +122,9 @@ async function load(): Promise<Dataset> {
   const base: Dataset = {
     mode: 'live',
     state: 'not-connected',
-    detail:
-      'Awaiting reconciled cohort membership and v2 coverage manifest. Project-wide Phase 0 counts are not substituted.',
+    detail: 'Awaiting backend connection configuration.',
     asOf: new Date().toISOString(),
-    coverageFrom:
-      process.env.CONTROL_V2_COVERAGE_FROM || new Date().toISOString(),
+    coverageFrom: new Date().toISOString(),
     members: [],
     facts: [],
     capabilities: KNOWN,
@@ -103,47 +132,56 @@ async function load(): Promise<Dataset> {
   if (
     !process.env.V2_SPARKEEFY_BACKEND_URL ||
     !process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY ||
-    !process.env.CONTROL_V2_COHORTS_JSON ||
-    !process.env.CONTROL_V2_COVERAGE_FROM ||
     !process.env.SPARKEEFY_SESSION_SECRET
   )
     return base;
   try {
-    const mapping = readMembership(process.env.CONTROL_V2_COHORTS_JSON);
-    if (!Number.isFinite(Date.parse(base.coverageFrom)))
-      throw Error('Invalid coverage');
     const secret = process.env.SPARKEEFY_SESSION_SECRET;
     const opaque = (value: string) =>
       `participant-${createHmac('sha256', secret).update(value).digest('hex').slice(0, 16)}`;
-    base.members = mapping.map(({ distinctIds: _, ...m }) => ({
-      ...m,
+    const remote = await fetchBackendAnalytics();
+    const excluded = internalIds();
+    const realMembers = remote.members.filter(
+      (m) => typeof m.id === 'string' && Number.isFinite(Date.parse(m.firstOpen)),
+    );
+    if (!realMembers.length)
+      return {
+        ...base,
+        state: 'no-data',
+        detail: 'No real signups observed yet.',
+      };
+    const coverageFrom = new Date(
+      Math.min(...realMembers.map((m) => Date.parse(m.firstOpen))),
+    ).toISOString();
+    const allowed = realMembers.filter((m) => !excluded.has(m.id));
+    base.members = realMembers.map((m) => ({
       id: opaque(m.id),
+      cohort: cohortFor(Date.parse(m.firstOpen)),
+      from: new Date(m.firstOpen).toISOString(),
+      firstOpen: new Date(m.firstOpen).toISOString(),
+      internal: excluded.has(m.id),
+      test: false,
+      acquisition: 'unknown',
     }));
-    const allowed = mapping.filter((m) => !m.internal && !m.test);
+    base.coverageFrom = coverageFrom;
     if (!allowed.length)
       return {
         ...base,
         state: 'available',
-        detail: 'Reconciled membership contains no eligible users.',
+        detail: 'All observed signups are internal/test accounts.',
       };
-    const remote = await fetchBackendAnalytics();
+    const allowedIds = new Set(allowed.map((m) => m.id));
     const facts: Fact[] = [];
     for (const row of remote.facts) {
       if (
         typeof row.user !== 'string' ||
         typeof row.at !== 'string' ||
         typeof row.kind !== 'string' ||
-        !Number.isFinite(Date.parse(row.at))
+        !Number.isFinite(Date.parse(row.at)) ||
+        !allowedIds.has(row.user)
       )
         continue;
-      const member = allowed.find(
-        (m) =>
-          m.distinctIds.includes(row.user) &&
-          Date.parse(row.at) >= Date.parse(m.from) &&
-          (!m.to || Date.parse(row.at) < Date.parse(m.to)),
-      );
-      if (!member) continue;
-      const owner = opaque(member.id);
+      const owner = opaque(row.user);
       const fact: Fact = {
         id: `${owner}-${row.kind}-${row.at}-${facts.length}`,
         user: owner,
@@ -180,7 +218,7 @@ async function load(): Promise<Dataset> {
     return {
       ...base,
       state: 'available',
-      detail: 'Backend Postgres (sparkeefy-backend) · reconciled identity allowlist · 30-second cache',
+      detail: 'Backend Postgres (sparkeefy-backend) · live signup roster · 30-second cache',
       capabilities,
       facts,
     };
@@ -188,8 +226,7 @@ async function load(): Promise<Dataset> {
     return {
       ...base,
       state: 'query-error',
-      detail:
-        'V2 backend source query or coverage validation failed. No partial totals are shown.',
+      detail: 'V2 backend source query failed. No partial totals are shown.',
       facts: [],
     };
   }

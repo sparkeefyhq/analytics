@@ -2743,52 +2743,6 @@ function calculate(data, cohort, period) {
 
 // lib/analytics-v2/source-backend.ts
 import { createHmac } from "node:crypto";
-
-// lib/analytics-v2/source.ts
-function readMembership(raw) {
-  const rows = JSON.parse(raw);
-  if (!Array.isArray(rows)) throw Error("Invalid cohort manifest");
-  const aliases = /* @__PURE__ */ new Map(), participants = /* @__PURE__ */ new Set();
-  return rows.map((value) => {
-    if (!value || typeof value !== "object")
-      throw Error("Invalid cohort manifest");
-    const row = value;
-    if (typeof row.cohort !== "string" || !COHORTS.slice(1).includes(row.cohort) || !Array.isArray(row.distinctIds) || !row.distinctIds.length || typeof row.id !== "string" || typeof row.from !== "string" || !Number.isFinite(Date.parse(row.from)) || row.to !== void 0 && (typeof row.to !== "string" || !Number.isFinite(Date.parse(row.to)) || Date.parse(row.to) <= Date.parse(row.from)) || typeof row.acquisition !== "string" || !["organic", "referral", "paid", "founder", "unknown"].includes(
-      row.acquisition
-    ) || typeof row.internal !== "boolean" || typeof row.test !== "boolean" || !(row.firstOpen === null || typeof row.firstOpen === "string" && Number.isFinite(Date.parse(row.firstOpen))))
-      throw Error("Invalid cohort manifest");
-    const member = {
-      id: row.id,
-      distinctIds: row.distinctIds,
-      cohort: row.cohort,
-      from: row.from,
-      to: row.to,
-      firstOpen: row.firstOpen,
-      internal: row.internal,
-      test: row.test,
-      acquisition: row.acquisition
-    };
-    const key = `${member.cohort}:${member.id}`;
-    if (participants.has(key)) throw Error("Duplicate cohort participant");
-    participants.add(key);
-    for (const alias of row.distinctIds) {
-      if (typeof alias !== "string" || !alias) throw Error("Invalid identity");
-      const previous = aliases.get(alias) ?? [];
-      if (previous.some((m) => m.id !== member.id))
-        throw Error(
-          "Identity must retain the same stable participant key across cohorts"
-        );
-      if (previous.some(
-        (m) => Date.parse(m.from) < (member.to ? Date.parse(member.to) : Infinity) && Date.parse(member.from) < (m.to ? Date.parse(m.to) : Infinity)
-      ))
-        throw Error("Overlapping cohort identity");
-      aliases.set(alias, [...previous, member]);
-    }
-    return member;
-  });
-}
-
-// lib/analytics-v2/source-backend.ts
 var KNOWN = [
   "activity",
   "onboarding",
@@ -2820,6 +2774,24 @@ async function fetchBackendAnalytics() {
     throw Error("Unexpected backend response shape");
   return body.data;
 }
+function internalIds() {
+  return new Set(
+    (process.env.CONTROL_V2_INTERNAL_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+  );
+}
+function cohortFor(firstOpenMs) {
+  const boundary = (name) => {
+    const v = process.env[name];
+    return v && Number.isFinite(Date.parse(v)) ? Date.parse(v) : void 0;
+  };
+  const phase2 = boundary("CONTROL_V2_PHASE2_FROM");
+  const phase1b = boundary("CONTROL_V2_PHASE1B_FROM");
+  const phase1a = boundary("CONTROL_V2_PHASE1_FROM");
+  if (phase2 !== void 0 && firstOpenMs >= phase2) return "phase-2";
+  if (phase1b !== void 0 && firstOpenMs >= phase1b) return "phase-1b";
+  if (phase1a !== void 0 && firstOpenMs >= phase1a) return "phase-1a";
+  return "phase-0";
+}
 var cached;
 var pending;
 async function liveDatasetFromBackend() {
@@ -2836,42 +2808,55 @@ async function load() {
   const base = {
     mode: "live",
     state: "not-connected",
-    detail: "Awaiting reconciled cohort membership and v2 coverage manifest. Project-wide Phase 0 counts are not substituted.",
+    detail: "Awaiting backend connection configuration.",
     asOf: (/* @__PURE__ */ new Date()).toISOString(),
-    coverageFrom: process.env.CONTROL_V2_COVERAGE_FROM || (/* @__PURE__ */ new Date()).toISOString(),
+    coverageFrom: (/* @__PURE__ */ new Date()).toISOString(),
     members: [],
     facts: [],
     capabilities: KNOWN
   };
-  if (!process.env.V2_SPARKEEFY_BACKEND_URL || !process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY || !process.env.CONTROL_V2_COHORTS_JSON || !process.env.CONTROL_V2_COVERAGE_FROM || !process.env.SPARKEEFY_SESSION_SECRET)
+  if (!process.env.V2_SPARKEEFY_BACKEND_URL || !process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY || !process.env.SPARKEEFY_SESSION_SECRET)
     return base;
   try {
-    const mapping = readMembership(process.env.CONTROL_V2_COHORTS_JSON);
-    if (!Number.isFinite(Date.parse(base.coverageFrom)))
-      throw Error("Invalid coverage");
     const secret = process.env.SPARKEEFY_SESSION_SECRET;
     const opaque = (value) => `participant-${createHmac("sha256", secret).update(value).digest("hex").slice(0, 16)}`;
-    base.members = mapping.map(({ distinctIds: _, ...m }) => ({
-      ...m,
-      id: opaque(m.id)
+    const remote = await fetchBackendAnalytics();
+    const excluded = internalIds();
+    const realMembers = remote.members.filter(
+      (m) => typeof m.id === "string" && Number.isFinite(Date.parse(m.firstOpen))
+    );
+    if (!realMembers.length)
+      return {
+        ...base,
+        state: "no-data",
+        detail: "No real signups observed yet."
+      };
+    const coverageFrom = new Date(
+      Math.min(...realMembers.map((m) => Date.parse(m.firstOpen)))
+    ).toISOString();
+    const allowed2 = realMembers.filter((m) => !excluded.has(m.id));
+    base.members = realMembers.map((m) => ({
+      id: opaque(m.id),
+      cohort: cohortFor(Date.parse(m.firstOpen)),
+      from: new Date(m.firstOpen).toISOString(),
+      firstOpen: new Date(m.firstOpen).toISOString(),
+      internal: excluded.has(m.id),
+      test: false,
+      acquisition: "unknown"
     }));
-    const allowed2 = mapping.filter((m) => !m.internal && !m.test);
+    base.coverageFrom = coverageFrom;
     if (!allowed2.length)
       return {
         ...base,
         state: "available",
-        detail: "Reconciled membership contains no eligible users."
+        detail: "All observed signups are internal/test accounts."
       };
-    const remote = await fetchBackendAnalytics();
+    const allowedIds = new Set(allowed2.map((m) => m.id));
     const facts = [];
     for (const row of remote.facts) {
-      if (typeof row.user !== "string" || typeof row.at !== "string" || typeof row.kind !== "string" || !Number.isFinite(Date.parse(row.at)))
+      if (typeof row.user !== "string" || typeof row.at !== "string" || typeof row.kind !== "string" || !Number.isFinite(Date.parse(row.at)) || !allowedIds.has(row.user))
         continue;
-      const member = allowed2.find(
-        (m) => m.distinctIds.includes(row.user) && Date.parse(row.at) >= Date.parse(m.from) && (!m.to || Date.parse(row.at) < Date.parse(m.to))
-      );
-      if (!member) continue;
-      const owner = opaque(member.id);
+      const owner = opaque(row.user);
       const fact = {
         id: `${owner}-${row.kind}-${row.at}-${facts.length}`,
         user: owner,
@@ -2906,7 +2891,7 @@ async function load() {
     return {
       ...base,
       state: "available",
-      detail: "Backend Postgres (sparkeefy-backend) \xB7 reconciled identity allowlist \xB7 30-second cache",
+      detail: "Backend Postgres (sparkeefy-backend) \xB7 live signup roster \xB7 30-second cache",
       capabilities,
       facts
     };
@@ -2914,7 +2899,7 @@ async function load() {
     return {
       ...base,
       state: "query-error",
-      detail: "V2 backend source query or coverage validation failed. No partial totals are shown.",
+      detail: "V2 backend source query failed. No partial totals are shown.",
       facts: []
     };
   }
