@@ -929,6 +929,7 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
       total_messages_sent: totalMessages,
     },
     topUsers: topUsers.status === "available" ? topUsers.users : [],
+    topUsersNameSource: topUsers.nameSource,
     activeUsers: {
       today: activeToday,
       week: activeWeek,

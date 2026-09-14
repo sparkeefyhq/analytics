@@ -22,9 +22,18 @@ export function Phase0Tracking({ snapshot, target = 15 }: { snapshot?: Phase0Sna
   </div>;
 }
 
-function TopUsers({ users }: { users?: TopUser[] }) {
+const NAME_SOURCE_MESSAGE: Record<string, string> = {
+  not_configured: 'Name lookup not configured — SPARKEEFY_BACKEND_URL/SPARKEEFY_BACKEND_ADMIN_KEY missing.',
+  unauthorized: 'Name lookup rejected by the backend — SPARKEEFY_BACKEND_ADMIN_KEY does not match.',
+  backend_error: 'Name lookup failed — backend returned an error.',
+  network_error: 'Name lookup failed — could not reach the backend.',
+};
+
+function TopUsers({ users, nameSource }: { users?: TopUser[]; nameSource?: string }) {
+  const nameSourceIssue = nameSource && nameSource !== 'ok' ? NAME_SOURCE_MESSAGE[nameSource] : null;
   return <section className="signal-card p0-top-users">
     <div className="card-row"><h2>Most active users</h2><span className="data-chip">PostHog</span></div>
+    {nameSourceIssue && <p className="p0-caption">{nameSourceIssue}</p>}
     {!users || users.length === 0
       ? <p className="p0-caption">No Wingman requests recorded yet.</p>
       : <ol className="p0-top-users-list">{users.map(user => <li key={user.distinctId}><span>{user.name || user.email || `${user.distinctId.slice(0, 12)}…`}</span><strong>{user.messageCount.toLocaleString('en-IN')}<small> messages</small></strong></li>)}</ol>}
@@ -51,7 +60,7 @@ export function Phase0Analytics({ snapshot, target }: { snapshot?: Phase0Snapsho
     <article className="signal-card users-card p0-users"><div className="card-row"><h2>Users</h2><span className="data-chip">{statusText(snapshot?.activeUsers?.[period])}</span></div><div className="users-number">{countText(snapshot?.activeUsers?.[period])}<small>active users</small></div>
       <div className="user-period" onKeyDown={event => {if(event.key==='Escape')setOpen(false);}} onBlur={event => {if(!event.currentTarget.contains(event.relatedTarget))setOpen(false);}}><button className="period-toggle" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)}>{periods.find(([id])=>id===period)?.[1]}<span aria-hidden="true">⌃</span></button>{open && <div className="period-menu" role="menu" aria-label="Active user period">{periods.map(([id,label])=><button key={id} role="menuitemradio" aria-checked={period===id} onClick={()=>{setPeriod(id);setOpen(false);}}>{label}</button>)}</div>}</div>
     </article>
-    <TopUsers users={snapshot?.topUsers} />
+    <TopUsers users={snapshot?.topUsers} nameSource={snapshot?.topUsersNameSource} />
     {cohortView === 'phase-0'
       ? <Phase0Tracking snapshot={snapshot} target={target} />
       : <article className="signal-card"><h2>Phase 1 tracking</h2><p className="p0-caption">Phase 1&apos;s own metric set (attribution, retention windows, AI economics) isn&apos;t wired into this view yet — Users and Most active users above are already project-wide and reflect live Phase 1 traffic. Full Phase 1 tiles land once the metric definitions are locked.</p></article>}
