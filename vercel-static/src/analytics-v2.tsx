@@ -1,5 +1,21 @@
 import { useEffect, useState } from 'react';
 import {
+  Activity,
+  ArrowRight,
+  CalendarDays,
+  CircleHelp,
+  Compass,
+  HeartPulse,
+  Layers,
+  RefreshCw,
+  Repeat2,
+  ShieldCheck,
+  Sparkles,
+  Target,
+  UsersRound,
+  Wallet,
+} from 'lucide-react';
+import {
   COHORTS,
   DAYS,
   type Cohort,
@@ -16,7 +32,7 @@ import { useLiveData } from './live-data';
 import './analytics-v2.css';
 
 const labels: Record<string, string> = {
-  all: 'All',
+  all: 'All phases',
   'phase-0': 'Phase 0',
   'phase-1a': 'Phase 1A',
   'phase-1b': 'Phase 1B',
@@ -61,21 +77,36 @@ function Tile({
   name,
   metric,
   prominent = false,
+  caption,
+  icon: Icon,
 }: {
   name: string;
   metric?: Metric;
   prominent?: boolean;
+  caption?: string;
+  icon?: typeof Activity;
 }) {
   return (
-    <article className={prominent ? 'v2-tile v2-emphasis' : 'v2-tile'}>
+    <article
+      className={`${prominent ? 'v2-tile v2-emphasis' : 'v2-tile'} ${metric?.state === 'available' ? '' : 'v2-pending'}`}
+    >
+      {Icon && (
+        <div className="v2-tile-icon">
+          <Icon size={18} aria-hidden="true" />
+          {prominent && <span>PRIMARY SIGNAL</span>}
+        </div>
+      )}
       <div className="v2-label">
         <span>{name}</span>
         <details className="v2-definition">
-          <summary aria-label={`Definition: ${name}`}>ⓘ</summary>
+          <summary aria-label={`Definition: ${name}`}>
+            <CircleHelp size={15} aria-hidden="true" />
+          </summary>
           <p>{metric?.detail ?? 'Waiting for the source.'}</p>
         </details>
       </div>
       <Value metric={metric} />
+      {caption && <p className="v2-tile-caption">{caption}</p>}
       <small className="v2-source">{metric?.source ?? '—'}</small>
     </article>
   );
@@ -149,6 +180,7 @@ export function AnalyticsV2({
       ? 'test'
       : 'live',
   );
+  const [panel, setPanel] = useState('overview');
   const [retentionType, setRetentionType] = useState<ReturnType>('wingman');
   const [selected, setSelected] = useState<string | null>(null);
   const [projection, setProjection] = useState('1000');
@@ -182,22 +214,32 @@ export function AnalyticsV2({
   return (
     <section className="control-page v2-page">
       <header className="control-header">
-        <h1>{users ? 'Users' : 'Analytics'}</h1>
+        <div>
+          <p className="v2-eyebrow">SPARKEEFY / LAUNCH CONTROL</p>
+          <h1>{users ? 'Users' : 'Launch pulse'}</h1>
+          <p className="v2-subtitle">
+            {users
+              ? 'Investigate the activity behind the numbers.'
+              : 'The signals that matter. The detail when you need it.'}
+          </p>
+        </div>
         <div className="v2-filters">
-          <label>
-            Cohort
-            <select
-              aria-label="Cohort"
-              value={cohort}
-              onChange={(e) => setCohort(e.target.value as Cohort)}
-            >
-              {COHORTS.map((c) => (
-                <option key={c} value={c}>
-                  {labels[c]}
-                </option>
-              ))}
-            </select>
-          </label>
+          {users && (
+            <label>
+              Cohort
+              <select
+                aria-label="Cohort"
+                value={cohort}
+                onChange={(e) => setCohort(e.target.value as Cohort)}
+              >
+                {COHORTS.map((c) => (
+                  <option key={c} value={c}>
+                    {labels[c]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label>
             Time
             <select
@@ -219,35 +261,84 @@ export function AnalyticsV2({
           </label>
         </div>
       </header>
-      <div className="v2-preview">
-        <span>Control v2 · Preview only</span>
-        <label>
-          Data
-          <select
-            aria-label="Data source"
-            value={dataset}
-            onChange={(e) => setDataset(e.target.value)}
-          >
-            <option value="live">Live sources</option>
-            <option value="test">Synthetic QA dataset</option>
-          </select>
-        </label>
+      {!users && (
+        <>
+          <section className="v2-launch-brief" aria-label="Phase 1 launch plan">
+            <div className="v2-date">
+              <CalendarDays size={20} aria-hidden="true" />
+              <span>
+                PLANNED START<strong>17 Sep 2026</strong>
+                <small>Phase 1 · India time</small>
+              </span>
+            </div>
+            <div className="v2-launch-copy">
+              <b>Does useful help turn into an organic return?</b>
+              <p>
+                1A: wedge discovery → 1B: cold replication → Phase 2. Review
+                each participant’s full 14-day window before deciding.
+              </p>
+            </div>
+            <a
+              className="v2-plan-link"
+              href={`/plan?cohort=${cohort === 'all' ? 'phase-1a' : cohort}&period=${period}&dataset=live`}
+            >
+              View phase gates <ArrowRight size={16} aria-hidden="true" />
+            </a>
+          </section>
+          <nav className="v2-cohort-nav" aria-label="Quick cohort filters">
+            {COHORTS.map((c) => (
+              <button
+                key={c}
+                aria-pressed={cohort === c}
+                onClick={() => setCohort(c)}
+              >
+                {c === 'all' ? (
+                  <Layers size={15} aria-hidden="true" />
+                ) : (
+                  <Target size={15} aria-hidden="true" />
+                )}
+                {labels[c]}
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
+      <div className="v2-data-toolbar">
+        <div className="v2-freshness">
+          <span>
+            <Activity size={14} aria-hidden="true" />{' '}
+            {data
+              ? `Checked ${new Date(data.asOf).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST · ${data.excluded} internal/test excluded`
+              : 'Checking sources…'}
+          </span>
+        </div>
+        <div className="v2-preview">
+          <label>
+            Data
+            <select
+              aria-label="Data source"
+              value={dataset}
+              onChange={(e) => setDataset(e.target.value)}
+            >
+              <option value="live">Live sources</option>
+              <option value="test">Synthetic QA dataset</option>
+            </select>
+          </label>
+        </div>
+        <button
+          className="v2-refresh"
+          onClick={live.refresh}
+          disabled={live.loading}
+          aria-label="Refresh data"
+        >
+          <RefreshCw size={15} aria-hidden="true" />
+        </button>
       </div>
       {dataset === 'test' && (
         <output className="v2-test-banner">
-          Synthetic test data. These are not real users or Phase 0 results.
+          Synthetic test data · Not real users or launch evidence.
         </output>
       )}
-      <div className="v2-freshness">
-        <span>
-          {data
-            ? `${new Date(data.asOf).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST · ${data.excluded} internal/test excluded`
-            : 'Checking sources…'}
-        </span>
-        <button onClick={live.refresh} disabled={live.loading}>
-          Refresh
-        </button>
-      </div>
       {live.error && (
         <p className="v2-notice" role="alert">
           {live.error}
@@ -299,7 +390,9 @@ export function AnalyticsV2({
                           <b>{user.label ?? user.id}</b>
                           <small>
                             {user.label ? `${user.id} · ` : ''}
-                            {user.cohorts.map((c) => labels[c]).join(' / ')} ·{' '}
+                            {user.cohorts
+                              .map((c) => labels[c])
+                              .join(' / ')} ·{' '}
                             {user.acquisition}
                           </small>
                         </span>
@@ -320,166 +413,285 @@ export function AnalyticsV2({
             </>
           ) : (
             <>
-              <Section title="Founder overview">
-                <div className="v2-overview">
-                  <Tile name="Active Users" metric={m.active} />
-                  <Tile name="Meaningfully Activated" metric={m.activated} />
-                  <Tile
-                    name="Wingman Retention · D7"
-                    metric={data?.retention.wingman.d7}
-                  />
-                  <Tile
-                    name="Organic Second Situation"
-                    metric={m.organic_second}
-                    prominent
-                  />
-                  <Tile name="Wingman Success" metric={m.success} />
-                </div>
-              </Section>
-              <Section
-                title="Acquisition & onboarding"
-                note="Unique users · milestones may overlap"
-              >
-                <Tiles
-                  metrics={m}
-                  items={[
-                    ['first_opens', 'First app opens'],
-                    ['onboarded', 'Onboarding completed'],
-                    ...people,
-                  ]}
-                />
-              </Section>
-              <Section title="Wingman">
-                <Tile
-                  name="Second genuine situation"
-                  metric={m.second_situation}
-                  prominent
-                />
-                <Tiles
-                  metrics={m}
-                  items={[
-                    ['wingman_opened', 'Wingman opened'],
-                    ['first_message', 'Sent first message'],
-                    ['first_answer', 'Received first complete answer'],
-                    ['five_messages', 'Sent 5+ messages'],
-                    ['people_used_2', 'Used with 2+ people'],
-                    ['sessions', 'Avg sessions per active user'],
-                    ['messages_day', 'Avg messages per active user · today'],
-                    ['messages_7d', 'Avg messages per active user · 7D'],
-                    ['messages_30d', 'Avg messages per active user · 30D'],
-                  ]}
-                />
-              </Section>
-              <Section
-                title="Retention"
-                note="Closed windows only · first-open anchor"
-              >
-                <div className="v2-tabs" aria-label="Retention type">
-                  {(
-                    [
-                      ['app', 'App return'],
-                      ['wingman', 'Wingman return'],
-                      ['situation', 'Genuine situation'],
-                    ] as const
-                  ).map(([key, name]) => (
-                    <button
-                      key={key}
-                      aria-pressed={retentionType === key}
-                      onClick={() => setRetentionType(key)}
-                    >
-                      {name}
+              <nav className="v2-panel-nav" aria-label="Analytics sections">
+                {(
+                  [
+                    ['overview', 'Overview', Compass],
+                    ['usage', 'Activation & usage', Sparkles],
+                    ['retention', 'Retention', Repeat2],
+                    ['health', 'Reliability & cost', HeartPulse],
+                  ] as const
+                ).map(([key, label, Icon]) => (
+                  <button
+                    key={key}
+                    aria-pressed={panel === key}
+                    onClick={() => setPanel(key)}
+                  >
+                    <Icon size={17} aria-hidden="true" />
+                    {label}
+                  </button>
+                ))}
+              </nav>
+              {panel === 'overview' && (
+                <>
+                  <Section
+                    title="What matters most"
+                    note={`${labels[cohort]} · selected time range`}
+                  >
+                    <div className="v2-overview v2-priority-grid">
+                      <Tile
+                        name="Organic second situation"
+                        metric={m.organic_second}
+                        prominent
+                        icon={Repeat2}
+                        caption="Users who returned with another genuine situation, independently and organically."
+                      />
+                      <Tile
+                        name="Meaningfully activated"
+                        metric={m.activated}
+                        icon={Sparkles}
+                        caption="Did the first real situation lead to useful help?"
+                      />
+                      <Tile
+                        name="Wingman return · D7"
+                        metric={data?.retention.wingman.d7}
+                        icon={CalendarDays}
+                        caption="Check the eligible count and pending windows before reading the rate."
+                      />
+                      <Tile
+                        name="Active users"
+                        metric={m.active}
+                        icon={UsersRound}
+                        caption="Observed product activity in this cohort and period."
+                      />
+                    </div>
+                    <p className="v2-reading-note">
+                      <span /> Violet highlights priority, not a passed gate.
+                      Analytics are signals; the Plan holds verified gate
+                      evidence.
+                    </p>
+                  </Section>
+                  <Section title="Keep an eye on" note="Operational signals">
+                    <div className="v2-grid v2-operating-grid">
+                      <Tile
+                        name="Request success"
+                        metric={m.success}
+                        icon={ShieldCheck}
+                        caption="Completed requests / resolved requests."
+                      />
+                      <Tile
+                        name="Failed responses"
+                        metric={m.failed}
+                        icon={HeartPulse}
+                        caption="Investigate failures in Reliability & cost."
+                      />
+                      <Tile
+                        name="Cost / active user"
+                        metric={m.cost_active}
+                        icon={Wallet}
+                        caption="Measured AI spend for the selected period."
+                      />
+                    </div>
+                  </Section>
+                  <section
+                    className="v2-review-guide"
+                    aria-label="Daily review"
+                  >
+                    <div>
+                      <p className="v2-eyebrow">DAILY REVIEW</p>
+                      <h2>Turn the numbers into a decision.</h2>
+                    </div>
+                    <button onClick={() => setPanel('usage')}>
+                      <Sparkles size={18} aria-hidden="true" />
+                      <span>
+                        <b>1. Check activation</b>
+                        <small>See where first use stops.</small>
+                      </span>
+                      <ArrowRight size={16} aria-hidden="true" />
                     </button>
-                  ))}
-                </div>
-                <div className="v2-overview">
-                  {DAYS.map((day) => (
+                    <button onClick={() => setPanel('retention')}>
+                      <Repeat2 size={18} aria-hidden="true" />
+                      <span>
+                        <b>2. Check returns</b>
+                        <small>Separate pending windows from results.</small>
+                      </span>
+                      <ArrowRight size={16} aria-hidden="true" />
+                    </button>
+                    <a
+                      href={`/plan?cohort=${cohort === 'all' ? 'phase-1a' : cohort}&period=${period}&dataset=live`}
+                    >
+                      <Target size={18} aria-hidden="true" />
+                      <span>
+                        <b>3. Review phase gates</b>
+                        <small>Resolve blockers and record evidence.</small>
+                      </span>
+                      <ArrowRight size={16} aria-hidden="true" />
+                    </a>
+                  </section>
+                </>
+              )}
+              {panel === 'usage' && (
+                <>
+                  <Section
+                    title="Acquisition & onboarding"
+                    note="Unique users · milestones may overlap"
+                  >
+                    <Tiles
+                      metrics={m}
+                      items={[
+                        ['first_opens', 'First app opens'],
+                        ['onboarded', 'Onboarding completed'],
+                      ]}
+                    />
+                  </Section>
+                  <Section title="Wingman">
                     <Tile
-                      key={day}
-                      name={`D${day}`}
-                      metric={data?.retention[retentionType][`d${day}`]}
+                      name="Second genuine situation"
+                      metric={m.second_situation}
+                      prominent
                     />
-                  ))}
-                </div>
-              </Section>
-              <Section title="Memory" note="Created ≠ reused later">
-                <Tiles
-                  metrics={m}
-                  items={[
-                    ...memory,
-                    ['memory_average', 'Average observed count / user'],
-                    ['memory_median', 'Median observed count / user'],
-                  ]}
-                />
-              </Section>
-              <Section title="People" note="Created ≠ used with Wingman">
-                <Tiles
-                  metrics={m}
-                  items={[
-                    ...people,
-                    ['people_average', 'Average observed count / user'],
-                    ['people_used', 'Unique people used with Wingman'],
-                  ]}
-                />
-              </Section>
-              <Section title="Response health">
-                <Tiles
-                  metrics={m}
-                  items={[
-                    ['complete', 'Complete responses'],
-                    ['failed', 'Failed responses'],
-                    ['retries', 'Retries'],
-                    ['fallbacks', 'Fallbacks'],
-                    ['success', 'Request success'],
-                    ['latency_median', 'Median response latency'],
-                    ['latency_p95', 'p95 response latency'],
-                  ]}
-                />
-              </Section>
-              <Section title="AI economics">
-                <Tiles
-                  metrics={m}
-                  items={[
-                    ['requests', 'Total AI requests'],
-                    ['input_tokens', 'Input tokens'],
-                    ['output_tokens', 'Output tokens'],
-                    ['total_tokens', 'Total tokens'],
-                    ['cost', 'Total AI cost'],
-                    ['cost_request', 'Cost / request'],
-                    ['cost_active', 'Cost / active user'],
-                    ['cost_activation', 'Cost / meaningful activation'],
-                    ['cost_repeater', 'Cost / organic repeater'],
-                  ]}
-                />
-                <div className="v2-projection">
-                  <label>
-                    Projected active users
-                    <input
-                      aria-label="Projected active users"
-                      value={projection}
-                      inputMode="numeric"
-                      aria-invalid={!valid}
-                      onChange={(e) => setProjection(e.target.value)}
+                    <Tiles
+                      metrics={m}
+                      items={[
+                        ['wingman_opened', 'Wingman opened'],
+                        ['first_message', 'Sent first message'],
+                        ['first_answer', 'Received first complete answer'],
+                        ['five_messages', 'Sent 5+ messages'],
+                        ['people_used_2', 'Used with 2+ people'],
+                        ['sessions', 'Avg sessions per active user'],
+                        [
+                          'messages_day',
+                          'Avg messages per active user · today',
+                        ],
+                        ['messages_7d', 'Avg messages per active user · 7D'],
+                        ['messages_30d', 'Avg messages per active user · 30D'],
+                      ]}
                     />
-                  </label>
-                  <span>
-                    <b>
-                      {projectionCost === null
-                        ? '—'
-                        : new Intl.NumberFormat('en-US', {
-                            style: 'currency',
-                            currency: 'USD',
-                          }).format(projectionCost)}
-                    </b>
-                    <small>
-                      {!valid
-                        ? 'Enter a positive whole number.'
-                        : projectionCost === null
-                          ? 'Awaiting measured cost / active user'
-                          : 'Scenario · same period and usage mix, not a forecast'}
-                    </small>
-                  </span>
-                </div>
-              </Section>
+                  </Section>
+                </>
+              )}
+              {panel === 'retention' && (
+                <>
+                  <Section
+                    title="Retention"
+                    note="Live progress · first-open anchor · rates can change while windows are open"
+                  >
+                    <div className="v2-tabs" aria-label="Retention type">
+                      {(
+                        [
+                          ['app', 'App return'],
+                          ['wingman', 'Wingman return'],
+                          ['situation', 'Genuine situation'],
+                        ] as const
+                      ).map(([key, name]) => (
+                        <button
+                          key={key}
+                          aria-pressed={retentionType === key}
+                          onClick={() => setRetentionType(key)}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="v2-overview">
+                      {DAYS.map((day) => (
+                        <Tile
+                          key={day}
+                          name={`D${day}`}
+                          metric={data?.retention[retentionType][`d${day}`]}
+                        />
+                      ))}
+                    </div>
+                  </Section>
+                </>
+              )}
+              {panel === 'usage' && (
+                <>
+                  <Section title="Memory" note="Created ≠ reused later">
+                    <Tiles
+                      metrics={m}
+                      items={[
+                        ...memory,
+                        ['memory_average', 'Average observed count / user'],
+                        ['memory_median', 'Median observed count / user'],
+                      ]}
+                    />
+                  </Section>
+                  <Section title="People" note="Created ≠ used with Wingman">
+                    <Tiles
+                      metrics={m}
+                      items={[
+                        ...people,
+                        ['people_average', 'Average observed count / user'],
+                        ['people_used', 'Unique people used with Wingman'],
+                      ]}
+                    />
+                  </Section>
+                </>
+              )}
+              {panel === 'health' && (
+                <>
+                  <Section title="Response health">
+                    <Tiles
+                      metrics={m}
+                      items={[
+                        ['complete', 'Complete responses'],
+                        ['failed', 'Failed responses'],
+                        ['retries', 'Retries'],
+                        ['fallbacks', 'Fallbacks'],
+                        ['success', 'Request success'],
+                        ['latency_median', 'Median response latency'],
+                        ['latency_p95', 'p95 response latency'],
+                      ]}
+                    />
+                  </Section>
+                  <Section title="AI economics">
+                    <Tiles
+                      metrics={m}
+                      items={[
+                        ['requests', 'Total AI requests'],
+                        ['input_tokens', 'Input tokens'],
+                        ['output_tokens', 'Output tokens'],
+                        ['total_tokens', 'Total tokens'],
+                        ['cost', 'Total AI cost'],
+                        ['cost_request', 'Cost / request'],
+                        ['cost_active', 'Cost / active user'],
+                        ['cost_activation', 'Cost / meaningful activation'],
+                        ['cost_repeater', 'Cost / organic repeater'],
+                      ]}
+                    />
+                    <div className="v2-projection">
+                      <label>
+                        Projected active users
+                        <input
+                          aria-label="Projected active users"
+                          value={projection}
+                          inputMode="numeric"
+                          aria-invalid={!valid}
+                          onChange={(e) => setProjection(e.target.value)}
+                        />
+                      </label>
+                      <span>
+                        <b>
+                          {projectionCost === null
+                            ? '—'
+                            : new Intl.NumberFormat('en-US', {
+                                style: 'currency',
+                                currency: 'USD',
+                              }).format(projectionCost)}
+                        </b>
+                        <small>
+                          {!valid
+                            ? 'Enter a positive whole number.'
+                            : projectionCost === null
+                              ? 'Awaiting measured cost / active user'
+                              : 'Scenario · same period and usage mix, not a forecast'}
+                        </small>
+                      </span>
+                    </div>
+                  </Section>
+                </>
+              )}
             </>
           )}
         </>
@@ -487,13 +699,7 @@ export function AnalyticsV2({
     </section>
   );
 }
-function UserDetail({
-  user,
-  onBack,
-}: {
-  user: NamedUser;
-  onBack: () => void;
-}) {
+function UserDetail({ user, onBack }: { user: NamedUser; onBack: () => void }) {
   return (
     <div className="v2-user-detail">
       <button className="v2-back" onClick={onBack}>

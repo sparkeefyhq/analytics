@@ -1,4 +1,6 @@
+/* eslint-disable next/no-img-element -- This is the Vite client; its local logo is not served by Next Image. */
 import { useEffect, useMemo, useState } from "react";
+import { ChartNoAxesCombined, ListChecks, UsersRound, Target, TriangleAlert, CalendarDays } from "lucide-react";
 import { countdown } from "./control-state";
 import "./control.css";
 import "./control-polish.css";
@@ -50,45 +52,16 @@ const metricPasses = (metric: Metric) => {
   }
   return metric.comparator === "eq" ? metric.actual === metric.target : metric.comparator === "lte" ? metric.actual <= metric.target : metric.actual >= metric.target;
 };
-const pct = (value: number | null) => value === null ? "No data yet" : `${value.toFixed(1)}%`;
-const value = (number: number | null) => number === null ? "—" : number.toLocaleString();
-const unavailableAnalytics: Analytics = {
-  updatedAt: null,
-  source: { name: "Canonical analytics source", status: "unavailable", description: "The analytics aggregation endpoint is not connected to this deployed control plane." },
-  cohorts: [{ id: "all", label: "All users", available: true }, { id: "phase-0", label: "Phase 0", available: false }, { id: "phase-1a", label: "Phase 1A", available: false }, { id: "phase-1b", label: "Phase 1B", available: false }],
-  users: { registered: null, active: null, series: null, reason: "Active-user events are not connected to this control plane yet." },
-  funnel: ["Invited", "Accepted", "Play access / installed", "Onboarding completed", "Genuine situation", "First Wingman complete", "Meaningful activation", "Useful answer", "Independent activation", "Organic second situation"].map((label, index) => ({ key: String(index), label, value: null, definition: "A canonical source is not connected." })),
-  activation: Object.fromEntries(["onboarding", "meaningful", "usefulness", "independent", "organicSecond", "organicYield"].map((key) => [key, { numerator: null, denominator: null, definition: "A canonical source is not connected.", source: "Unavailable" }])),
-  retention: { app: null, wingman: null, meaningfulWingman: null, organicSituation: null, organicAttributed: { numerator: null, denominator: null, definition: "A canonical source is not connected.", source: "Unavailable" }, reason: "D1/D7/D30 retention requires timestamped product events." },
-  quality: { usefulness: { yes: 0, abit: null, no: 0, unrated: 0 }, responseSuccess: null, failures: null, retries: null, fallbacks: null, incomplete: null }, reliability: null, aiCost: null,
-};
-
 function ControlSidebar({ view, setView, email, onLogout, onLogin }: { view: ControlView; setView: (view: ControlView) => void; email: string | null; onLogout: () => void; onLogin: () => void }) {
   return <aside className="control-sidebar">
     <button className="control-brand" onClick={() => setView("analytics")} aria-label="Sparkeefy Control home"><img src="/sparkeefy-logo.png" alt="" width="44" height="44" /><b>Sparkeefy<small>Control</small></b></button>
     <nav aria-label="Primary navigation">
-      <button className={view === "analytics" ? "control-nav active" : "control-nav"} onClick={() => setView("analytics")}><i>◫</i>Analytics</button>
-      <button className={view === "plan" ? "control-nav active" : "control-nav"} onClick={() => setView("plan")}><i>✓</i>Plan</button>
-      <button className={view === "users" ? "control-nav active" : "control-nav"} onClick={() => setView("users")}><i>♙</i>Users</button>
+      <button aria-current={view === "analytics" ? "page" : undefined} className={view === "analytics" ? "control-nav active" : "control-nav"} onClick={() => setView("analytics")}><ChartNoAxesCombined size={18} aria-hidden="true" />Analytics</button>
+      <button aria-current={view === "plan" ? "page" : undefined} className={view === "plan" ? "control-nav active" : "control-nav"} onClick={() => setView("plan")}><ListChecks size={18} aria-hidden="true" />Plan</button>
+      <button aria-current={view === "users" ? "page" : undefined} className={view === "users" ? "control-nav active" : "control-nav"} onClick={() => setView("users")}><UsersRound size={18} aria-hidden="true" />Users</button>
     </nav>
     <div className="control-sidebar-foot"><span className="status-dot" />{email ? "Admin workspace" : "Public dashboard"}<small>{email || "View-only"}</small>{email ? <button onClick={onLogout}>Sign out</button> : <button onClick={onLogin}>Admin sign in</button>}</div>
   </aside>;
-}
-
-function MetricRing({ label, percent, detail }: { label: string; percent: number | null; detail?: string }) {
-  const available = percent !== null && Number.isFinite(percent);
-  const circumference = 2 * Math.PI * 46;
-  return <div className="metric-ring">
-    <div className="ring-visual" aria-label={`${label}: ${available ? pct(percent) : "No data"}`}>
-      <svg viewBox="0 0 112 112" aria-hidden="true">
-        <circle className="ring-track" cx="56" cy="56" r="46" />
-        {available && <circle className="ring-fill" cx="56" cy="56" r="46" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - Math.min(100, Math.max(0, percent!)) / 100)} />}
-      </svg>
-      <strong>{available ? pct(percent) : "—"}</strong>
-    </div>
-    <span>{label}</span>
-    <small>{detail || (available ? "" : "Not connected")}</small>
-  </div>;
 }
 
 function FormatMetric({ metric, canEdit, save }: { metric: Metric; canEdit: boolean; save: (action: string, patch?: Record<string, unknown>, id?: string) => Promise<void> }) {
@@ -106,7 +79,7 @@ function FormatMetric({ metric, canEdit, save }: { metric: Metric; canEdit: bool
   const actual = metric.actual === null ? "—" : String(metric.actual);
   const target = metric.valueType === "percent" ? `≥${metric.target}%` : metric.comparator === "eq" ? `=${metric.target}` : metric.comparator === "lte" ? `≤${metric.target}` : `≥${metric.target}`;
   const status = metric.actual === null || (metric.valueType === "percent" && !metric.actualDenominator) ? "Waiting" : metricPasses(metric) ? "Pass" : "In progress";
-  return <div className="gate-row" title={metric.definition}><div><b>{metric.name}</b></div><span>{canEdit ? <input aria-label={`${metric.name} actual`} className="metric-editor-input" type="number" min="0" value={actualDraft} placeholder="—" onChange={(event) => setActualDraft(event.target.value)} onBlur={persist} /> : actual}</span><span>{target}</span><span>{canEdit && metric.valueType === "percent" ? <input aria-label={`${metric.name} total`} className="metric-editor-input" type="number" min="0" value={denominatorDraft} placeholder="—" onChange={(event) => setDenominatorDraft(event.target.value)} onBlur={persist} /> : metric.actualDenominator ? String(metric.actualDenominator) : "—"}</span><em className={status === "Pass" ? "pass" : ""}>{status}</em></div>;
+  return <div className={metric.category === "Behavior" ? "gate-row gate-priority" : "gate-row"} title={metric.definition}><div><b>{metric.name}</b></div><span>{canEdit ? <input aria-label={`${metric.name} actual`} className="metric-editor-input" type="number" min="0" value={actualDraft} placeholder="—" onChange={(event) => setActualDraft(event.target.value)} onBlur={persist} /> : actual}</span><span>{target}</span><span>{canEdit && metric.valueType === "percent" ? <input aria-label={`${metric.name} total`} className="metric-editor-input" type="number" min="0" value={denominatorDraft} placeholder="—" onChange={(event) => setDenominatorDraft(event.target.value)} onBlur={persist} /> : metric.actualDenominator ? String(metric.actualDenominator) : "—"}</span><em className={status === "Pass" ? "pass" : ""}>{status}</em></div>;
 }
 
 function PhaseClock({ phase }: { phase?: Phase }) {
@@ -133,7 +106,12 @@ function PhaseClock({ phase }: { phase?: Phase }) {
 function PlanPage({ tracker, save, onLogin }: { onLogin: () => void; tracker: ControlTracker; save: (action: string, patch?: Record<string, unknown>, id?: string) => Promise<void> }) {
   const phase0 = tracker.phases.find((phase) => phase.id === "phase-0");
   const phase1 = tracker.phases.find((phase) => phase.id === "phase-1");
-  const [selected, setSelected] = useState("phase-0");
+  const [selected, setSelected] = useState(() => {
+    const requested = new URLSearchParams(location.search).get("cohort");
+    if (["phase-0", "phase-1a", "phase-1b", "phase-2"].includes(requested || "")) return requested!;
+    if (phase1?.status === "active") return tracker.phase1?.phase1BUnlocked ? "phase-1b" : "phase-1a";
+    return "phase-0";
+  });
   const [undo, setUndo] = useState<{ check: Check; phaseId: string } | null>(null);
   const [starting, setStarting] = useState(false);
   const options = useMemo(() => [
@@ -151,6 +129,11 @@ function PlanPage({ tracker, save, onLogin }: { onLogin: () => void; tracker: Co
     "phase-2": { features: "Feature scope pending", preparation: "Decided after Phase 1 results." },
   };
   const scope = scopeNotes[current.id];
+  const cohortTarget = current.id === "phase-1a"
+    ? phase?.metrics.find(m => m.id === "phase-1a-metric-0")?.target
+    : current.id === "phase-1b"
+      ? phase?.metrics.find(m => m.id === "phase-1b-metric-0")?.minimumDenominator
+      : phase?.userMax;
   const metrics = phase ? current.prefix ? phase.metrics.filter((metric) => metric.id.startsWith(current.prefix!)) : phase.metrics : [];
   const checks = phase ? current.prefix ? phase.checks.filter((check) => check.id.startsWith(current.prefix!)) : phase.checks : [];
   const pending = checks.filter((check) => !check.completed), complete = checks.filter((check) => check.completed);
@@ -172,14 +155,15 @@ function PlanPage({ tracker, save, onLogin }: { onLogin: () => void; tracker: Co
     finally { setStarting(false); }
   };
   return <section className="control-page plan-page">
-    <header className="control-header"><h1>Plan</h1><div className="phase-header-controls"><PhaseClock phase={phase} />{current?.state === "ready" ? <button className="phase-status ready" disabled={starting || !tracker.canEdit} title={!tracker.canEdit ? "Public view-only" : "Start phase"} onClick={() => void startPhase()}>{starting ? "Starting…" : "Ready"}</button> : <span className={`phase-status ${current?.state}`}>{current?.state === "active" ? "Active" : current?.state === "complete" ? "Completed" : "Locked"}</span>}</div></header>
-    <section className="phase-overview"><div className="phase-cohort"><h2>{current?.label}</h2><div className="cohort-hero" aria-label={`${phase?.userMax ?? 0} users target`}><strong>{phase?.userMax ?? "—"}</strong><span>users</span></div></div>{scope && <div className="phase-scope"><h3>In this phase</h3><p>{scope.features}</p><small>{scope.preparation}</small></div>}</section>
-    <div className="phase-stepper">{options.map((item, index) => <button key={item.id} className={`${selected === item.id ? "selected" : ""} ${item.state}`} onClick={() => setSelected(item.id)}><span>{item.state === "complete" ? "✓" : index}</span><div><b>{item.label}</b><small>{item.subtitle}</small></div><em>{item.state === "active" ? "Active" : item.state === "complete" ? "Done" : item.state === "locked" ? "Locked" : "Ready"}</em></button>)}</div>
+    <header className="control-header"><div><p className="v2-eyebrow">EVIDENCE / DECISIONS</p><h1>Phase plan</h1></div><div className="phase-header-controls"><PhaseClock phase={phase} />{current?.state === "ready" ? <button className="phase-status ready" disabled={starting || !tracker.canEdit} title={!tracker.canEdit ? "Public view-only" : "Start phase"} onClick={() => void startPhase()}>{starting ? "Starting…" : "Ready"}</button> : <span className={`phase-status ${current?.state}`}>{current?.state === "active" ? "Active" : current?.state === "complete" ? "Completed" : "Locked"}</span>}</div></header>
+    <div className="plan-start-note"><CalendarDays size={17} aria-hidden="true" /><span><b>Phase 1 planned start · 17 September 2026</b> · Actual start and advancement follow recorded phase state.</span></div>
+    <section className="phase-overview"><div className="phase-cohort"><h2>{current?.label}</h2><div className="cohort-hero" aria-label={`${cohortTarget ?? "Unknown"} users target`}><strong>{cohortTarget ?? "—"}</strong><span>target users</span></div></div>{scope && <div className="phase-scope"><h3>In this phase</h3><p>{scope.features}</p><small>{scope.preparation}</small></div>}</section>
+    <div className="phase-stepper">{options.map((item) => <button key={item.id} className={`${selected === item.id ? "selected" : ""} ${item.state}`} aria-pressed={selected === item.id} onClick={() => { setSelected(item.id); const params = new URLSearchParams(location.search); params.set("cohort", item.id); history.replaceState({}, "", `${location.pathname}?${params}`); }}><span>{item.state === "complete" ? "✓" : item.label.replace("Phase ", "")}</span><div><b>{item.label}</b><small>{item.subtitle}</small></div><em>{item.state === "active" ? "Active" : item.state === "complete" ? "Done" : item.state === "locked" ? "Locked" : "Ready"}</em></button>)}</div>
     {!phase ? <article className="signal-card phase-placeholder"><p className="card-eyebrow">PHASE 2</p><h2>Not configured</h2><p>Phase 2 stays locked until the server-authorized Phase 1 advancement path completes. No local UI can override that decision.</p></article> : <>
       {current.id === "phase-0" && <Phase0Tracking snapshot={tracker.analytics?.phase0} target={phase.userMax} />}
       <section className="plan-actions"><div><b>{gatesPassed} / {total} complete</b><span><i style={{ width: `${total ? gatesPassed / total * 100 : 0}%` }} /></span></div><div>{phase.status !== "complete" && current.id !== "phase-1b" && <button className="control-secondary" disabled={unmet.length > 0 || !tracker.canEdit} title={unmet.length ? unmet.slice(0, 3).join(" · ") : "Advance phase"} onClick={() => { if (confirm("Confirm advancement? The server will verify every gate again.")) void save("advance", { confirmed: true }, phase.id).catch(() => {}); }}>Advance phase →</button>}</div></section>
-      <section className="plan-grid"><article className="signal-card gates-card"><div className="card-row"><div><h2>Launch gates</h2><p className="p0-gates-note">Verified evidence · manual until reconciled</p></div></div><div className="gate-table"><div className="gate-row heading"><span>Metric</span><span>Count</span><span>Target</span><span title="Total users or requests evaluated">Total</span><span>Status</span></div>{metrics.map((metric) => <FormatMetric key={`${metric.id}-${metric.actual}-${metric.actualDenominator}`} metric={metric} canEdit={tracker.canEdit} save={save} />)}</div></article><article className="signal-card blockers-card"><h2>{unmet.length ? `Remaining · ${unmet.length}` : "Requirements met"}</h2>{unmet.length ? <ul>{unmet.slice(0, 8).map((item) => <li key={item}>{item}</li>)}</ul> : <p>Verified again on advancement.</p>}</article></section>
-      <section className="signal-card checklist-card"><div className="card-row"><div><h2>Checklist</h2></div><span>{complete.length} / {checks.length} complete</span></div>{!tracker.canEdit && <button className="checklist-edit-link" onClick={onLogin}>Admin sign in to edit</button>}<div className="check-groups"><div>{pending.map((check) => <label className="plan-check" key={check.id}><input disabled={!tracker.canEdit} type="checkbox" checked={false} onChange={() => void toggle(check, true)} /><span>{check.label}</span></label>)}</div>{complete.length > 0 && <div className="completed-checks"><small>COMPLETED</small>{complete.map((check) => <label className="plan-check completed" key={check.id}><input disabled={!tracker.canEdit} type="checkbox" checked onChange={() => void toggle(check, false)} /><span>{check.label}</span><button type="button" className="check-undo" disabled={!tracker.canEdit} onClick={(event) => { event.preventDefault(); void toggle(check, false); }}>Undo</button></label>)}</div>}</div>{undo && <div className="undo-toast"><span>Marked complete.</span><button onClick={() => { void toggle(undo.check, false); setUndo(null); }}>Undo</button></div>}</section>
+      <section className="plan-grid"><article className="signal-card gates-card"><div className="card-row"><div><h2><Target size={18} aria-hidden="true" /> Launch gates</h2><p className="p0-gates-note">Verified evidence · manual until reconciled</p></div></div><div className="gate-table"><div className="gate-row heading"><span>Metric</span><span>Count</span><span>Target</span><span title="Total users or requests evaluated">Total</span><span>Status</span></div>{metrics.map((metric) => <FormatMetric key={`${metric.id}-${metric.actual}-${metric.actualDenominator}`} metric={metric} canEdit={tracker.canEdit} save={save} />)}</div></article><article className="signal-card blockers-card"><h2><TriangleAlert size={18} aria-hidden="true" /> {unmet.length ? `Needs attention · ${unmet.length}` : "Requirements met"}</h2>{unmet.length ? <><ul>{unmet.slice(0, 4).map((item) => <li key={item}>{item}</li>)}</ul>{unmet.length > 4 && <details className="plan-more-blockers"><summary>Show all {unmet.length} requirements</summary><ul>{unmet.slice(4).map(item => <li key={item}>{item}</li>)}</ul></details>}</> : <p>Verified again on advancement.</p>}</article></section>
+      <section className="signal-card checklist-card"><div className="card-row"><div><h2><ListChecks size={18} aria-hidden="true" /> Checklist</h2></div><span>{complete.length} / {checks.length} complete</span></div>{!tracker.canEdit && <button className="checklist-edit-link" onClick={onLogin}>Admin sign in to edit</button>}<div className="check-groups"><div>{pending.map((check) => <label className="plan-check" key={check.id}><input disabled={!tracker.canEdit} type="checkbox" checked={false} onChange={() => void toggle(check, true)} /><span>{check.label}</span></label>)}</div>{complete.length > 0 && <div className="completed-checks"><small>COMPLETED</small>{complete.map((check) => <label className="plan-check completed" key={check.id}><input disabled={!tracker.canEdit} type="checkbox" checked onChange={() => void toggle(check, false)} /><span>{check.label}</span><button type="button" className="check-undo" disabled={!tracker.canEdit} onClick={(event) => { event.preventDefault(); void toggle(check, false); }}>Undo</button></label>)}</div>}</div>{undo && <div className="undo-toast"><span>Marked complete.</span><button onClick={() => { void toggle(undo.check, false); setUndo(null); }}>Undo</button></div>}</section>
     </>}
   </section>;
 }
@@ -188,5 +172,5 @@ export function ControlApp({ tracker, save, view, setView, onLogout, onLogin }: 
   const live = useLiveData<ControlTracker>(view === "plan" ? "/api/tracker" : null);
   // Analytics-only overlay: background reads never replace optimistic edits or gate evidence.
   const displayed = {...tracker, analytics: live.data ? live.data.analytics : tracker.analytics};
-  return <main className="control-shell"><ControlSidebar view={view} setView={setView} email={tracker.viewerEmail} onLogout={onLogout} onLogin={onLogin} /><div className="control-main">{view === "plan" && <div className="live-refresh" role="status"><span>Isolated preview Plan · {live.error || "Checks every 30s"}</span><button onClick={live.refresh}>Refresh</button></div>}{view !== "plan" ? <AnalyticsV2 key={`${view}-${tracker.viewerEmail || 'public'}`} users={view==='users'} onLogin={onLogin}/> : <PlanPage tracker={displayed} save={save} onLogin={onLogin} />}</div></main>;
+  return <main className="control-shell"><ControlSidebar view={view} setView={setView} email={tracker.viewerEmail} onLogout={onLogout} onLogin={onLogin} /><div className="control-main">{view === "plan" && <output className="live-refresh"><span>Phase evidence · {live.error || "Checks every 30s"}</span><button onClick={live.refresh}>Refresh</button></output>}{view !== "plan" ? <AnalyticsV2 key={`${view}-${tracker.viewerEmail || 'public'}`} users={view==='users'} onLogin={onLogin}/> : <PlanPage tracker={displayed} save={save} onLogin={onLogin} />}</div></main>;
 }
