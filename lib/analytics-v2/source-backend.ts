@@ -34,6 +34,7 @@ const KNOWN: Capability[] = [
   'fallbacks',
   'latency',
   'tokens',
+  'cost',
 ];
 
 interface BackendFact {
@@ -47,11 +48,13 @@ interface BackendFact {
   latency?: number;
   input?: number;
   output?: number;
+  cost?: number;
 }
 
 interface BackendMember {
   id: string;
   firstOpen: string;
+  name?: string | null;
 }
 
 interface BackendResponse {
@@ -105,6 +108,17 @@ function cohortFor(firstOpenMs: number): Member['cohort'] {
   return 'phase-0';
 }
 
+/**
+ * Display names keyed by opaque participant id. Kept *outside* the Dataset so
+ * `calculate()` (and every aggregate DTO) stays name-free by construction;
+ * only the admin-gated `view=users` route consults this, after calculation.
+ * Refreshed together with the cached dataset.
+ */
+let names = new Map<string, string>();
+export function backendDisplayNames(): ReadonlyMap<string, string> {
+  return names;
+}
+
 let cached: { at: number; data: Dataset } | undefined;
 let pending: Promise<Dataset> | undefined;
 export async function liveDatasetFromBackend(): Promise<Dataset> {
@@ -154,6 +168,12 @@ async function load(): Promise<Dataset> {
       Math.min(...realMembers.map((m) => Date.parse(m.firstOpen))),
     ).toISOString();
     const allowed = realMembers.filter((m) => !excluded.has(m.id));
+    const nextNames = new Map<string, string>();
+    for (const m of realMembers) {
+      const name = typeof m.name === 'string' ? m.name.trim() : '';
+      if (name) nextNames.set(opaque(m.id), name);
+    }
+    names = nextNames;
     base.members = realMembers.map((m) => ({
       id: opaque(m.id),
       cohort: cohortFor(Date.parse(m.firstOpen)),
@@ -202,6 +222,8 @@ async function load(): Promise<Dataset> {
         fact.input = row.input;
       if (typeof row.output === 'number' && Number.isFinite(row.output))
         fact.output = row.output;
+      if (typeof row.cost === 'number' && Number.isFinite(row.cost) && row.cost >= 0)
+        fact.cost = row.cost;
       facts.push(fact);
     }
     let capabilities = KNOWN.filter((c) => remote.capabilities.includes(c));
@@ -215,6 +237,14 @@ async function load(): Promise<Dataset> {
       capabilities = capabilities.filter((c) => c !== 'people');
     if (facts.some((f) => f.kind === 'memory' && f.memories === undefined))
       capabilities = capabilities.filter((c) => c !== 'memory');
+    // Economics: tokens need every billable record to carry both counts; cost
+    // additionally needs every record priced. Partial coverage disables the
+    // capability rather than summing what happens to be present.
+    const usage = facts.filter((f) => f.kind === 'usage');
+    if (!usage.length || usage.some((f) => f.input === undefined || f.output === undefined))
+      capabilities = capabilities.filter((c) => c !== 'tokens' && c !== 'cost');
+    if (usage.some((f) => f.cost === undefined))
+      capabilities = capabilities.filter((c) => c !== 'cost');
     return {
       ...base,
       state: 'available',
@@ -223,6 +253,7 @@ async function load(): Promise<Dataset> {
       facts,
     };
   } catch {
+    names = new Map();
     return {
       ...base,
       state: 'query-error',

@@ -30,32 +30,23 @@ Read-only inspection on 2026-09-13 found production's persisted Phase 0 status `
 - UI refreshes every 30 seconds while visible; live source is cached in server memory for 30 seconds. This is near-real-time polling, not streaming. The timestamp is query execution time, not proof of the last product event.
 - No raw PostHog properties, email, name, phone, prompts, responses, relationship text or memory content are in the v2 DTO. Source participant IDs are HMAC-pseudonymized; request/person IDs never leave the server.
 
-## Cohort reconciliation required before enabling real v2 numbers
+## Live source: sparkeefy-backend Postgres (no PostHog, no manual manifest)
 
-Existing Phase 0 production analytics deliberately queries the whole project after its launch-reset watermark. That is **not** a trustworthy immutable cohort ledger. V2 does not silently reuse it as Phase 0 membership.
+The original plan required a hand-maintained per-user cohort manifest (`CONTROL_V2_COHORTS_JSON`). That was replaced on 2026-09-14 (PRs #7/#8 on this branch): the live dataset now comes straight from `sparkeefy-backend`'s `GET /api/admin/analytics/v2` (Postgres: `auth.users`, `user_profiles`, `people`, `memories`, `ai_call_telemetry`), which is already the trustworthy identity source — one row per real human, a real signup timestamp. Every real signup is included automatically on every request; nothing is maintained by hand as users arrive.
 
-Rahul/founder must reconcile a server-only manifest (`CONTROL_V2_COHORTS_JSON`) and a verified event coverage boundary (`CONTROL_V2_COVERAGE_FROM`). Do this in the preview environment first. Keep the manifest outside Git; identifiers can be sensitive. Format:
+Preview environment variables (server-only):
 
-```json
-[
-  {
-    "id": "stable-internal-participant-key",
-    "distinctIds": ["verified-posthog-distinct-id"],
-    "cohort": "phase-0",
-    "from": "2026-09-13T10:01:00Z",
-    "firstOpen": "2026-09-13T10:05:00Z",
-    "internal": false,
-    "test": false,
-    "acquisition": "referral"
-  }
-]
-```
+| Variable | Purpose |
+|---|---|
+| `V2_SPARKEEFY_BACKEND_URL` | Backend base URL (Cloud Run service). |
+| `V2_SPARKEEFY_BACKEND_ADMIN_KEY` | Backend `ADMIN_API_KEY`; sent as `x-admin-api-key`. |
+| `CONTROL_V2_INTERNAL_USER_IDS` | Comma-separated backend user ids for the team's own accounts (excluded, still counted as "internal/test excluded"). Nothing in the schema marks an account internal, so this is the one list a human keeps. |
+| `CONTROL_V2_PHASE1_FROM`, `CONTROL_V2_PHASE1B_FROM`, `CONTROL_V2_PHASE2_FROM` | ISO timestamps. Cohort = signup date vs these boundaries. **Set `CONTROL_V2_PHASE1_FROM` at the Phase 1 launch moment**; until then every signup is Phase 0. |
+| `SPARKEEFY_SESSION_SECRET` | HMAC key for opaque participant ids. |
 
-Example timestamps above are illustrative, not actual launch evidence. Use verified original timestamps. `firstOpen` may be null when unobserved. Acquisition values: organic/referral/paid/founder/unknown. No free-text acquisition labels are accepted.
+Identity: participant ids are `participant-<hmac16>` of the backend user id; request/session ids are per-user HMACs. Display names (profile name, else nickname) travel separately from the dataset and are attached only on the admin-gated `view=users` response — aggregates are name-free by construction (tested). Synthetic participants are never named.
 
-When a cohort closes, add its verified exclusive `to` timestamp. Freeze/version/archive that manifest with the historical reconciliation. Future cohorts get their own membership intervals. The same identity may occur in non-overlapping intervals, never overlapping ones, and must retain the same stable participant key. Duplicates/overlaps fail validation. `all` means unique people in all reconciled memberships, not all anonymous PostHog traffic. Returning people are deduplicated, membership gaps excluded, and user details list all selected cohort affiliations.
-
-Current manifest is intentionally not populated with invented participants or inferred first-open dates. Live v2 therefore says **Not connected** until this reconciliation is supplied. An empty *configured* manifest/selected cohort produces **No data yet**, not a fabricated zero cohort.
+Coverage today (production, 2026-09-14): activity, onboarding (timestamp approximated as signup — no onboarding-completed column exists yet), people/memory ordinals, Wingman message/complete/failed/retry/fallback, latency, tokens. Cost becomes available once every `ai_call_telemetry` row is priced (rate card shipped backend-side; historical NULL rows need a one-time backfill). Sessions stay off until every row carries a `session_id` (rows on 2026-09-13 predate that). Situations, activation, memory reuse, people-use, foreground and attribution still need real product instrumentation — the capability list is the contract, never toggle one to fill a tile.
 
 ## Definitions (v2 only)
 
@@ -122,9 +113,9 @@ Checks: `npm run build`, `npx tsc --noEmit`, scoped `npx oxlint`, `npm test`. Te
 
 Before production cutover:
 
-1. Close Phase 0 operationally; export and hash its launch state, manifest, and reconciled PostHog results. Do not reset or edit historical events.
-2. Reconcile each supported v2 metric independently against PostHog using the v2 definitions. Record intentional differences from Phase 0 v1.
-3. Validate all identity aliases, membership windows, internal/test exclusions and time coverage. Unmapped traffic remains excluded; investigate it rather than auto-enrolling it.
+1. Close Phase 0 operationally; export and hash its launch state and the Phase 0 PostHog results. Do not reset or edit historical events.
+2. Reconcile each supported v2 metric independently against the backend tables using the v2 definitions. Record intentional differences from Phase 0 v1 (PostHog-based).
+3. Set `CONTROL_V2_PHASE1_FROM` (and `CONTROL_V2_INTERNAL_USER_IDS`) on Production, then validate cohort assignment, internal exclusions and time coverage against the live roster.
 4. Wire and validate remaining capabilities with known test records. Confirm source-state behavior and per-user privacy.
 5. Obtain explicit production cutover approval, remove preview locks/test selector appropriately, and migrate only additive configuration/schema. Preserve historical cohorts and the existing Plan state.
 6. Merge this branch into the single maintained application and deploy once approved. Retire disposable preview resources only after testing/history are safely retained.
