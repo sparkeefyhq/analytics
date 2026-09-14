@@ -24,10 +24,10 @@ export function Phase0Tracking({ snapshot, target = 15 }: { snapshot?: Phase0Sna
 
 function TopUsers({ users }: { users?: TopUser[] }) {
   return <section className="signal-card p0-top-users">
-    <div className="card-row"><h2>Most active users</h2><span className="data-chip">PostHog</span></div>
+    <div className="card-row"><h2>Most active users</h2><span className="data-chip">Backend</span></div>
     {!users || users.length === 0
       ? <p className="p0-caption">No Wingman requests recorded yet.</p>
-      : <ol className="p0-top-users-list">{users.map(user => <li key={user.distinctId}><span>{user.email || `${user.distinctId.slice(0, 12)}…`}</span><strong>{user.messageCount.toLocaleString('en-IN')}<small> messages</small></strong></li>)}</ol>}
+      : <ol className="p0-top-users-list">{users.map(user => <li key={user.distinctId}><span>{user.name || user.email || `${user.distinctId.slice(0, 12)}…`}</span><strong>{user.messageCount.toLocaleString('en-IN')}<small> messages</small></strong></li>)}</ol>}
   </section>;
 }
 
@@ -37,7 +37,7 @@ export function Phase0Analytics({ snapshot, target }: { snapshot?: Phase0Snapsho
   const [open,setOpen] = useState(false);
   const [projection,setProjection] = useState('1000');
   const periods: [Period,string][] = [['today','Today'],['week','This week'],['month','This month'],['all','All time']];
-  const fresh = snapshot?.updatedAt && Number.isFinite(Date.parse(snapshot.updatedAt)) ? new Intl.DateTimeFormat('en-IN',{dateStyle:'medium',timeStyle:'short'}).format(new Date(snapshot.updatedAt)) : 'Awaiting PostHog';
+  const fresh = snapshot?.updatedAt && Number.isFinite(Date.parse(snapshot.updatedAt)) ? new Intl.DateTimeFormat('en-IN',{dateStyle:'medium',timeStyle:'short'}).format(new Date(snapshot.updatedAt)) : 'Awaiting backend';
   const valid = /^\d+$/.test(projection) && Number.isSafeInteger(Number(projection)) && Number(projection)>0;
   return <section className="control-page analytics-page">
     <header className="control-header"><h1>Analytics</h1><div className="header-tools"><label>Cohort<select aria-label="Analytics cohort" value="phase-0" onChange={() => {}}><option value="phase-0">Phase 0</option><option disabled>Phase 1A · not available</option><option disabled>Phase 1B · not available</option></select></label></div></header>

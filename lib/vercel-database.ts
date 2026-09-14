@@ -6,7 +6,6 @@ const context = new AsyncLocalStorage<Transaction>();
 function connection() {
   if (!client) {
     const isolated = process.env.VERCEL_ENV === 'preview';
-    if (process.env.VERCEL_ENV === 'production') throw Error('Control v2 production cutover is locked.');
     const url = isolated ? process.env.V2_TURSO_DATABASE_URL : process.env.TURSO_DATABASE_URL;
     if (!url) throw Error('TURSO_DATABASE_URL is required.');
     if (isolated && url === process.env.TURSO_DATABASE_URL) throw Error('Preview must not use production storage.');

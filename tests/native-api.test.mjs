@@ -23,17 +23,22 @@ test('native API preserves auth, persistence, undo and atomic advancement on iso
   const request=(path='/api/tracker',method='GET',body,origin)=>handle(new Request(`https://control.test${path}`,{method,headers:{cookie,...(origin?{origin}:{}),'content-type':'application/json'},body:body?JSON.stringify(body):undefined}));
   const patch=body=>request('/api/tracker','PATCH',body);
   assert.equal((await request()).status,200);
-  assert.equal((await request('/api/control/users')).status,403);
+  // The PostHog-era /api/control/users route is gone; live user investigation is the admin-gated v2 users view.
+  assert.equal((await request('/api/control/users')).status,404);
+  assert.equal((await request('/api/analytics/v2?view=users')).status,403);
   assert.equal((await request('/api/tracker?private=cohort')).status,403);
   assert.equal((await patch({action:'start',phaseId:'phase-0'})).status,403);
   const login=await request('/api/auth/login','POST',{email:'sarthakverma0802@gmail.com',password:process.env.SPARKEEFY_LOGIN_PASSWORD});
   assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];
-  assert.equal((await request('/api/control/users')).status,200);
-  // No cohort_evidence rows exist in this fixture — a genuinely empty, measured
-  // list is 'available' with users:[], not 'unavailable' (which means the
-  // connector itself is broken, not that the cohort is empty).
-  const usersBody=await (await request('/api/control/users')).json();
-  assert.equal(usersBody.status,'available');assert.deepEqual(usersBody.users,[]);
+  assert.equal((await request('/api/analytics/v2?view=users')).status,200);
+  // No backend connection in this fixture: the v2 users view is honestly
+  // not-connected with an empty list, never a fabricated cohort. The Plan
+  // payload's Phase 0 snapshot degrades the same way.
+  const usersBody=await (await request('/api/analytics/v2?view=users')).json();
+  assert.equal(usersBody.state,'not-connected');assert.deepEqual(usersBody.users,[]);
+  const trackerBody=await (await request()).json();
+  assert.equal(trackerBody.analytics.phase0.metrics.first_open.status,'unavailable');
+  assert.equal(trackerBody.analytics.phase0.metrics.first_open.source,'backend');
   assert.equal((await request('/api/tracker','PATCH',{action:'start',phaseId:'phase-0'},'https://other.test')).status,403);
   assert.equal((await patch({action:'advance',phaseId:'phase-0',patch:{confirmed:true}})).status,409);
   assert.equal((await patch({action:'start',phaseId:'phase-1'})).status,409);
@@ -56,7 +61,7 @@ test('native API preserves auth, persistence, undo and atomic advancement on iso
   assert.equal(final.phases[0].status,'complete');assert.equal(final.phases[1].status,'ready');assert.equal(final.phases[1].startedAt,null);
   delete process.env.SPARKEEFY_LOGIN_PASSWORD;
   assert.equal((await request('/api/auth/login','POST',{})).status,403);
-  assert.equal((await request('/api/control/users')).status,403);
+  assert.equal((await request('/api/analytics/v2?view=users')).status,403);
   assert.equal((await patch({action:'start',phaseId:'phase-1'})).status,403);
   db.close();
 });

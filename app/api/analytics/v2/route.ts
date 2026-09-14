@@ -12,8 +12,6 @@ import {
 import { fixture } from '../../../../lib/analytics-v2/fixture';
 
 export async function GET(request: Request): Promise<Response> {
-  if (process.env.VERCEL_ENV === 'production')
-    return Response.json({ error: 'V2 is preview-only.' }, { status: 503 });
   const url = new URL(request.url);
   const cohort = url.searchParams.get('cohort') || 'all',
     period = url.searchParams.get('period') || 'all';

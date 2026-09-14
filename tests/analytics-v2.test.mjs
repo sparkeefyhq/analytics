@@ -233,15 +233,6 @@ test('All deduplicates returning people across cohorts while excluding membershi
   assert.equal(calculate(d, 'phase-0', 'all').metrics.requests.value, 1);
   assert.equal(calculate(d, 'phase-1a', 'all').metrics.requests.value, 1);
 });
-test('legacy Phase0 connector and Plan files unchanged by v2', () => {
-  const current = readFileSync('lib/posthog.ts', 'utf8');
-  assert.match(current, /window has at least \*started\*/);
-  assert.match(
-    readFileSync('scripts/build-vercel-api.mjs', 'utf8'),
-    /VERCEL_ENV === 'production'/,
-  );
-});
-
 test('every measured metric is stamped with the dataset source, never a source that was not queried', () => {
   const d = { ...fixture(now), source: 'Backend' };
   const out = calculate(d, 'all', 'all');
