@@ -17,6 +17,7 @@ export type Phase0Snapshot = {
   metrics: Record<string, Observation>;
   activeUsers?: Partial<Record<Period, Observation>>;
   topUsers?: TopUser[];
+  topUsersNameSource?: 'ok' | 'not_configured' | 'unauthorized' | 'backend_error' | 'network_error';
   /** The backend's live ANALYTICS_PHASE, read off recent events — not a UI assumption. */
   activePhase?: 'phase_0' | 'phase_1' | null;
 };

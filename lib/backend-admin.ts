@@ -21,21 +21,33 @@ function backendAdminConfig() {
   return { baseUrl: baseUrl.replace(/\/$/, ""), adminKey };
 }
 
+export type UserNamesResult = {
+  names: Map<string, string>;
+  /** Why `names` is empty, when it is — surfaced in the tracker API response
+   * (see `topUsersNameSource` in lib/posthog.ts) so a misconfigured env var
+   * or a backend auth failure shows up as a visible reason instead of a
+   * silent, unexplained fallback to raw ids. */
+  status: "ok" | "not_configured" | "unauthorized" | "backend_error" | "network_error";
+};
+
 /**
  * userId -> the profile name/nickname they set during onboarding, or null
  * when unknown/not yet onboarded. Never throws — a missing or unreachable
  * backend degrades every caller back to today's raw-id display rather than
  * breaking the analytics page.
  */
-export async function fetchUserNames(): Promise<Map<string, string>> {
+export async function fetchUserNames(): Promise<UserNamesResult> {
   const config = backendAdminConfig();
-  if (!config) return new Map();
+  if (!config) return { names: new Map(), status: "not_configured" };
   try {
     const response = await fetch(`${config.baseUrl}/api/admin/overview`, {
       headers: { "x-admin-api-key": config.adminKey },
       signal: AbortSignal.timeout(10000),
     });
-    if (!response.ok) return new Map();
+    if (response.status === 401 || response.status === 403) {
+      return { names: new Map(), status: "unauthorized" };
+    }
+    if (!response.ok) return { names: new Map(), status: "backend_error" };
     const body = (await response.json()) as {
       data?: { users?: { userId: string; name: string | null }[] };
     };
@@ -45,8 +57,8 @@ export async function fetchUserNames(): Promise<Map<string, string>> {
       const name = user.name?.trim();
       if (user.userId && name) names.set(user.userId, name);
     }
-    return names;
+    return { names, status: "ok" };
   } catch {
-    return new Map();
+    return { names: new Map(), status: "network_error" };
   }
 }

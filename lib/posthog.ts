@@ -1,5 +1,5 @@
 import { env } from "@/lib/runtime-env";
-import { fetchUserNames } from "@/lib/backend-admin";
+import { fetchUserNames, type UserNamesResult } from "@/lib/backend-admin";
 
 /**
  * Server-only PostHog query client + Phase 0 metric builders.
@@ -37,6 +37,12 @@ export type Phase0Snapshot = {
    * project-wide, straight from PostHog. Populated once TopUser is defined
    * further down this file. */
   topUsers?: TopUser[];
+  /** Why `topUsers[].name` is null for everyone, when it is — "ok" means
+   * names resolved normally (just none matched, or the users genuinely
+   * haven't set a name). Anything else means the backend name lookup itself
+   * failed: "not_configured" (env vars missing), "unauthorized" (wrong
+   * admin key), "backend_error", or "network_error". */
+  topUsersNameSource?: UserNamesResult["status"];
   /** The backend's live ANALYTICS_PHASE, read straight off recent events'
    * `phase` property — not something this dashboard decides or assumes.
    * `null` when it can't be determined (PostHog unreachable, or no events
@@ -411,21 +417,23 @@ export type TopUser = { distinctId: string; email: string | null; name: string |
  * it's a direct lookup, not a guess. Admin-only view — showing a user's own
  * chosen profile name to Sparkeefy staff here is not a privacy issue; the
  * privacy rule that matters is never sending that name *to PostHog*. */
-export async function topUsersByMessages(limit = 10): Promise<{ users: TopUser[]; status: "available" | "error" }> {
+export async function topUsersByMessages(
+  limit = 10,
+): Promise<{ users: TopUser[]; status: "available" | "error"; nameSource: UserNamesResult["status"] }> {
   try {
     const rows = await postHogQuery(
       `SELECT distinct_id, count() AS messages, any(person.properties.email) AS email
        FROM events WHERE event = 'response_started' AND ${phase0Filter()}
        GROUP BY distinct_id ORDER BY messages DESC LIMIT ${Math.max(1, Math.floor(limit))}`,
     );
-    const names = await fetchUserNames();
+    const { names, status: nameSource } = await fetchUserNames();
     const users = rows.map((row) => {
       const [distinctId, messageCount, email] = row as [string, number, string | null];
       return { distinctId, messageCount, email: email ?? null, name: names.get(distinctId) ?? null };
     });
-    return { users, status: "available" };
+    return { users, status: "available", nameSource };
   } catch {
-    return { users: [], status: "error" };
+    return { users: [], status: "error", nameSource: "not_configured" };
   }
 }
 
