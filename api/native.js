@@ -187,6 +187,36 @@ function metricPassed(metric) {
   return metric.actual >= metric.target;
 }
 
+// lib/backend-admin.ts
+function backendAdminConfig() {
+  const record = env;
+  const baseUrl = record.SPARKEEFY_BACKEND_URL;
+  const adminKey = record.SPARKEEFY_BACKEND_ADMIN_KEY;
+  if (!baseUrl || !adminKey) return null;
+  return { baseUrl: baseUrl.replace(/\/$/, ""), adminKey };
+}
+async function fetchUserNames() {
+  const config = backendAdminConfig();
+  if (!config) return /* @__PURE__ */ new Map();
+  try {
+    const response = await fetch(`${config.baseUrl}/api/admin/overview`, {
+      headers: { "x-admin-api-key": config.adminKey },
+      signal: AbortSignal.timeout(1e4)
+    });
+    if (!response.ok) return /* @__PURE__ */ new Map();
+    const body = await response.json();
+    const users = body.data?.users ?? [];
+    const names = /* @__PURE__ */ new Map();
+    for (const user of users) {
+      const name = user.name?.trim();
+      if (user.userId && name) names.set(user.userId, name);
+    }
+    return names;
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+
 // lib/posthog.ts
 var unavailable = (source = "posthog") => ({
   count: null,
@@ -437,9 +467,10 @@ async function topUsersByMessages(limit = 10) {
        FROM events WHERE event = 'response_started' AND ${phase0Filter()}
        GROUP BY distinct_id ORDER BY messages DESC LIMIT ${Math.max(1, Math.floor(limit))}`
     );
+    const names = await fetchUserNames();
     const users = rows.map((row) => {
       const [distinctId, messageCount, email] = row;
-      return { distinctId, messageCount, email: email ?? null };
+      return { distinctId, messageCount, email: email ?? null, name: names.get(distinctId) ?? null };
     });
     return { users, status: "available" };
   } catch {

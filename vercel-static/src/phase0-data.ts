@@ -7,7 +7,7 @@ export type Observation = {
   status: 'available' | 'pending' | 'unavailable' | 'error';
   source: 'posthog' | 'play-console' | 'manual' | 'reconciled';
 };
-export type TopUser = { distinctId: string; email: string | null; messageCount: number };
+export type TopUser = { distinctId: string; email: string | null; name: string | null; messageCount: number };
 
 /** Optional, additive GET /api/tracker.analytics.phase0 contract. */
 export type Phase0Snapshot = {
