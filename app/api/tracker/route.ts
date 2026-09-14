@@ -21,6 +21,7 @@ import {
   requestCount,
   responsesRetried,
   topUsersByMessages,
+  currentAnalyticsPhase,
   totalMessagesSent,
   unavailable,
   type Observation,
@@ -846,6 +847,7 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     activeMonth,
     activeAll,
     topUsers,
+    activePhase,
   ] = await Promise.all([
     milestone("first_open"),
     milestone("onboarding_completed"),
@@ -879,12 +881,14 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
     activeUsersForPeriod("month"),
     activeUsersForPeriod("all"),
     topUsersByMessages(10),
+    currentAnalyticsPhase(),
   ]);
 
   const snapshot: Phase0Snapshot = {
     version: 1,
     cohort: "phase-0",
     updatedAt: now(),
+    activePhase,
     metrics: {
       // Google Play downloads have no connector in this codebase and are
       // never substituted with first_open — see CONTROL_PHASE0_API_CONTRACT.md.

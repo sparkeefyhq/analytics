@@ -27,6 +27,7 @@ const {
   daysActiveWithinWindow,
   personReused,
   responsesRetried,
+  currentAnalyticsPhase,
 } = await import(pathToFileURL(outfile));
 
 test('unavailable() never fabricates a count', () => {
@@ -273,4 +274,37 @@ test('dayWindowReturn counts progress live instead of waiting for the whole wind
 
 test('PostHog string literals are safely quoted before forming HogQL', () => {
   assert.equal(hogqlString("person' OR 1=1"), "'person'' OR 1=1'");
+});
+
+test('currentAnalyticsPhase reads the backend phase off the most recent event, never assumes it', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  try {
+    global.fetch = async () =>
+      new Response(JSON.stringify({ results: [['phase_1']] }), { status: 200 });
+    assert.equal(await currentAnalyticsPhase(), 'phase_1');
+
+    global.fetch = async () => new Response(JSON.stringify({ results: [] }), { status: 200 });
+    assert.equal(
+      await currentAnalyticsPhase(),
+      null,
+      'no events yet must read as unknown, never a fabricated phase_0 default',
+    );
+
+    global.fetch = async () =>
+      new Response(JSON.stringify({ results: [['garbage']] }), { status: 200 });
+    assert.equal(await currentAnalyticsPhase(), null, 'an unrecognized value must not be trusted verbatim');
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });
