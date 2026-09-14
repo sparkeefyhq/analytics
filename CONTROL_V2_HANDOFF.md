@@ -9,8 +9,8 @@ Do not merge or promote during Phase 0. This is the next version of the existing
 - Same Vercel project: `sparkeefys-projects/sparkeefy-launch-control`.
 - New free Turso database: `sparkeefy-v2-preview`, resource `store_SZ3cdj1SN1vgDzMr`, connected to **Preview only**, with `V2_`-prefixed variables.
 - Preview requires `V2_TURSO_DATABASE_URL` / `V2_TURSO_AUTH_TOKEN`. Missing configuration or equality with the production URL fails closed. There is no production database fallback.
-- Build and database runtime reject `VERCEL_ENV=production`. The v2 endpoint also rejects production. Remove these locks only at an approved cutover.
-- Preview Plan uses freshly seeded test state, copying only definition columns (labels, targets, phase scope). No production evidence, notes, timestamps, completion status or participant history was copied. Legacy Plan definitions, gating, timestamps, checklists, tracker route and Phase 0 PostHog calculations were not rewritten.
+- Cutover happened 2026-09-15 (Rahul's call): the production locks in the build script, database runtime and v2 endpoint were removed, `main` serves v2 Analytics/Users in production against the production Turso Plan database, and **PostHog is no longer a source anywhere** — the Plan page's Phase 0 snapshot is rebuilt from the same backend facts in `lib/analytics-v2/phase0-backend.ts`. The synthetic dataset stays preview/local-only.
+- Preview Plan uses freshly seeded test state, copying only definition columns (labels, targets, phase scope). No production evidence, notes, timestamps, completion status or participant history was copied. Legacy Plan definitions, gating, timestamps and checklists were not rewritten.
 - Synthetic analytics is computed in memory, visibly labelled, and available only in preview or explicitly enabled local tests. It is never written to PostHog or the tracker database.
 - Analytics/Users load a small access response instead of downloading the legacy tracker analytics payload. Real user investigation still requires the existing admin session. Synthetic users are not real people and can be inspected without login in preview.
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 const dir = mkdtempSync(`${tmpdir()}/v2-api-`);
 await build({
-  entryPoints: ['lib/analytics-v2/source.ts', 'app/api/analytics/v2/route.ts'],
+  entryPoints: ['app/api/analytics/v2/route.ts'],
   outdir: dir,
   outbase: '.',
   bundle: true,
@@ -41,15 +41,16 @@ test('v2 API validates filters, protects real users, and never serves test data 
       (u) => !('email' in u) && !('phone' in u) && !('name' in u),
     ),
   );
+  // Synthetic data is never served outside preview/local test — including production.
   process.env.VERCEL_ENV = 'production';
-  assert.equal((await req('dataset=test')).status, 503);
+  assert.equal((await req('dataset=test')).status, 403);
   delete process.env.VERCEL_ENV;
   delete process.env.CONTROL_V2_LOCAL_TEST;
   assert.equal((await req('dataset=test')).status, 403);
   if (original) process.env.VERCEL_ENV = original;
 });
-test('missing cohort manifest never falls back to project-wide Phase0 values', async () => {
-  delete process.env.CONTROL_V2_COHORTS_JSON;
+test('live v2 without a backend connection is not-connected, never a fabricated zero', async () => {
+  delete process.env.V2_SPARKEEFY_BACKEND_URL;
   const response = await GET(
     new Request('https://preview.test/api/analytics/v2'),
   );
@@ -69,109 +70,6 @@ test('preview storage cannot fall back to production URL', async () => {
   delete process.env.VERCEL_ENV;
   delete process.env.TURSO_DATABASE_URL;
   delete process.env.V2_TURSO_DATABASE_URL;
-});
-
-// Use an in-repository temp bundle so @libsql/client is resolvable without production credentials.
-test('live adapter query is allowlisted, identities are pseudonymized and schema errors fail closed', async () => {
-  const out = `tests/.tmp-v2-source-${randomUUID()}.mjs`;
-  await build({
-    entryPoints: ['lib/analytics-v2/source.ts'],
-    outfile: out,
-    bundle: true,
-    platform: 'node',
-    format: 'esm',
-    packages: 'external',
-    alias: { '@': './' },
-  });
-  const { liveDataset, readMembership } = await import(`../${out}`);
-  const member = {
-    id: 'secret-email@example.test',
-    distinctIds: ['raw-id'],
-    cohort: 'phase-0',
-    from: '2026-01-01T00:00:00Z',
-    firstOpen: '2026-01-01T00:00:00Z',
-    internal: false,
-    test: false,
-    acquisition: 'organic',
-  };
-  assert.throws(() => readMembership(JSON.stringify([member, member])));
-  assert.throws(() =>
-    readMembership(JSON.stringify([{ ...member, internal: undefined }])),
-  );
-  const closed = { ...member, to: '2026-02-01T00:00:00Z' };
-  assert.equal(
-    readMembership(
-      JSON.stringify([
-        closed,
-        { ...member, cohort: 'phase-1a', from: closed.to },
-      ]),
-    ).length,
-    2,
-  );
-  process.env.CONTROL_V2_COHORTS_JSON = JSON.stringify([member]);
-  process.env.CONTROL_V2_COVERAGE_FROM = member.from;
-  process.env.POSTHOG_HOST = 'https://us.posthog.com';
-  process.env.POSTHOG_PROJECT_ID = 'test';
-  process.env.POSTHOG_API_KEY = 'test-only';
-  process.env.SPARKEEFY_SESSION_SECRET = randomUUID();
-  const fetchOriginal = globalThis.fetch;
-  let query = '';
-  globalThis.fetch = async (_url, options) => {
-    query = JSON.parse(options.body).query.query;
-    return Response.json({
-      results: [
-        [
-          'event-id',
-          'raw-id',
-          'response_started',
-          '2026-01-03T00:00:00Z',
-          'request-id',
-          null,
-          null,
-          null,
-          null,
-          false,
-          false,
-          'production',
-        ],
-        [
-          'excluded',
-          'raw-id',
-          'response_started',
-          '2026-01-03T01:00:00Z',
-          'test-id',
-          null,
-          null,
-          null,
-          null,
-          false,
-          true,
-          'production',
-        ],
-      ],
-    });
-  };
-  try {
-    const data = await liveDataset();
-    assert.equal(data.state, 'available');
-    assert.equal(data.facts.length, 1);
-    assert.match(data.members[0].id, /^participant-[a-f0-9]{16}$/);
-    assert.ok(!JSON.stringify(data).includes('secret-email'));
-    assert.ok(!/SELECT \*|person\.properties|properties\.email/i.test(query));
-    assert.match(query, /request_id/);
-    assert.match(query, /LIMIT 50001/);
-  } finally {
-    globalThis.fetch = fetchOriginal;
-    for (const key of [
-      'POSTHOG_HOST',
-      'POSTHOG_PROJECT_ID',
-      'POSTHOG_API_KEY',
-      'CONTROL_V2_COHORTS_JSON',
-      'CONTROL_V2_COVERAGE_FROM',
-      'SPARKEEFY_SESSION_SECRET',
-    ])
-      delete process.env[key];
-  }
 });
 
 async function importFreshBackendAdapter() {
