@@ -2972,12 +2972,12 @@ function fixture(now3 = Date.now()) {
       "attribution"
     ]
   };
-  const ages = [45, 34, 20, 10, 5, 2.5, 0.5];
+  const ages = [45, 34, 20, 10, 5, 2.5, 0.5, 60, 0.2, 15];
   for (let i = 0; i < ages.length; i++) {
     const id2 = `participant-${String(i + 1).padStart(3, "0")}`, first = now3 - ages[i] * DAY;
     data.members.push({
       id: id2,
-      cohort: i < 4 ? "phase-0" : i < 6 ? "phase-1a" : "phase-1b",
+      cohort: i < 4 ? "phase-0" : i < 6 ? "phase-1a" : i === 7 ? "phase-2" : "phase-1b",
       from: iso(first),
       firstOpen: iso(first),
       internal: false,
@@ -2996,9 +2996,9 @@ function fixture(now3 = Date.now()) {
         });
     };
     add(0, "first_open");
-    add(0.01, "onboarding");
-    add(0.03, "person", { people: [5, 3, 2, 1, 5, 2, 1][i] });
-    add(0.04, "memory", { memories: [20, 5, 3, 1, 5, 1, 0][i] });
+    if (i !== 7) add(0.01, "onboarding");
+    add(0.03, "person", { people: [5, 3, 2, 1, 5, 2, 1, 0, 8, 3][i] });
+    add(0.04, "memory", { memories: [20, 5, 3, 1, 5, 1, 0, 0, 15, 4][i] });
     if (i % 2 === 0) add(0.05, "activated");
     for (const day of [0, 1, 3, 7, 15, 30]) {
       if (day && i % 3 === 1) continue;
@@ -3038,6 +3038,10 @@ function fixture(now3 = Date.now()) {
         attribution: i === 2 ? "founder" : "organic"
       });
       if (day > 0) add(day + 0.13, "memory_reused");
+      if (i === 8 && day === 0) {
+        add(day + 0.14, "retry", { request: `retry-${i}-${day}` });
+        add(day + 0.15, "fallback", { request: `fallback-${i}-${day}` });
+      }
     }
     add(ages[i] - 0.1, "app");
     add(ages[i] - 0.09, "wingman", { session: `recent-${i}` });

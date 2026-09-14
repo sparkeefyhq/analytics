@@ -35,7 +35,7 @@ test('v2 API validates filters, protects real users, and never serves test data 
   assert.equal(aggregate.cohort, 'phase-0');
   assert.deepEqual(aggregate.users, []);
   const users = await (await req('dataset=test&view=users')).json();
-  assert.equal(users.users.length, 7);
+  assert.equal(users.users.length, 10);
   assert.ok(
     users.users.every(
       (u) => !('email' in u) && !('phone' in u) && !('name' in u),
