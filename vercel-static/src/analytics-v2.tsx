@@ -25,7 +25,7 @@ const labels: Record<string, string> = {
 const states: Record<string, string> = {
   'no-data': 'No data yet',
   'not-connected': 'Not connected',
-  'not-eligible': 'Not yet eligible',
+  'not-eligible': 'Window still open',
   'query-error': 'Query error',
 };
 function Value({ metric }: { metric?: Metric }) {
@@ -343,7 +343,6 @@ export function AnalyticsV2({
                 <Tiles
                   metrics={m}
                   items={[
-                    ['downloads', 'Downloads · store-level'],
                     ['first_opens', 'First app opens'],
                     ['onboarded', 'Onboarding completed'],
                     ...people,
@@ -410,11 +409,6 @@ export function AnalyticsV2({
                     ['memory_average', 'Average observed count / user'],
                     ['memory_median', 'Median observed count / user'],
                   ]}
-                />
-                <Tile
-                  name="Memory context reused later"
-                  metric={m.memory_reused}
-                  prominent
                 />
               </Section>
               <Section title="People" note="Created ≠ used with Wingman">
@@ -545,7 +539,6 @@ function UserDetail({
         {[
           ['sessions', 'Wingman sessions'],
           ['messages', 'Wingman messages'],
-          ['time', 'Foreground time'],
           ['days', 'Active days'],
         ].map(([key, name]) => (
           <div className="v2-window-row" key={key}>

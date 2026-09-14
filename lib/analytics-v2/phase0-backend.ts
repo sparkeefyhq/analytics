@@ -163,6 +163,64 @@ export function activeUsers(
   );
 }
 
+/** Users with a second distinct conversation that was not reminder-prompted; denominator = users with any conversation. */
+export function organicSecond(members: Member[], facts: Facts): Observation {
+  let eligible = 0,
+    organic = 0;
+  for (const m of members) {
+    const situations = (facts.get(m.id) ?? [])
+      .filter((f) => f.kind === 'situation' && f.situation)
+      .sort((a, b) => a.at.localeCompare(b.at));
+    const seen = new Set<string>();
+    let second: Fact | undefined;
+    for (const f of situations) {
+      if (seen.has(f.situation!)) continue;
+      seen.add(f.situation!);
+      if (seen.size === 2) {
+        second = f;
+        break;
+      }
+    }
+    if (seen.size === 0) continue;
+    eligible++;
+    if (second && (second.attribution ?? 'organic') === 'organic') organic++;
+  }
+  return available(organic, { denominator: eligible });
+}
+
+/** Users who talked to Wingman about the same saved person in two different conversations; denominator = users with a saved person. */
+export function personReused(members: Member[], facts: Facts): Observation {
+  let withPerson = 0,
+    reused = 0;
+  for (const m of members) {
+    const list = facts.get(m.id) ?? [];
+    if (!list.some((f) => f.kind === 'person')) continue;
+    withPerson++;
+    const sessionsByPerson = new Map<string, Set<string>>();
+    for (const f of list)
+      if (f.kind === 'message' && f.person && f.session) {
+        const set = sessionsByPerson.get(f.person) ?? new Set<string>();
+        set.add(f.session);
+        sessionsByPerson.set(f.person, set);
+      }
+    if ([...sessionsByPerson.values()].some((set) => set.size >= 2)) reused++;
+  }
+  return available(reused, { denominator: withPerson });
+}
+
+/** Users with a reminder-attributed conversation; denominator = users with any conversation. */
+export function reminderReturn(members: Member[], facts: Facts): Observation {
+  let eligible = 0,
+    returned = 0;
+  for (const m of members) {
+    const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === 'situation');
+    if (!situations.length) continue;
+    eligible++;
+    if (situations.some((f) => f.attribution === 'reminder')) returned++;
+  }
+  return available(returned, { denominator: eligible });
+}
+
 export function topUsers(
   members: Member[],
   facts: Facts,
@@ -208,7 +266,6 @@ const METRIC_KEYS = [
   'request_days_2',
   'request_days_3',
   'person_reused',
-  'memory_reused',
   'reminder_return',
   'responses_complete',
   'responses_failed',
@@ -257,7 +314,6 @@ export function phase0SnapshotFromDataset(
     cohort: 'phase-0',
     updatedAt: data.asOf,
     metrics: {
-      downloads: unavailable('play-console'),
       first_open: gated('activity', () =>
         usersWith(members, facts, (f) => f.kind === 'first_open'),
       ),
@@ -275,22 +331,20 @@ export function phase0SnapshotFromDataset(
       person_3: people(3),
       memory_1: memory(1),
       memory_2: memory(2),
-      // The backend feed carries no calendar facts yet; do not substitute.
-      calendar_created: unavailable('backend'),
+      calendar_created: gated('activity', () =>
+        usersWith(members, facts, (f) => f.kind === 'calendar'),
+      ),
       return_open_day2: window('wingman', 2),
       return_open_day3: window('wingman', 3),
       return_open_day4: window('wingman', 4),
       return_request_day2: window('message', 2),
       return_request_day3: window('message', 3),
       return_request_day4: window('message', 4),
-      // No verified situation / context-reuse / reminder-return signal exists
-      // in the backend feed; these stay unavailable rather than inferred.
-      organic_second: unavailable('backend'),
+      organic_second: gated('situations', () => organicSecond(members, facts)),
       request_days_2: gated('wingman', () => daysActive(members, facts, 2)),
       request_days_3: gated('wingman', () => daysActive(members, facts, 3)),
-      person_reused: unavailable('backend'),
-      memory_reused: unavailable('backend'),
-      reminder_return: unavailable('backend'),
+      person_reused: gated('people-use', () => personReused(members, facts)),
+      reminder_return: gated('attribution', () => reminderReturn(members, facts)),
       responses_complete: gated('responses', () => available(outcomes.complete)),
       responses_failed: gated('responses', () => available(outcomes.failed)),
       responses_retried: gated('retries', () => available(outcomes.retries)),

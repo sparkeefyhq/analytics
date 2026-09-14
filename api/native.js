@@ -485,6 +485,53 @@ function activeUsers(members, facts, since) {
     (f) => ACTIVE_KINDS.has(f.kind) && Date.parse(f.at) >= since
   );
 }
+function organicSecond(members, facts) {
+  let eligible = 0, organic = 0;
+  for (const m of members) {
+    const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation" && f.situation).sort((a, b) => a.at.localeCompare(b.at));
+    const seen = /* @__PURE__ */ new Set();
+    let second;
+    for (const f of situations) {
+      if (seen.has(f.situation)) continue;
+      seen.add(f.situation);
+      if (seen.size === 2) {
+        second = f;
+        break;
+      }
+    }
+    if (seen.size === 0) continue;
+    eligible++;
+    if (second && (second.attribution ?? "organic") === "organic") organic++;
+  }
+  return available(organic, { denominator: eligible });
+}
+function personReused(members, facts) {
+  let withPerson = 0, reused = 0;
+  for (const m of members) {
+    const list = facts.get(m.id) ?? [];
+    if (!list.some((f) => f.kind === "person")) continue;
+    withPerson++;
+    const sessionsByPerson = /* @__PURE__ */ new Map();
+    for (const f of list)
+      if (f.kind === "message" && f.person && f.session) {
+        const set = sessionsByPerson.get(f.person) ?? /* @__PURE__ */ new Set();
+        set.add(f.session);
+        sessionsByPerson.set(f.person, set);
+      }
+    if ([...sessionsByPerson.values()].some((set) => set.size >= 2)) reused++;
+  }
+  return available(reused, { denominator: withPerson });
+}
+function reminderReturn(members, facts) {
+  let eligible = 0, returned = 0;
+  for (const m of members) {
+    const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation");
+    if (!situations.length) continue;
+    eligible++;
+    if (situations.some((f) => f.attribution === "reminder")) returned++;
+  }
+  return available(returned, { denominator: eligible });
+}
 function topUsers(members, facts, names2, limit = 10) {
   return members.map((m) => ({
     distinctId: m.id,
@@ -518,7 +565,6 @@ var METRIC_KEYS = [
   "request_days_2",
   "request_days_3",
   "person_reused",
-  "memory_reused",
   "reminder_return",
   "responses_complete",
   "responses_failed",
@@ -555,7 +601,6 @@ function phase0SnapshotFromDataset(data, names2, now3 = Date.now()) {
     cohort: "phase-0",
     updatedAt: data.asOf,
     metrics: {
-      downloads: unavailable("play-console"),
       first_open: gated(
         "activity",
         () => usersWith(members, facts, (f) => f.kind === "first_open")
@@ -576,22 +621,21 @@ function phase0SnapshotFromDataset(data, names2, now3 = Date.now()) {
       person_3: people(3),
       memory_1: memory(1),
       memory_2: memory(2),
-      // The backend feed carries no calendar facts yet; do not substitute.
-      calendar_created: unavailable("backend"),
+      calendar_created: gated(
+        "activity",
+        () => usersWith(members, facts, (f) => f.kind === "calendar")
+      ),
       return_open_day2: window("wingman", 2),
       return_open_day3: window("wingman", 3),
       return_open_day4: window("wingman", 4),
       return_request_day2: window("message", 2),
       return_request_day3: window("message", 3),
       return_request_day4: window("message", 4),
-      // No verified situation / context-reuse / reminder-return signal exists
-      // in the backend feed; these stay unavailable rather than inferred.
-      organic_second: unavailable("backend"),
+      organic_second: gated("situations", () => organicSecond(members, facts)),
       request_days_2: gated("wingman", () => daysActive(members, facts, 2)),
       request_days_3: gated("wingman", () => daysActive(members, facts, 3)),
-      person_reused: unavailable("backend"),
-      memory_reused: unavailable("backend"),
-      reminder_return: unavailable("backend"),
+      person_reused: gated("people-use", () => personReused(members, facts)),
+      reminder_return: gated("attribution", () => reminderReturn(members, facts)),
       responses_complete: gated("responses", () => available(outcomes.complete)),
       responses_failed: gated("responses", () => available(outcomes.failed)),
       responses_retried: gated("retries", () => available(outcomes.retries)),
