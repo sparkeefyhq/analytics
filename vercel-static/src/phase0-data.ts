@@ -20,7 +20,6 @@ export type Phase0Snapshot = {
 };
 export const groups = [
   { title: 'Getting started', rows: [
-    ['downloads', 'Downloads', 'Google Play installs · store aggregate'],
     ['first_open', 'First app opens', 'Opened the installed app'],
     ['onboarding', 'Onboarding completed', 'Finished account setup'],
     ['wingman_open_day1', 'Opened Wingman', 'Day 1 · first 24 hours'],
@@ -37,12 +36,11 @@ export const groups = [
     ['calendar_created', 'Added a calendar event', 'Successfully saved'],
   ] },
   { title: 'Repeat value', rows: [
-    ['organic_second', 'Second real situation', 'Organic · within 72h of first complete answer'],
+    ['organic_second', 'Second real situation', 'Organic · a second conversation, not prompted by a reminder'],
     ['request_days_2', 'Used Wingman on 2+ days', 'Days 1–3 · sent a message'],
     ['request_days_3', 'Used Wingman on all 3 days', 'Days 1–3 · sent a message'],
-    ['person_reused', 'Reused saved person context', 'Used in a later Wingman session'],
-    ['memory_reused', 'Reused saved memory', 'Included in a later complete response'],
-    ['reminder_return', 'Returned from a reminder', 'Reminder-assisted · sent a message'],
+    ['person_reused', 'Reused saved person context', 'Same person in a later Wingman conversation'],
+    ['reminder_return', 'Returned from a reminder', 'Reminder-assisted · started a conversation'],
     ['opportunity_repeat', 'Returned when a new situation arose', 'Interview-confirmed opportunity'],
   ] },
   { title: 'Response health', rows: [

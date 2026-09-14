@@ -51,8 +51,27 @@ test('every Phase 0 observation is stamped backend and internal accounts never c
   assert.equal(s.metrics.person_3.count, 0);
   assert.equal(s.metrics.total_messages_sent.count, 1);
   assert.equal(s.metrics.responses_complete.count, 1);
-  assert.equal(s.metrics.calendar_created.status, 'unavailable');
+  // Calendar events come from the events table; none in this fixture is a real zero.
+  assert.deepEqual([s.metrics.calendar_created.count, s.metrics.calendar_created.status], [0, 'available']);
+  // Conversations are gated on the situations capability, absent from this fixture's capability list.
   assert.equal(s.metrics.organic_second.status, 'unavailable');
+  const withSituations = phase0SnapshotFromDataset(
+    dataset(
+      [member('u1', t0)],
+      [
+        fact('u1', t0, 'first_open'), fact('u1', t0, 'person', { people: 1 }),
+        fact('u1', t0 + 1, 'situation', { situation: 's1', attribution: 'organic' }),
+        fact('u1', t0 + 2, 'situation', { situation: 's2', attribution: 'organic' }),
+        fact('u1', t0 + 1, 'message', { request: 'a', session: 's1', person: 'p1' }),
+        fact('u1', t0 + 2, 'message', { request: 'b', session: 's2', person: 'p1' }),
+      ],
+      ['activity', 'people', 'wingman', 'situations', 'people-use', 'attribution'],
+    ),
+    new Map(), now,
+  );
+  assert.deepEqual([withSituations.metrics.organic_second.count, withSituations.metrics.organic_second.denominator], [1, 1]);
+  assert.deepEqual([withSituations.metrics.person_reused.count, withSituations.metrics.person_reused.denominator], [1, 1]);
+  assert.deepEqual([withSituations.metrics.reminder_return.count, withSituations.metrics.reminder_return.denominator], [0, 1]);
   assert.deepEqual(s.topUsers, [{ distinctId: 'u1', email: null, name: 'Real Name', messageCount: 1 }]);
   assert.ok(!JSON.stringify(s).includes('team'));
 });
