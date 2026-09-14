@@ -200,17 +200,24 @@ var unavailable = (source = "backend") => ({
 import { createHmac } from "node:crypto";
 var KNOWN = [
   "activity",
+  "app-return",
   "onboarding",
   "people",
   "memory",
   "wingman",
   "responses",
+  "sessions",
+  "situations",
+  "activation",
+  "people-use",
+  "attribution",
   "retries",
   "fallbacks",
   "latency",
   "tokens",
   "cost"
 ];
+var ATTRIBUTIONS = ["organic", "reminder", "founder", "unknown"];
 function backendConfig() {
   const baseUrl = process.env.V2_SPARKEEFY_BACKEND_URL;
   const adminKey = process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY;
@@ -334,6 +341,13 @@ async function load() {
         fact.request = createHmac("sha256", owner).update(row.request).digest("hex");
       if (row.session)
         fact.session = createHmac("sha256", owner).update(row.session).digest("hex");
+      if (row.person)
+        fact.person = createHmac("sha256", owner).update(row.person).digest("hex");
+      if (row.situation)
+        fact.situation = createHmac("sha256", owner).update(row.situation).digest("hex");
+      if (typeof row.attribution === "string" && ATTRIBUTIONS.includes(row.attribution))
+        fact.attribution = row.attribution;
+      if (typeof row.assisted === "boolean") fact.assisted = row.assisted;
       if (typeof row.people === "number" && Number.isFinite(row.people))
         fact.people = row.people;
       if (typeof row.memories === "number" && Number.isFinite(row.memories))
@@ -2227,7 +2241,7 @@ function calculate(data, cohort, period) {
   const retained = (type, day, population = observed) => {
     const cap = type === "app" ? "app-return" : type === "wingman" ? "wingman" : "situations";
     if (data.state !== "available" || !has(cap)) return unavailable2(cap);
-    let eligible = 0, returned = 0, pending2 = 0;
+    let eligible = 0, returned = 0, pending2 = 0, open = 0;
     for (const m of population) {
       if (!m.firstOpen) continue;
       const start = Date.parse(m.firstOpen) + day * DAY2, end = start + DAY2;
@@ -2235,13 +2249,14 @@ function calculate(data, cohort, period) {
         (interval) => start >= Date.parse(interval.from) && (!interval.to || end <= Date.parse(interval.to))
       ))
         continue;
-      if (end > now3) {
+      if (start > now3) {
         pending2++;
         continue;
       }
-      if (end < since) continue;
+      if (end <= now3 && end < since) continue;
       if (Date.parse(m.firstOpen) < Date.parse(data.coverageFrom)) continue;
       eligible++;
+      if (end > now3) open++;
       if ((facts.get(m.id) ?? []).some(
         (f) => Date.parse(f.at) >= start && Date.parse(f.at) < end && (type === "app" ? activeKinds.has(f.kind) : type === "wingman" ? f.kind === "message" : f.kind === "situation")
       ))
@@ -2250,7 +2265,7 @@ function calculate(data, cohort, period) {
     return ratio(
       returned,
       eligible,
-      `D${day}: [${day * 24}, ${(day + 1) * 24}) hours after first open. Only fully closed windows; time filter selects window-end dates. ${pending2} windows pending.`,
+      `D${day}: [${day * 24}, ${(day + 1) * 24}) hours after each user's first open. Live progress: ${open} of ${eligible} windows are still open and may still convert; ${pending2} users have not reached this window yet.`,
       pending2
     );
   };

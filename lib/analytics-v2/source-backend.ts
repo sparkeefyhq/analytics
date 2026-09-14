@@ -25,17 +25,24 @@ import type { Capability, Dataset, Fact, Member } from './model';
 
 const KNOWN: Capability[] = [
   'activity',
+  'app-return',
   'onboarding',
   'people',
   'memory',
   'wingman',
   'responses',
+  'sessions',
+  'situations',
+  'activation',
+  'people-use',
+  'attribution',
   'retries',
   'fallbacks',
   'latency',
   'tokens',
   'cost',
 ];
+const ATTRIBUTIONS = ['organic', 'reminder', 'founder', 'unknown'] as const;
 
 interface BackendFact {
   user: string;
@@ -43,12 +50,16 @@ interface BackendFact {
   kind: string;
   request?: string;
   session?: string;
+  person?: string;
+  situation?: string;
   people?: number;
   memories?: number;
   latency?: number;
   input?: number;
   output?: number;
   cost?: number;
+  attribution?: string;
+  assisted?: boolean;
 }
 
 interface BackendMember {
@@ -213,6 +224,13 @@ async function load(): Promise<Dataset> {
         fact.request = createHmac('sha256', owner).update(row.request).digest('hex');
       if (row.session)
         fact.session = createHmac('sha256', owner).update(row.session).digest('hex');
+      if (row.person)
+        fact.person = createHmac('sha256', owner).update(row.person).digest('hex');
+      if (row.situation)
+        fact.situation = createHmac('sha256', owner).update(row.situation).digest('hex');
+      if (typeof row.attribution === 'string' && (ATTRIBUTIONS as readonly string[]).includes(row.attribution))
+        fact.attribution = row.attribution as Fact['attribution'];
+      if (typeof row.assisted === 'boolean') fact.assisted = row.assisted;
       if (typeof row.people === 'number' && Number.isFinite(row.people))
         fact.people = row.people;
       if (typeof row.memories === 'number' && Number.isFinite(row.memories))

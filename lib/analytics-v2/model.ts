@@ -301,7 +301,8 @@ export function calculate(
     if (data.state !== 'available' || !has(cap)) return unavailable(cap);
     let eligible = 0,
       returned = 0,
-      pending = 0;
+      pending = 0,
+      open = 0;
     for (const m of population) {
       if (!m.firstOpen) continue;
       const start = Date.parse(m.firstOpen) + day * DAY,
@@ -315,13 +316,18 @@ export function calculate(
         )
       )
         continue;
-      if (end > now) {
+      // Live progress: a window counts as soon as it has started. Returns
+      // observed so far inside it count immediately; a window that has not
+      // started yet is pending. Closed windows are filtered by the period on
+      // their end date; open windows are always current.
+      if (start > now) {
         pending++;
         continue;
       }
-      if (end < since) continue; // period filters completed-window ends; anchor is never reset.
+      if (end <= now && end < since) continue; // anchor is never reset.
       if (Date.parse(m.firstOpen) < Date.parse(data.coverageFrom)) continue;
       eligible++;
+      if (end > now) open++;
       if (
         (facts.get(m.id) ?? []).some(
           (f) =>
@@ -339,7 +345,7 @@ export function calculate(
     return ratio(
       returned,
       eligible,
-      `D${day}: [${day * 24}, ${(day + 1) * 24}) hours after first open. Only fully closed windows; time filter selects window-end dates. ${pending} windows pending.`,
+      `D${day}: [${day * 24}, ${(day + 1) * 24}) hours after each user's first open. Live progress: ${open} of ${eligible} windows are still open and may still convert; ${pending} users have not reached this window yet.`,
       pending,
     );
   };
