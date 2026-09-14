@@ -2741,39 +2741,10 @@ function calculate(data, cohort, period) {
   };
 }
 
-// lib/analytics-v2/source.ts
+// lib/analytics-v2/source-backend.ts
 import { createHmac } from "node:crypto";
-var EVENTS = {
-  first_open: "first_open",
-  onboarding_completed: "onboarding",
-  person_context_created: "person",
-  memory_added: "memory",
-  calendar_event_created: "calendar",
-  wingman_opened: "wingman",
-  response_started: "message",
-  response_completed: "complete",
-  response_failed: "failed"
-};
-var NUMBERS = [
-  "people",
-  "memories",
-  "seconds",
-  "latency",
-  "input",
-  "output",
-  "cost"
-];
-var KNOWN = [
-  "activity",
-  "onboarding",
-  "people",
-  "memory",
-  "wingman",
-  "responses",
-  "retries"
-];
-var opaque = (value) => `participant-${createHmac("sha256", process.env.SPARKEEFY_SESSION_SECRET).update(value).digest("hex").slice(0, 16)}`;
-var numeric = (n) => n !== null && n !== "" && Number.isFinite(Number(n)) && Number(n) >= 0 ? Number(n) : void 0;
+
+// lib/analytics-v2/source.ts
 function readMembership(raw) {
   const rows = JSON.parse(raw);
   if (!Array.isArray(rows)) throw Error("Invalid cohort manifest");
@@ -2816,9 +2787,42 @@ function readMembership(raw) {
     return member;
   });
 }
+
+// lib/analytics-v2/source-backend.ts
+var KNOWN = [
+  "activity",
+  "onboarding",
+  "people",
+  "memory",
+  "wingman",
+  "responses",
+  "retries",
+  "fallbacks",
+  "latency",
+  "tokens"
+];
+function backendConfig() {
+  const baseUrl = process.env.V2_SPARKEEFY_BACKEND_URL;
+  const adminKey = process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY;
+  if (!baseUrl || !adminKey) return null;
+  return { baseUrl: baseUrl.replace(/\/$/, ""), adminKey };
+}
+async function fetchBackendAnalytics() {
+  const config = backendConfig();
+  if (!config) throw Error("Backend admin URL/key not configured");
+  const response = await fetch(`${config.baseUrl}/api/admin/analytics/v2`, {
+    headers: { "x-admin-api-key": config.adminKey },
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!response.ok) throw Error(`Backend responded ${response.status}`);
+  const body = await response.json();
+  if (!body.data || !Array.isArray(body.data.facts) || !Array.isArray(body.data.members))
+    throw Error("Unexpected backend response shape");
+  return body.data;
+}
 var cached;
 var pending;
-async function liveDataset() {
+async function liveDatasetFromBackend() {
   if (cached && Date.now() - cached.at < 3e4) return cached.data;
   if (pending) return pending;
   pending = load().finally(() => {
@@ -2839,12 +2843,14 @@ async function load() {
     facts: [],
     capabilities: KNOWN
   };
-  if (!process.env.POSTHOG_API_KEY || !process.env.CONTROL_V2_COHORTS_JSON || !process.env.CONTROL_V2_COVERAGE_FROM || !process.env.SPARKEEFY_SESSION_SECRET)
+  if (!process.env.V2_SPARKEEFY_BACKEND_URL || !process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY || !process.env.CONTROL_V2_COHORTS_JSON || !process.env.CONTROL_V2_COVERAGE_FROM || !process.env.SPARKEEFY_SESSION_SECRET)
     return base;
   try {
     const mapping = readMembership(process.env.CONTROL_V2_COHORTS_JSON);
     if (!Number.isFinite(Date.parse(base.coverageFrom)))
       throw Error("Invalid coverage");
+    const secret = process.env.SPARKEEFY_SESSION_SECRET;
+    const opaque = (value) => `participant-${createHmac("sha256", secret).update(value).digest("hex").slice(0, 16)}`;
     base.members = mapping.map(({ distinctIds: _, ...m }) => ({
       ...m,
       id: opaque(m.id)
@@ -2856,84 +2862,59 @@ async function load() {
         state: "available",
         detail: "Reconciled membership contains no eligible users."
       };
-    const ids = allowed2.flatMap((m) => m.distinctIds);
-    const query = `SELECT uuid, distinct_id, event, timestamp, properties.request_id, properties.contact_id, properties.person_count_after, properties.memory_count_after, properties.recovery_triggered, properties.is_internal, properties.is_test, properties.environment FROM events WHERE distinct_id IN (${ids.map(hogqlString).join(",")}) AND timestamp >= toDateTime(${hogqlString(base.coverageFrom)}) AND timestamp <= toDateTime(${hogqlString(base.asOf)}) AND event IN (${Object.keys(EVENTS).map(hogqlString).join(",")}) ORDER BY timestamp, uuid LIMIT 50001`;
-    const rows = await postHogQuery(query);
-    if (rows.length > 5e4)
-      throw Error(
-        "Query coverage limit exceeded; add server-side pagination before increasing traffic"
-      );
+    const remote = await fetchBackendAnalytics();
     const facts = [];
-    for (const row of rows) {
-      if (row.length !== 12) throw Error("Unexpected event schema");
-      const [
-        id2,
-        user,
-        event,
-        at,
-        request,
-        person,
-        people,
-        memories,
-        recovery,
-        internal,
-        test,
-        environment
-      ] = row;
-      if ([true, 1, "true"].includes(internal) || [true, 1, "true"].includes(test) || typeof environment === "string" && environment && !["production", "prod"].includes(environment))
+    for (const row of remote.facts) {
+      if (typeof row.user !== "string" || typeof row.at !== "string" || typeof row.kind !== "string" || !Number.isFinite(Date.parse(row.at)))
         continue;
-      if (typeof user !== "string" || typeof event !== "string" || typeof at !== "string" || typeof id2 !== "string" || !Number.isFinite(Date.parse(at)))
-        throw Error("Invalid event row");
       const member = allowed2.find(
-        (m) => m.distinctIds.includes(user) && Date.parse(at) >= Date.parse(m.from) && (!m.to || Date.parse(at) < Date.parse(m.to))
+        (m) => m.distinctIds.includes(row.user) && Date.parse(row.at) >= Date.parse(m.from) && (!m.to || Date.parse(row.at) < Date.parse(m.to))
       );
       if (!member) continue;
-      const owner = opaque(member.id), kind = EVENTS[event];
-      if (!kind) throw Error("Invalid event row");
+      const owner = opaque(member.id);
       const fact = {
-        id: String(id2),
+        id: `${owner}-${row.kind}-${row.at}-${facts.length}`,
         user: owner,
-        kind,
-        at: new Date(String(at)).toISOString()
+        kind: row.kind,
+        at: new Date(row.at).toISOString()
       };
-      if (typeof request === "string" && request)
-        fact.request = createHmac("sha256", owner).update(request).digest("hex");
-      if (typeof person === "string" && person)
-        fact.person = createHmac("sha256", owner).update(person).digest("hex");
-      fact.people = numeric(people);
-      fact.memories = numeric(memories);
-      for (const key of NUMBERS)
-        if (fact[key] !== void 0 && !Number.isFinite(fact[key]))
-          throw Error("Invalid numeric property");
+      if (row.request)
+        fact.request = createHmac("sha256", owner).update(row.request).digest("hex");
+      if (row.session)
+        fact.session = createHmac("sha256", owner).update(row.session).digest("hex");
+      if (typeof row.people === "number" && Number.isFinite(row.people))
+        fact.people = row.people;
+      if (typeof row.memories === "number" && Number.isFinite(row.memories))
+        fact.memories = row.memories;
+      if (typeof row.latency === "number" && Number.isFinite(row.latency))
+        fact.latency = row.latency;
+      if (typeof row.input === "number" && Number.isFinite(row.input))
+        fact.input = row.input;
+      if (typeof row.output === "number" && Number.isFinite(row.output))
+        fact.output = row.output;
       facts.push(fact);
-      if ((kind === "complete" || kind === "failed") && (recovery === true || recovery === 1))
-        facts.push({
-          ...fact,
-          id: `retry-${fact.request ?? fact.id}`,
-          kind: "retry"
-        });
     }
+    let capabilities = KNOWN.filter((c) => remote.capabilities.includes(c));
     if (facts.some(
       (f) => ["message", "complete", "failed"].includes(f.kind) && !f.request
     ))
-      base.capabilities = KNOWN.filter(
-        (c) => c !== "wingman" && c !== "responses"
-      );
+      capabilities = capabilities.filter((c) => c !== "wingman" && c !== "responses");
     if (facts.some((f) => f.kind === "person" && f.people === void 0))
-      base.capabilities = base.capabilities.filter((c) => c !== "people");
+      capabilities = capabilities.filter((c) => c !== "people");
     if (facts.some((f) => f.kind === "memory" && f.memories === void 0))
-      base.capabilities = base.capabilities.filter((c) => c !== "memory");
+      capabilities = capabilities.filter((c) => c !== "memory");
     return {
       ...base,
       state: "available",
-      detail: "PostHog \xB7 reconciled identity allowlist \xB7 30-second cache",
+      detail: "Backend Postgres (sparkeefy-backend) \xB7 reconciled identity allowlist \xB7 30-second cache",
+      capabilities,
       facts
     };
   } catch {
     return {
       ...base,
       state: "query-error",
-      detail: "V2 source query or coverage validation failed. No partial totals are shown.",
+      detail: "V2 backend source query or coverage validation failed. No partial totals are shown.",
       facts: []
     };
   }
@@ -3091,7 +3072,7 @@ async function GET4(request) {
   if (users && !synthetic && !(await trackerAccess(request)).canEdit)
     return Response.json({ error: "Admin sign-in required" }, { status: 403 });
   const result2 = calculate(
-    synthetic ? fixture() : await liveDataset(),
+    synthetic ? fixture() : await liveDatasetFromBackend(),
     cohort,
     period
   );

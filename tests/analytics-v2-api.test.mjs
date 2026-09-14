@@ -173,3 +173,85 @@ test('live adapter query is allowlisted, identities are pseudonymized and schema
       delete process.env[key];
   }
 });
+
+async function importFreshBackendAdapter() {
+  const out = `tests/.tmp-v2-source-backend-${randomUUID()}.mjs`;
+  await build({
+    entryPoints: ['lib/analytics-v2/source-backend.ts'],
+    outfile: out,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    packages: 'external',
+    alias: { '@': './' },
+  });
+  return import(`../${out}`);
+}
+
+test('backend adapter is not-connected without V2_SPARKEEFY_BACKEND_URL/KEY, never falls back to another source', async () => {
+  const { liveDatasetFromBackend } = await importFreshBackendAdapter();
+  const disconnected = await liveDatasetFromBackend();
+  assert.equal(disconnected.state, 'not-connected');
+  assert.equal(disconnected.facts.length, 0);
+});
+
+test('backend adapter pseudonymizes identities and never leaks the raw backend URL/key', async () => {
+  const { liveDatasetFromBackend } = await importFreshBackendAdapter();
+  const member = {
+    id: 'real-backend-user-id',
+    distinctIds: ['real-backend-user-id'],
+    cohort: 'phase-0',
+    from: '2026-01-01T00:00:00Z',
+    firstOpen: '2026-01-01T00:00:00Z',
+    internal: false,
+    test: false,
+    acquisition: 'organic',
+  };
+  process.env.V2_SPARKEEFY_BACKEND_URL = 'https://backend.test';
+  process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY = 'super-secret-admin-key';
+  process.env.CONTROL_V2_COHORTS_JSON = JSON.stringify([member]);
+  process.env.CONTROL_V2_COVERAGE_FROM = member.from;
+  process.env.SPARKEEFY_SESSION_SECRET = randomUUID();
+  const fetchOriginal = globalThis.fetch;
+  let sawHeaderKey = null;
+  globalThis.fetch = async (url, options) => {
+    sawHeaderKey = options.headers['x-admin-api-key'];
+    assert.equal(url, 'https://backend.test/api/admin/analytics/v2');
+    return Response.json({
+      data: {
+        generatedAt: '2026-01-03T00:00:00Z',
+        capabilities: ['activity', 'onboarding', 'people', 'memory', 'wingman', 'responses'],
+        members: [{ id: 'real-backend-user-id', firstOpen: member.from }],
+        facts: [
+          { user: 'real-backend-user-id', at: '2026-01-03T00:00:00Z', kind: 'message', request: 'req-1', session: 'sess-1' },
+          { user: 'real-backend-user-id', at: '2026-01-03T00:00:01Z', kind: 'complete', request: 'req-1', latency: 500, input: 10, output: 5 },
+          { user: 'excluded-unknown-user', at: '2026-01-03T00:00:00Z', kind: 'message', request: 'req-excluded' },
+        ],
+      },
+    });
+  };
+  try {
+    const data = await liveDatasetFromBackend();
+    assert.equal(data.state, 'available');
+    assert.equal(sawHeaderKey, 'super-secret-admin-key');
+    // Only the reconciled member's facts survive; the unmapped user is dropped, not auto-enrolled.
+    assert.equal(data.facts.length, 2);
+    assert.match(data.members[0].id, /^participant-[a-f0-9]{16}$/);
+    assert.ok(data.facts.every((f) => /^participant-[a-f0-9]{16}$/.test(f.user)));
+    // Raw request/session ids must never appear verbatim - only their per-user HMAC digests.
+    assert.ok(!JSON.stringify(data).includes('req-1'));
+    assert.ok(!JSON.stringify(data).includes('sess-1'));
+    assert.ok(!JSON.stringify(data).includes('super-secret-admin-key'));
+    assert.ok(!JSON.stringify(data).includes('excluded-unknown-user'));
+  } finally {
+    globalThis.fetch = fetchOriginal;
+    for (const key of [
+      'V2_SPARKEEFY_BACKEND_URL',
+      'V2_SPARKEEFY_BACKEND_ADMIN_KEY',
+      'CONTROL_V2_COHORTS_JSON',
+      'CONTROL_V2_COVERAGE_FROM',
+      'SPARKEEFY_SESSION_SECRET',
+    ])
+      delete process.env[key];
+  }
+});
