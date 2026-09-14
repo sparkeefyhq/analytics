@@ -9,24 +9,8 @@ import type {
   TrackerPhase,
 } from "@/lib/tracker-types";
 import { metricPassed } from "@/lib/tracker-types";
-import {
-  activeUsersForPeriod,
-  dayWindowReturn,
-  daysActiveWithinWindow,
-  milestone,
-  ordinalMilestone,
-  organicSecondSituation,
-  personReused,
-  reminderReturn,
-  requestCount,
-  responsesRetried,
-  topUsersByMessages,
-  currentAnalyticsPhase,
-  totalMessagesSent,
-  unavailable,
-  type Observation,
-  type Phase0Snapshot,
-} from "@/lib/posthog";
+import { unavailable, type Observation, type Phase0Snapshot } from "@/lib/posthog";
+import { phase0SnapshotFromBackend } from "@/lib/analytics-v2/phase0-backend";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -814,128 +798,13 @@ async function loadPhase0Analytics(): Promise<Phase0Snapshot> {
       }
     : { count: null, status: "pending", source: "manual" };
 
-  const [
-    firstOpen,
-    onboarding,
-    firstAnswer,
-    calendarCreated,
-    person1,
-    person2,
-    person3,
-    memory1,
-    memory2,
-    wingmanOpenDay1,
-    firstMessageDay1,
-    fiveMessagesDay1,
-    returnOpenDay2,
-    returnOpenDay3,
-    returnOpenDay4,
-    returnRequestDay2,
-    returnRequestDay3,
-    returnRequestDay4,
-    organicSecond,
-    requestDays2,
-    requestDays3,
-    personReusedObservation,
-    reminderReturnObservation,
-    responsesComplete,
-    responsesFailed,
-    responsesRetriedObservation,
-    totalMessages,
-    activeToday,
-    activeWeek,
-    activeMonth,
-    activeAll,
-    topUsers,
-    activePhase,
-  ] = await Promise.all([
-    milestone("first_open"),
-    milestone("onboarding_completed"),
-    milestone("response_completed"),
-    milestone("calendar_event_created"),
-    ordinalMilestone("person_context_created", "person_count_after", 1),
-    ordinalMilestone("person_context_created", "person_count_after", 2),
-    ordinalMilestone("person_context_created", "person_count_after", 3),
-    ordinalMilestone("memory_added", "memory_count_after", 1),
-    ordinalMilestone("memory_added", "memory_count_after", 2),
-    dayWindowReturn("wingman_opened", 1),
-    dayWindowReturn("response_started", 1, 1),
-    dayWindowReturn("response_started", 1, 5),
-    dayWindowReturn("wingman_opened", 2),
-    dayWindowReturn("wingman_opened", 3),
-    dayWindowReturn("wingman_opened", 4),
-    dayWindowReturn("response_started", 2),
-    dayWindowReturn("response_started", 3),
-    dayWindowReturn("response_started", 4),
-    organicSecondSituation(),
-    daysActiveWithinWindow(2),
-    daysActiveWithinWindow(3),
-    personReused(),
-    reminderReturn(),
-    requestCount("response_completed"),
-    requestCount("response_failed"),
-    responsesRetried(),
-    totalMessagesSent(),
-    activeUsersForPeriod("today"),
-    activeUsersForPeriod("week"),
-    activeUsersForPeriod("month"),
-    activeUsersForPeriod("all"),
-    topUsersByMessages(10),
-    currentAnalyticsPhase(),
-  ]);
-
+  // Every Phase 0 number comes from sparkeefy-backend's Postgres
+  // (lib/analytics-v2/phase0-backend.ts). PostHog is no longer a source.
+  const backend = await phase0SnapshotFromBackend();
   const snapshot: Phase0Snapshot = {
-    version: 1,
-    cohort: "phase-0",
-    updatedAt: now(),
-    activePhase,
-    metrics: {
-      // Google Play downloads have no connector in this codebase and are
-      // never substituted with first_open — see CONTROL_PHASE0_API_CONTRACT.md.
-      downloads: unavailable("play-console"),
-      first_open: firstOpen,
-      onboarding,
-      first_answer: firstAnswer,
-      wingman_open_day1: wingmanOpenDay1,
-      first_message_day1: firstMessageDay1,
-      five_messages_day1: fiveMessagesDay1,
-      person_1: person1,
-      person_2: person2,
-      person_3: person3,
-      memory_1: memory1,
-      memory_2: memory2,
-      calendar_created: calendarCreated,
-      return_open_day2: returnOpenDay2,
-      return_open_day3: returnOpenDay3,
-      return_open_day4: returnOpenDay4,
-      return_request_day2: returnRequestDay2,
-      return_request_day3: returnRequestDay3,
-      return_request_day4: returnRequestDay4,
-      organic_second: organicSecond,
-      request_days_2: requestDays2,
-      request_days_3: requestDays3,
-      person_reused: personReusedObservation,
-      // Wingman's response-generation path does not fetch or inject saved
-      // memories into any reply today (confirmed: listOwnMemories/
-      // countOwnMemories are only used by the memory CRUD endpoints, never
-      // by the chat turn handler) — there is no signal to build this from
-      // without fabricating one. This is a product gap, not a tracking gap.
-      memory_reused: unavailable(),
-      reminder_return: reminderReturnObservation,
-      opportunity_repeat: opportunityRepeat,
-      responses_complete: responsesComplete,
-      responses_failed: responsesFailed,
-      responses_retried: responsesRetriedObservation,
-      total_messages_sent: totalMessages,
-    },
-    topUsers: topUsers.status === "available" ? topUsers.users : [],
-    topUsersNameSource: topUsers.nameSource,
-    activeUsers: {
-      today: activeToday,
-      week: activeWeek,
-      month: activeMonth,
-      all: activeAll,
-    },
+    ...backend,
+    updatedAt: backend.updatedAt ?? now(),
+    metrics: { ...backend.metrics, opportunity_repeat: opportunityRepeat },
   };
 
   await database

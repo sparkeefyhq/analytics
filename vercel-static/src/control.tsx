@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { countdown } from "./control-state";
 import "./control.css";
 import "./control-polish.css";
-import { Phase0Analytics, Phase0Tracking } from "./phase0";
+import { Phase0Tracking } from "./phase0";
 import type { Phase0Snapshot } from "./phase0-data";
-import { UsersPage } from "./users";
+import { AnalyticsV2 } from "./analytics-v2";
 import { useLiveData } from "./live-data";
 type ControlView = "analytics" | "plan" | "users";
 
@@ -185,8 +185,8 @@ function PlanPage({ tracker, save, onLogin }: { onLogin: () => void; tracker: Co
 }
 
 export function ControlApp({ tracker, save, view, setView, onLogout, onLogin }: { tracker: ControlTracker; save: (action: string, patch?: Record<string, unknown>, id?: string) => Promise<void>; view: ControlView; setView: (view: ControlView) => void; onLogout: () => void; onLogin: () => void }) {
-  const live = useLiveData<ControlTracker>(view === "users" ? null : "/api/tracker");
+  const live = useLiveData<ControlTracker>(view === "plan" ? "/api/tracker" : null);
   // Analytics-only overlay: background reads never replace optimistic edits or gate evidence.
   const displayed = {...tracker, analytics: live.data ? live.data.analytics : tracker.analytics};
-  return <main className="control-shell"><ControlSidebar view={view} setView={setView} email={tracker.viewerEmail} onLogout={onLogout} onLogin={onLogin} /><div className="control-main">{view !== "users" && <div className="live-refresh" role="status"><span>{live.error || (live.denied ? "Session expired" : "Checks every 30s")}</span><button onClick={live.refresh}>Refresh</button></div>}{view === "users" ? <UsersPage key={tracker.viewerEmail || "public"} allowed={tracker.canEdit} onLogin={onLogin}/> : view === "analytics" ? <Phase0Analytics snapshot={displayed.analytics?.phase0} target={tracker.phases.find(phase => phase.id === "phase-0")?.userMax ?? 15} /> : <PlanPage tracker={displayed} save={save} onLogin={onLogin} />}</div></main>;
+  return <main className="control-shell"><ControlSidebar view={view} setView={setView} email={tracker.viewerEmail} onLogout={onLogout} onLogin={onLogin} /><div className="control-main">{view === "plan" && <div className="live-refresh" role="status"><span>Isolated preview Plan · {live.error || "Checks every 30s"}</span><button onClick={live.refresh}>Refresh</button></div>}{view !== "plan" ? <AnalyticsV2 key={`${view}-${tracker.viewerEmail || 'public'}`} users={view==='users'} onLogin={onLogin}/> : <PlanPage tracker={displayed} save={save} onLogin={onLogin} />}</div></main>;
 }

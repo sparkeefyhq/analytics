@@ -5,9 +5,11 @@ var client;
 var context = new AsyncLocalStorage();
 function connection() {
   if (!client) {
-    const url = process.env.TURSO_DATABASE_URL;
+    const isolated = process.env.VERCEL_ENV === "preview";
+    const url = isolated ? process.env.V2_TURSO_DATABASE_URL : process.env.TURSO_DATABASE_URL;
     if (!url) throw Error("TURSO_DATABASE_URL is required.");
-    client = createClient({ url, authToken: process.env.TURSO_AUTH_TOKEN });
+    if (isolated && url === process.env.TURSO_DATABASE_URL) throw Error("Preview must not use production storage.");
+    client = createClient({ url, authToken: isolated ? process.env.V2_TURSO_AUTH_TOKEN : process.env.TURSO_AUTH_TOKEN });
   }
   return client;
 }
@@ -187,322 +189,426 @@ function metricPassed(metric) {
   return metric.actual >= metric.target;
 }
 
-// lib/backend-admin.ts
-function backendAdminConfig() {
-  const record = env;
-  const baseUrl = record.SPARKEEFY_BACKEND_URL;
-  const adminKey = record.SPARKEEFY_BACKEND_ADMIN_KEY;
-  if (!baseUrl || !adminKey) return null;
-  return { baseUrl: baseUrl.replace(/\/$/, ""), adminKey };
-}
-async function fetchUserNames() {
-  const config = backendAdminConfig();
-  if (!config) return { names: /* @__PURE__ */ new Map(), status: "not_configured" };
-  try {
-    const response = await fetch(`${config.baseUrl}/api/admin/overview`, {
-      headers: { "x-admin-api-key": config.adminKey },
-      signal: AbortSignal.timeout(1e4)
-    });
-    if (response.status === 401 || response.status === 403) {
-      return { names: /* @__PURE__ */ new Map(), status: "unauthorized" };
-    }
-    if (!response.ok) return { names: /* @__PURE__ */ new Map(), status: "backend_error" };
-    const body = await response.json();
-    const users = body.data?.users ?? [];
-    const names = /* @__PURE__ */ new Map();
-    for (const user of users) {
-      const name = user.name?.trim();
-      if (user.userId && name) names.set(user.userId, name);
-    }
-    return { names, status: "ok" };
-  } catch {
-    return { names: /* @__PURE__ */ new Map(), status: "network_error" };
-  }
-}
-
 // lib/posthog.ts
-var unavailable = (source = "posthog") => ({
+var unavailable = (source = "backend") => ({
   count: null,
   status: "unavailable",
   source
 });
-var PostHogUnavailableError = class extends Error {
-};
-function posthogConfig() {
-  const record = env;
-  const host = record.POSTHOG_HOST;
-  const projectId = record.POSTHOG_PROJECT_ID;
-  const apiKey = record.POSTHOG_API_KEY;
-  if (!host || !projectId || !apiKey) return null;
-  return { host, projectId, apiKey };
+
+// lib/analytics-v2/source-backend.ts
+import { createHmac } from "node:crypto";
+var KNOWN = [
+  "activity",
+  "onboarding",
+  "people",
+  "memory",
+  "wingman",
+  "responses",
+  "retries",
+  "fallbacks",
+  "latency",
+  "tokens",
+  "cost"
+];
+function backendConfig() {
+  const baseUrl = process.env.V2_SPARKEEFY_BACKEND_URL;
+  const adminKey = process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY;
+  if (!baseUrl || !adminKey) return null;
+  return { baseUrl: baseUrl.replace(/\/$/, ""), adminKey };
 }
-async function postHogQuery(hogql) {
-  const config = posthogConfig();
-  if (!config) throw new PostHogUnavailableError("PostHog is not configured.");
-  let response;
-  try {
-    response = await fetch(`${config.host}/api/projects/${config.projectId}/query/`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql } }),
-      signal: AbortSignal.timeout(15e3)
-    });
-  } catch (error) {
-    throw new PostHogUnavailableError(
-      error instanceof Error ? error.message : "PostHog request failed."
-    );
-  }
-  if (!response.ok) {
-    throw new PostHogUnavailableError(`PostHog query failed with status ${response.status}.`);
-  }
+async function fetchBackendAnalytics() {
+  const config = backendConfig();
+  if (!config) throw Error("Backend admin URL/key not configured");
+  const response = await fetch(`${config.baseUrl}/api/admin/analytics/v2`, {
+    headers: { "x-admin-api-key": config.adminKey },
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!response.ok) throw Error(`Backend responded ${response.status}`);
   const body = await response.json();
-  if (!Array.isArray(body.results)) throw new PostHogUnavailableError("Malformed PostHog response.");
-  return body.results;
+  if (!body.data || !Array.isArray(body.data.facts) || !Array.isArray(body.data.members))
+    throw Error("Unexpected backend response shape");
+  return body.data;
 }
-async function scalar(hogql) {
-  const rows = await postHogQuery(hogql);
-  const value = rows[0]?.[0];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function internalIds() {
+  return new Set(
+    (process.env.CONTROL_V2_INTERNAL_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+  );
 }
-function hogqlString(value) {
-  return `'${value.replace(/'/g, "''")}'`;
+function cohortFor(firstOpenMs) {
+  const boundary = (name) => {
+    const v = process.env[name];
+    return v && Number.isFinite(Date.parse(v)) ? Date.parse(v) : void 0;
+  };
+  const phase2 = boundary("CONTROL_V2_PHASE2_FROM");
+  const phase1b = boundary("CONTROL_V2_PHASE1B_FROM");
+  const phase1a = boundary("CONTROL_V2_PHASE1_FROM");
+  if (phase2 !== void 0 && firstOpenMs >= phase2) return "phase-2";
+  if (phase1b !== void 0 && firstOpenMs >= phase1b) return "phase-1b";
+  if (phase1a !== void 0 && firstOpenMs >= phase1a) return "phase-1a";
+  return "phase-0";
 }
-var MEASUREMENT_START = "2026-09-13T15:31:00+05:30";
-var PHASE0_SCHEMA_VERSION = "2026-09-phase0.1";
-function phase0Filter(prefix = "") {
-  return `${prefix}properties.analytics_schema_version = ${hogqlString(PHASE0_SCHEMA_VERSION)} AND ${prefix}timestamp >= toDateTime(${hogqlString(MEASUREMENT_START)})`;
+var names = /* @__PURE__ */ new Map();
+function backendDisplayNames() {
+  return names;
 }
-async function milestone(event, extraWhere = "") {
+var cached;
+var pending;
+async function liveDatasetFromBackend() {
+  if (cached && Date.now() - cached.at < 3e4) return cached.data;
+  if (pending) return pending;
+  pending = load().finally(() => {
+    pending = void 0;
+  });
+  const data = await pending;
+  cached = { at: Date.now(), data };
+  return data;
+}
+async function load() {
+  const base = {
+    mode: "live",
+    source: "Backend",
+    state: "not-connected",
+    detail: "Awaiting backend connection configuration.",
+    asOf: (/* @__PURE__ */ new Date()).toISOString(),
+    coverageFrom: (/* @__PURE__ */ new Date()).toISOString(),
+    members: [],
+    facts: [],
+    capabilities: KNOWN
+  };
+  if (!process.env.V2_SPARKEEFY_BACKEND_URL || !process.env.V2_SPARKEEFY_BACKEND_ADMIN_KEY || !process.env.SPARKEEFY_SESSION_SECRET)
+    return base;
   try {
-    const count = await scalar(
-      `SELECT count(DISTINCT person_id) FROM events WHERE event = '${event}' AND ${phase0Filter()}${extraWhere ? ` AND ${extraWhere}` : ""}`
+    const secret = process.env.SPARKEEFY_SESSION_SECRET;
+    const opaque = (value) => `participant-${createHmac("sha256", secret).update(value).digest("hex").slice(0, 16)}`;
+    const remote = await fetchBackendAnalytics();
+    const excluded = internalIds();
+    const realMembers = remote.members.filter(
+      (m) => typeof m.id === "string" && Number.isFinite(Date.parse(m.firstOpen))
     );
-    return { count, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, status: "error", source: "posthog" };
-  }
-}
-function ordinalMilestone(event, property, atLeast) {
-  return milestone(event, `properties.${property} >= ${atLeast}`);
-}
-async function dayWindowReturn(returningEvent, dayIndex, minimumEvents = 1) {
-  const windowStartHours = (dayIndex - 1) * 24;
-  const windowEndHours = dayIndex * 24;
-  try {
-    const rows = await postHogQuery(
-      `WITH first_opens AS (
-         SELECT distinct_id, min(timestamp) AS first_open_at
-         FROM events WHERE event = 'first_open' AND ${phase0Filter()}
-         GROUP BY distinct_id
-       ),
-       eligible AS (
-         SELECT distinct_id, first_open_at FROM first_opens
-         WHERE now() >= first_open_at + INTERVAL ${windowStartHours} HOUR
-       ),
-       returned AS (
-         SELECT e.distinct_id AS distinct_id
-         FROM events AS e
-         INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
-         WHERE e.event = '${returningEvent}'
-           AND ${phase0Filter("e.")}
-           AND e.timestamp >= el.first_open_at + INTERVAL ${windowStartHours} HOUR
-           AND e.timestamp < el.first_open_at + INTERVAL ${windowEndHours} HOUR
-         GROUP BY e.distinct_id
-         HAVING count() >= ${Math.max(1, Math.floor(minimumEvents))}
-       )
-       SELECT (SELECT count() FROM first_opens) AS total_first_opens,
-              (SELECT count() FROM eligible) AS eligible_count,
-              (SELECT count() FROM returned) AS returned_count`
-    );
-    const [totalFirstOpens, eligible, returned] = rows[0] ?? [0, 0, 0];
+    if (!realMembers.length)
+      return {
+        ...base,
+        state: "no-data",
+        detail: "No real signups observed yet."
+      };
+    const coverageFrom = new Date(
+      Math.min(...realMembers.map((m) => Date.parse(m.firstOpen)))
+    ).toISOString();
+    const allowed2 = realMembers.filter((m) => !excluded.has(m.id));
+    const nextNames = /* @__PURE__ */ new Map();
+    for (const m of realMembers) {
+      const name = typeof m.name === "string" ? m.name.trim() : "";
+      if (name) nextNames.set(opaque(m.id), name);
+    }
+    names = nextNames;
+    base.members = realMembers.map((m) => ({
+      id: opaque(m.id),
+      cohort: cohortFor(Date.parse(m.firstOpen)),
+      from: new Date(m.firstOpen).toISOString(),
+      firstOpen: new Date(m.firstOpen).toISOString(),
+      internal: excluded.has(m.id),
+      test: false,
+      acquisition: "unknown"
+    }));
+    base.coverageFrom = coverageFrom;
+    if (!allowed2.length)
+      return {
+        ...base,
+        state: "available",
+        detail: "All observed signups are internal/test accounts."
+      };
+    const allowedIds = new Set(allowed2.map((m) => m.id));
+    const facts = [];
+    for (const row of remote.facts) {
+      if (typeof row.user !== "string" || typeof row.at !== "string" || typeof row.kind !== "string" || !Number.isFinite(Date.parse(row.at)) || !allowedIds.has(row.user))
+        continue;
+      const owner = opaque(row.user);
+      const fact = {
+        id: `${owner}-${row.kind}-${row.at}-${facts.length}`,
+        user: owner,
+        kind: row.kind,
+        at: new Date(row.at).toISOString()
+      };
+      if (row.request)
+        fact.request = createHmac("sha256", owner).update(row.request).digest("hex");
+      if (row.session)
+        fact.session = createHmac("sha256", owner).update(row.session).digest("hex");
+      if (typeof row.people === "number" && Number.isFinite(row.people))
+        fact.people = row.people;
+      if (typeof row.memories === "number" && Number.isFinite(row.memories))
+        fact.memories = row.memories;
+      if (typeof row.latency === "number" && Number.isFinite(row.latency))
+        fact.latency = row.latency;
+      if (typeof row.input === "number" && Number.isFinite(row.input))
+        fact.input = row.input;
+      if (typeof row.output === "number" && Number.isFinite(row.output))
+        fact.output = row.output;
+      if (typeof row.cost === "number" && Number.isFinite(row.cost) && row.cost >= 0)
+        fact.cost = row.cost;
+      facts.push(fact);
+    }
+    let capabilities = KNOWN.filter((c) => remote.capabilities.includes(c));
+    if (facts.some(
+      (f) => ["message", "complete", "failed"].includes(f.kind) && !f.request
+    ))
+      capabilities = capabilities.filter((c) => c !== "wingman" && c !== "responses");
+    if (facts.some((f) => f.kind === "person" && f.people === void 0))
+      capabilities = capabilities.filter((c) => c !== "people");
+    if (facts.some((f) => f.kind === "memory" && f.memories === void 0))
+      capabilities = capabilities.filter((c) => c !== "memory");
+    const usage = facts.filter((f) => f.kind === "usage");
+    if (!usage.length || usage.some((f) => f.input === void 0 || f.output === void 0))
+      capabilities = capabilities.filter((c) => c !== "tokens" && c !== "cost");
+    if (usage.some((f) => f.cost === void 0))
+      capabilities = capabilities.filter((c) => c !== "cost");
     return {
-      count: returned ?? null,
-      denominator: eligible ?? null,
-      pending: Math.max(0, (totalFirstOpens ?? 0) - (eligible ?? 0)),
-      status: "available",
-      source: "posthog"
+      ...base,
+      state: "available",
+      detail: "Backend Postgres (sparkeefy-backend) \xB7 live signup roster \xB7 30-second cache",
+      capabilities,
+      facts
     };
   } catch {
-    return { count: null, denominator: null, status: "error", source: "posthog" };
+    names = /* @__PURE__ */ new Map();
+    return {
+      ...base,
+      state: "query-error",
+      detail: "V2 backend source query failed. No partial totals are shown.",
+      facts: []
+    };
   }
 }
-async function daysActiveWithinWindow(minDays) {
-  try {
-    const rows = await postHogQuery(
-      `WITH first_opens AS (
-         SELECT distinct_id, min(timestamp) AS first_open_at
-         FROM events WHERE event = 'first_open' AND ${phase0Filter()}
-         GROUP BY distinct_id
-       ),
-       daily AS (
-         SELECT e.distinct_id AS distinct_id,
-                intDiv(dateDiff('second', fo.first_open_at, e.timestamp), 86400) AS day_index
-         FROM events AS e
-         INNER JOIN first_opens AS fo ON e.distinct_id = fo.distinct_id
-         WHERE e.event = 'response_started' AND ${phase0Filter("e.")}
-           AND e.timestamp >= fo.first_open_at AND e.timestamp < fo.first_open_at + INTERVAL 72 HOUR
-       ),
-       distinct_days AS (
-         SELECT distinct_id, count(DISTINCT day_index) AS days_active FROM daily GROUP BY distinct_id
-       )
-       SELECT (SELECT count() FROM first_opens) AS total_first_opens,
-              (SELECT count() FROM distinct_days WHERE days_active >= ${minDays}) AS reached_count`
-    );
-    const [totalFirstOpens, reached] = rows[0] ?? [0, 0];
-    return { count: reached ?? null, denominator: totalFirstOpens ?? null, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, denominator: null, status: "error", source: "posthog" };
+
+// lib/analytics-v2/phase0-backend.ts
+var HOUR = 36e5;
+var DAY = 24 * HOUR;
+var IST_OFFSET_MS = 5.5 * HOUR;
+var ACTIVE_KINDS = /* @__PURE__ */ new Set([
+  "first_open",
+  "onboarding",
+  "person",
+  "memory",
+  "wingman",
+  "message",
+  "calendar"
+]);
+function group(data) {
+  const members = data.members.filter((m) => !m.internal && !m.test);
+  const facts = new Map(members.map((m) => [m.id, []]));
+  for (const f of data.facts) {
+    const list = facts.get(f.user);
+    if (list) list.push(f);
   }
+  return { members, facts };
 }
-async function personReused() {
-  try {
-    const rows = await postHogQuery(
-      `WITH first_person AS (
-         SELECT distinct_id, min(timestamp) AS created_at
-         FROM events WHERE event = 'person_context_created' AND ${phase0Filter()}
-         GROUP BY distinct_id
-       ),
-       reused AS (
-         SELECT DISTINCT e.distinct_id AS distinct_id
-         FROM events AS e
-         INNER JOIN first_person AS fp ON e.distinct_id = fp.distinct_id
-         WHERE e.event IN ('response_completed', 'response_failed')
-           AND ${phase0Filter("e.")}
-           AND e.properties.used_person_context = true
-           AND e.timestamp > fp.created_at
-       )
-       SELECT (SELECT count() FROM first_person) AS total_with_person,
-              (SELECT count() FROM reused) AS reused_count`
-    );
-    const [totalWithPerson, reused] = rows[0] ?? [0, 0];
-    return { count: reused ?? null, denominator: totalWithPerson ?? null, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, denominator: null, status: "error", source: "posthog" };
-  }
+function available(count, extra = {}) {
+  return { count, status: "available", source: "backend", ...extra };
 }
-async function organicSecondSituation() {
-  try {
-    const rows = await postHogQuery(
-      `WITH firsts AS (
-         SELECT distinct_id, min(timestamp) AS first_at
-         FROM events WHERE event = 'genuine_situation_started' AND ${phase0Filter()}
-         GROUP BY distinct_id
-       ),
-       eligible AS (
-         SELECT distinct_id, first_at FROM firsts WHERE now() >= first_at + INTERVAL 72 HOUR
-       ),
-       organic_second AS (
-         SELECT DISTINCT e.distinct_id AS distinct_id
-         FROM events AS e
-         INNER JOIN eligible AS el ON e.distinct_id = el.distinct_id
-         WHERE e.event = 'second_situation_started'
-           AND ${phase0Filter("e.")}
-           AND e.properties.return_source = 'organic'
-           AND e.timestamp < el.first_at + INTERVAL 72 HOUR
-       )
-       SELECT (SELECT count() FROM eligible) AS eligible_count,
-              (SELECT count() FROM organic_second) AS organic_second_count`
-    );
-    const [eligible, organicSecond] = rows[0] ?? [0, 0];
-    return { count: organicSecond ?? null, denominator: eligible ?? null, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, denominator: null, status: "error", source: "posthog" };
-  }
+function usersWith(members, facts, pred) {
+  return available(
+    members.filter((m) => (facts.get(m.id) ?? []).some(pred)).length
+  );
 }
-async function reminderReturn() {
-  try {
-    const rows = await postHogQuery(
-      `WITH opens AS (
-         SELECT distinct_id, timestamp AS opened_at
-         FROM events WHERE event = 'reminder_opened' AND ${phase0Filter()}
-       ),
-       matched AS (
-         SELECT DISTINCT opens.distinct_id AS distinct_id
-         FROM opens
-         INNER JOIN events AS r ON r.distinct_id = opens.distinct_id
-         WHERE r.event = 'response_started'
-           AND ${phase0Filter("r.")}
-           AND r.timestamp >= opens.opened_at AND r.timestamp < opens.opened_at + INTERVAL 30 MINUTE
-       )
-       SELECT (SELECT count(DISTINCT distinct_id) FROM opens) AS opened_count,
-              (SELECT count() FROM matched) AS returned_count`
-    );
-    const [openedCount, returnedCount] = rows[0] ?? [0, 0];
-    if (!openedCount) return { count: null, denominator: null, status: "unavailable", source: "posthog" };
-    return { count: returnedCount ?? null, denominator: openedCount ?? null, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, denominator: null, status: "error", source: "posthog" };
-  }
+function requestOutcomes(facts) {
+  const messages = /* @__PURE__ */ new Set(), complete = /* @__PURE__ */ new Set(), failed = /* @__PURE__ */ new Set();
+  let retries = 0;
+  for (const list of facts.values())
+    for (const f of list) {
+      const key = `${f.user}:${f.request ?? f.id}`;
+      if (f.kind === "message") messages.add(key);
+      else if (f.kind === "complete") complete.add(key);
+      else if (f.kind === "failed") failed.add(key);
+      else if (f.kind === "retry") retries++;
+    }
+  for (const key of complete) failed.delete(key);
+  return {
+    messages: messages.size,
+    complete: complete.size,
+    failed: failed.size,
+    retries
+  };
 }
-async function requestCount(event) {
-  try {
-    const count = await scalar(`SELECT count() FROM events WHERE event = '${event}' AND ${phase0Filter()}`);
-    return { count, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, status: "error", source: "posthog" };
+function dayWindow(members, facts, kind, dayIndex, minimumEvents, now3) {
+  let eligible = 0, returned = 0, pending2 = 0;
+  for (const m of members) {
+    if (!m.firstOpen) continue;
+    const start = Date.parse(m.firstOpen) + (dayIndex - 1) * DAY, end = start + DAY;
+    if (now3 < start) {
+      pending2++;
+      continue;
+    }
+    eligible++;
+    const seen = /* @__PURE__ */ new Set();
+    for (const f of facts.get(m.id) ?? [])
+      if (f.kind === kind) {
+        const at = Date.parse(f.at);
+        if (at >= start && at < end) seen.add(f.request ?? f.session ?? f.id);
+      }
+    if (seen.size >= minimumEvents) returned++;
   }
+  return available(returned, { denominator: eligible, pending: pending2 });
 }
-async function totalMessagesSent() {
-  try {
-    const count = await scalar(`SELECT count() FROM events WHERE event = 'response_started' AND ${phase0Filter()}`);
-    return { count, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, status: "error", source: "posthog" };
+function daysActive(members, facts, minDays) {
+  let reached = 0, total = 0;
+  for (const m of members) {
+    if (!m.firstOpen) continue;
+    total++;
+    const first = Date.parse(m.firstOpen);
+    const days = /* @__PURE__ */ new Set();
+    for (const f of facts.get(m.id) ?? [])
+      if (f.kind === "message") {
+        const at = Date.parse(f.at);
+        if (at >= first && at < first + 72 * HOUR)
+          days.add(Math.floor((at - first) / DAY));
+      }
+    if (days.size >= minDays) reached++;
   }
+  return available(reached, { denominator: total });
 }
-async function responsesRetried() {
-  try {
-    const count = await scalar(
-      `SELECT count() FROM events WHERE event IN ('response_completed', 'response_failed') AND ${phase0Filter()} AND properties.recovery_triggered = true`
-    );
-    return { count, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, status: "error", source: "posthog" };
-  }
+function istDayStart(now3) {
+  return Math.floor((now3 + IST_OFFSET_MS) / DAY) * DAY - IST_OFFSET_MS;
 }
-async function topUsersByMessages(limit = 10) {
-  try {
-    const rows = await postHogQuery(
-      `SELECT distinct_id, count() AS messages, any(person.properties.email) AS email
-       FROM events WHERE event = 'response_started' AND ${phase0Filter()}
-       GROUP BY distinct_id ORDER BY messages DESC LIMIT ${Math.max(1, Math.floor(limit))}`
-    );
-    const { names, status: nameSource } = await fetchUserNames();
-    const users = rows.map((row) => {
-      const [distinctId, messageCount, email] = row;
-      return { distinctId, messageCount, email: email ?? null, name: names.get(distinctId) ?? null };
-    });
-    return { users, status: "available", nameSource };
-  } catch {
-    return { users: [], status: "error", nameSource: "not_configured" };
-  }
+function istWeekStart(now3) {
+  const day = istDayStart(now3);
+  const weekday = new Date(day + IST_OFFSET_MS).getUTCDay();
+  return day - (weekday + 6) % 7 * DAY;
 }
-async function currentAnalyticsPhase() {
-  try {
-    const rows = await postHogQuery(
-      `SELECT properties.phase FROM events WHERE ${phase0Filter()} ORDER BY timestamp DESC LIMIT 1`
-    );
-    const value = rows[0]?.[0];
-    return value === "phase_0" || value === "phase_1" ? value : null;
-  } catch {
-    return null;
-  }
+function istMonthStart(now3) {
+  const d = new Date(now3 + IST_OFFSET_MS);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - IST_OFFSET_MS;
 }
-var IST_TZ = "Asia/Kolkata";
-async function activeUsersForPeriod(period) {
-  const boundary = period === "today" ? `toStartOfDay(toTimeZone(now(), '${IST_TZ}'))` : period === "week" ? `toStartOfWeek(toTimeZone(now(), '${IST_TZ}'), 1)` : period === "month" ? `toStartOfMonth(toTimeZone(now(), '${IST_TZ}'))` : `toDateTime('${MEASUREMENT_START}')`;
-  try {
-    const count = await scalar(
-      `SELECT count(DISTINCT distinct_id) FROM events
-       WHERE event = 'wingman_opened' AND ${phase0Filter()} AND toTimeZone(timestamp, '${IST_TZ}') >= ${boundary}`
-    );
-    return { count, status: "available", source: "posthog" };
-  } catch {
-    return { count: null, status: "error", source: "posthog" };
+function activeUsers(members, facts, since) {
+  return usersWith(
+    members,
+    facts,
+    (f) => ACTIVE_KINDS.has(f.kind) && Date.parse(f.at) >= since
+  );
+}
+function topUsers(members, facts, names2, limit = 10) {
+  return members.map((m) => ({
+    distinctId: m.id,
+    email: null,
+    name: names2.get(m.id) ?? null,
+    messageCount: new Set(
+      (facts.get(m.id) ?? []).filter((f) => f.kind === "message").map((f) => f.request ?? f.id)
+    ).size
+  })).filter((u) => u.messageCount > 0).sort((a, b) => b.messageCount - a.messageCount).slice(0, limit);
+}
+var METRIC_KEYS = [
+  "first_open",
+  "onboarding",
+  "first_answer",
+  "wingman_open_day1",
+  "first_message_day1",
+  "five_messages_day1",
+  "person_1",
+  "person_2",
+  "person_3",
+  "memory_1",
+  "memory_2",
+  "calendar_created",
+  "return_open_day2",
+  "return_open_day3",
+  "return_open_day4",
+  "return_request_day2",
+  "return_request_day3",
+  "return_request_day4",
+  "organic_second",
+  "request_days_2",
+  "request_days_3",
+  "person_reused",
+  "memory_reused",
+  "reminder_return",
+  "responses_complete",
+  "responses_failed",
+  "responses_retried",
+  "total_messages_sent"
+];
+function phase0SnapshotFromDataset(data, names2, now3 = Date.now()) {
+  const status = data.state === "available" ? "available" : data.state === "query-error" ? "error" : "unavailable";
+  if (status !== "available") {
+    const off = () => ({ count: null, status, source: "backend" });
+    return {
+      version: 1,
+      cohort: "phase-0",
+      updatedAt: null,
+      metrics: Object.fromEntries(METRIC_KEYS.map((key) => [key, off()])),
+      activeUsers: { today: off(), week: off(), month: off(), all: off() },
+      topUsers: []
+    };
   }
+  const { members, facts } = group(data);
+  const gated = (cap, observation) => data.capabilities.includes(cap) ? observation() : unavailable("backend");
+  const outcomes = requestOutcomes(facts);
+  const people = (n) => gated(
+    "people",
+    () => usersWith(members, facts, (f) => f.kind === "person" && (f.people ?? 0) >= n)
+  );
+  const memory = (n) => gated(
+    "memory",
+    () => usersWith(members, facts, (f) => f.kind === "memory" && (f.memories ?? 0) >= n)
+  );
+  const window = (kind, day, min = 1) => gated("wingman", () => dayWindow(members, facts, kind, day, min, now3));
+  return {
+    version: 1,
+    cohort: "phase-0",
+    updatedAt: data.asOf,
+    metrics: {
+      downloads: unavailable("play-console"),
+      first_open: gated(
+        "activity",
+        () => usersWith(members, facts, (f) => f.kind === "first_open")
+      ),
+      onboarding: gated(
+        "onboarding",
+        () => usersWith(members, facts, (f) => f.kind === "onboarding")
+      ),
+      first_answer: gated(
+        "responses",
+        () => usersWith(members, facts, (f) => f.kind === "complete")
+      ),
+      wingman_open_day1: window("wingman", 1),
+      first_message_day1: window("message", 1),
+      five_messages_day1: window("message", 1, 5),
+      person_1: people(1),
+      person_2: people(2),
+      person_3: people(3),
+      memory_1: memory(1),
+      memory_2: memory(2),
+      // The backend feed carries no calendar facts yet; do not substitute.
+      calendar_created: unavailable("backend"),
+      return_open_day2: window("wingman", 2),
+      return_open_day3: window("wingman", 3),
+      return_open_day4: window("wingman", 4),
+      return_request_day2: window("message", 2),
+      return_request_day3: window("message", 3),
+      return_request_day4: window("message", 4),
+      // No verified situation / context-reuse / reminder-return signal exists
+      // in the backend feed; these stay unavailable rather than inferred.
+      organic_second: unavailable("backend"),
+      request_days_2: gated("wingman", () => daysActive(members, facts, 2)),
+      request_days_3: gated("wingman", () => daysActive(members, facts, 3)),
+      person_reused: unavailable("backend"),
+      memory_reused: unavailable("backend"),
+      reminder_return: unavailable("backend"),
+      responses_complete: gated("responses", () => available(outcomes.complete)),
+      responses_failed: gated("responses", () => available(outcomes.failed)),
+      responses_retried: gated("retries", () => available(outcomes.retries)),
+      total_messages_sent: gated("wingman", () => available(outcomes.messages))
+    },
+    activeUsers: {
+      today: activeUsers(members, facts, istDayStart(now3)),
+      week: activeUsers(members, facts, istWeekStart(now3)),
+      month: activeUsers(members, facts, istMonthStart(now3)),
+      all: activeUsers(members, facts, -Infinity)
+    },
+    topUsers: topUsers(members, facts, names2)
+  };
+}
+async function phase0SnapshotFromBackend() {
+  const data = await liveDatasetFromBackend();
+  return phase0SnapshotFromDataset(data, backendDisplayNames());
 }
 
 // app/api/tracker/route.ts
@@ -1129,9 +1235,9 @@ async function loadPhase0Analytics() {
   await ensureDatabase();
   await ensurePhase0PostHogSchema();
   const database3 = db();
-  const cached = await database3.prepare("SELECT payload, computed_at FROM posthog_metric_cache WHERE key = ?").bind(PHASE0_CACHE_KEY).first();
-  if (cached && Date.now() - Date.parse(cached.computed_at) < PHASE0_CACHE_TTL_MS) {
-    return JSON.parse(cached.payload);
+  const cached2 = await database3.prepare("SELECT payload, computed_at FROM posthog_metric_cache WHERE key = ?").bind(PHASE0_CACHE_KEY).first();
+  if (cached2 && Date.now() - Date.parse(cached2.computed_at) < PHASE0_CACHE_TTL_MS) {
+    return JSON.parse(cached2.payload);
   }
   const interviewRows = await database3.prepare(
     "SELECT founder_suggested_situation FROM cohort_evidence WHERE phase_id='phase-0' AND status != 'dropped'"
@@ -1143,127 +1249,11 @@ async function loadPhase0Analytics() {
     status: "available",
     source: "manual"
   } : { count: null, status: "pending", source: "manual" };
-  const [
-    firstOpen,
-    onboarding,
-    firstAnswer,
-    calendarCreated,
-    person1,
-    person2,
-    person3,
-    memory1,
-    memory2,
-    wingmanOpenDay1,
-    firstMessageDay1,
-    fiveMessagesDay1,
-    returnOpenDay2,
-    returnOpenDay3,
-    returnOpenDay4,
-    returnRequestDay2,
-    returnRequestDay3,
-    returnRequestDay4,
-    organicSecond,
-    requestDays2,
-    requestDays3,
-    personReusedObservation,
-    reminderReturnObservation,
-    responsesComplete,
-    responsesFailed,
-    responsesRetriedObservation,
-    totalMessages,
-    activeToday,
-    activeWeek,
-    activeMonth,
-    activeAll,
-    topUsers,
-    activePhase
-  ] = await Promise.all([
-    milestone("first_open"),
-    milestone("onboarding_completed"),
-    milestone("response_completed"),
-    milestone("calendar_event_created"),
-    ordinalMilestone("person_context_created", "person_count_after", 1),
-    ordinalMilestone("person_context_created", "person_count_after", 2),
-    ordinalMilestone("person_context_created", "person_count_after", 3),
-    ordinalMilestone("memory_added", "memory_count_after", 1),
-    ordinalMilestone("memory_added", "memory_count_after", 2),
-    dayWindowReturn("wingman_opened", 1),
-    dayWindowReturn("response_started", 1, 1),
-    dayWindowReturn("response_started", 1, 5),
-    dayWindowReturn("wingman_opened", 2),
-    dayWindowReturn("wingman_opened", 3),
-    dayWindowReturn("wingman_opened", 4),
-    dayWindowReturn("response_started", 2),
-    dayWindowReturn("response_started", 3),
-    dayWindowReturn("response_started", 4),
-    organicSecondSituation(),
-    daysActiveWithinWindow(2),
-    daysActiveWithinWindow(3),
-    personReused(),
-    reminderReturn(),
-    requestCount("response_completed"),
-    requestCount("response_failed"),
-    responsesRetried(),
-    totalMessagesSent(),
-    activeUsersForPeriod("today"),
-    activeUsersForPeriod("week"),
-    activeUsersForPeriod("month"),
-    activeUsersForPeriod("all"),
-    topUsersByMessages(10),
-    currentAnalyticsPhase()
-  ]);
+  const backend = await phase0SnapshotFromBackend();
   const snapshot = {
-    version: 1,
-    cohort: "phase-0",
-    updatedAt: now(),
-    activePhase,
-    metrics: {
-      // Google Play downloads have no connector in this codebase and are
-      // never substituted with first_open — see CONTROL_PHASE0_API_CONTRACT.md.
-      downloads: unavailable("play-console"),
-      first_open: firstOpen,
-      onboarding,
-      first_answer: firstAnswer,
-      wingman_open_day1: wingmanOpenDay1,
-      first_message_day1: firstMessageDay1,
-      five_messages_day1: fiveMessagesDay1,
-      person_1: person1,
-      person_2: person2,
-      person_3: person3,
-      memory_1: memory1,
-      memory_2: memory2,
-      calendar_created: calendarCreated,
-      return_open_day2: returnOpenDay2,
-      return_open_day3: returnOpenDay3,
-      return_open_day4: returnOpenDay4,
-      return_request_day2: returnRequestDay2,
-      return_request_day3: returnRequestDay3,
-      return_request_day4: returnRequestDay4,
-      organic_second: organicSecond,
-      request_days_2: requestDays2,
-      request_days_3: requestDays3,
-      person_reused: personReusedObservation,
-      // Wingman's response-generation path does not fetch or inject saved
-      // memories into any reply today (confirmed: listOwnMemories/
-      // countOwnMemories are only used by the memory CRUD endpoints, never
-      // by the chat turn handler) — there is no signal to build this from
-      // without fabricating one. This is a product gap, not a tracking gap.
-      memory_reused: unavailable(),
-      reminder_return: reminderReturnObservation,
-      opportunity_repeat: opportunityRepeat,
-      responses_complete: responsesComplete,
-      responses_failed: responsesFailed,
-      responses_retried: responsesRetriedObservation,
-      total_messages_sent: totalMessages
-    },
-    topUsers: topUsers.status === "available" ? topUsers.users : [],
-    topUsersNameSource: topUsers.nameSource,
-    activeUsers: {
-      today: activeToday,
-      week: activeWeek,
-      month: activeMonth,
-      all: activeAll
-    }
+    ...backend,
+    updatedAt: backend.updatedAt ?? now(),
+    metrics: { ...backend.metrics, opportunity_repeat: opportunityRepeat }
   };
   await database3.prepare(
     "INSERT INTO posthog_metric_cache (key,payload,computed_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,computed_at=excluded.computed_at"
@@ -1769,53 +1759,53 @@ function indiaDate() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(/* @__PURE__ */ new Date());
 }
 async function initializeWorkspace() {
-  const db3 = database2();
-  await db3.batch([
-    db3.prepare(`CREATE TABLE IF NOT EXISTS routines (
+  const db2 = database2();
+  await db2.batch([
+    db2.prepare(`CREATE TABLE IF NOT EXISTS routines (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, title TEXT NOT NULL, time TEXT NOT NULL,
       position INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS routine_occurrences (
+    db2.prepare(`CREATE TABLE IF NOT EXISTS routine_occurrences (
       id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, owner_email TEXT NOT NULL, date TEXT NOT NULL,
       title TEXT NOT NULL, time TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '',
       completed_at TEXT, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_occurrence_unique ON routine_occurrences(routine_id, date)`),
-    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_routine_occurrence_owner_date ON routine_occurrences(owner_email, date)`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS founder_tasks (
+    db2.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_occurrence_unique ON routine_occurrences(routine_id, date)`),
+    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_routine_occurrence_owner_date ON routine_occurrences(owner_email, date)`),
+    db2.prepare(`CREATE TABLE IF NOT EXISTS founder_tasks (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
       due_date TEXT, due_time TEXT, priority TEXT NOT NULL DEFAULT 'medium', category TEXT NOT NULL DEFAULT 'General',
       status TEXT NOT NULL DEFAULT 'open', link TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL, completed_at TEXT, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_founder_tasks_owner_status_due ON founder_tasks(owner_email, status, due_date)`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS diary_entries (
+    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_founder_tasks_owner_status_due ON founder_tasks(owner_email, status, due_date)`),
+    db2.prepare(`CREATE TABLE IF NOT EXISTS diary_entries (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, entry_date TEXT NOT NULL, completed TEXT NOT NULL DEFAULT '',
       moved_forward TEXT NOT NULL DEFAULT '', learned TEXT NOT NULL DEFAULT '', blocker TEXT NOT NULL DEFAULT '',
       insight TEXT NOT NULL DEFAULT '', tomorrow TEXT NOT NULL DEFAULT '', mood TEXT NOT NULL DEFAULT 'Focused',
       notes TEXT NOT NULL DEFAULT '', finished_at TEXT, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_owner_date ON diary_entries(owner_email, entry_date)`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS suggestions (
+    db2.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_diary_owner_date ON diary_entries(owner_email, entry_date)`),
+    db2.prepare(`CREATE TABLE IF NOT EXISTS suggestions (
       id TEXT PRIMARY KEY, author_email TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
       category TEXT NOT NULL DEFAULT 'Other', priority TEXT NOT NULL DEFAULT 'medium', phase_id TEXT,
       status TEXT NOT NULL DEFAULT 'new', pinned INTEGER NOT NULL DEFAULT 0, founder_priority INTEGER NOT NULL DEFAULT 0,
       founder_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestions_status_created ON suggestions(status, created_at DESC)`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS suggestion_replies (
+    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestions_status_created ON suggestions(status, created_at DESC)`),
+    db2.prepare(`CREATE TABLE IF NOT EXISTS suggestion_replies (
       id TEXT PRIMARY KEY, suggestion_id TEXT NOT NULL, author_email TEXT NOT NULL, body TEXT NOT NULL,
       parent_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestion_replies_suggestion ON suggestion_replies(suggestion_id, created_at)`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS suggestion_votes (
+    db2.prepare(`CREATE INDEX IF NOT EXISTS idx_suggestion_replies_suggestion ON suggestion_replies(suggestion_id, created_at)`),
+    db2.prepare(`CREATE TABLE IF NOT EXISTS suggestion_votes (
       suggestion_id TEXT NOT NULL, author_email TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (suggestion_id, author_email)
     )`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS founder_settings (
+    db2.prepare(`CREATE TABLE IF NOT EXISTS founder_settings (
       owner_email TEXT PRIMARY KEY, launch_date TEXT, updated_at TEXT NOT NULL
     )`),
-    db3.prepare(`CREATE TABLE IF NOT EXISTS founder_meetings (
+    db2.prepare(`CREATE TABLE IF NOT EXISTS founder_meetings (
       id TEXT PRIMARY KEY, owner_email TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'Other',
       contact TEXT NOT NULL DEFAULT '', scheduled_date TEXT NOT NULL, scheduled_time TEXT NOT NULL,
       meeting_link TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'scheduled',
@@ -1823,50 +1813,50 @@ async function initializeWorkspace() {
       desired_next_step TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', next_step TEXT NOT NULL DEFAULT '',
       follow_up_date TEXT, private_notes TEXT NOT NULL DEFAULT '', deleted_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     )`),
-    db3.prepare("CREATE INDEX IF NOT EXISTS idx_founder_meetings_owner_date ON founder_meetings(owner_email, scheduled_date, scheduled_time)")
+    db2.prepare("CREATE INDEX IF NOT EXISTS idx_founder_meetings_owner_date ON founder_meetings(owner_email, scheduled_date, scheduled_time)")
   ]);
-  const taskColumns = await db3.prepare("PRAGMA table_info(founder_tasks)").all();
+  const taskColumns = await db2.prepare("PRAGMA table_info(founder_tasks)").all();
   if (!taskColumns.results.some((column) => column.name === "deleted_at")) {
-    await db3.prepare("ALTER TABLE founder_tasks ADD COLUMN deleted_at TEXT").run();
+    await db2.prepare("ALTER TABLE founder_tasks ADD COLUMN deleted_at TEXT").run();
   }
-  const routineColumns = await db3.prepare("PRAGMA table_info(routines)").all();
+  const routineColumns = await db2.prepare("PRAGMA table_info(routines)").all();
   const taskAdditions = ["icon_type TEXT", "icon_source TEXT NOT NULL DEFAULT 'inferred'"];
   const routineAdditions = ["icon_type TEXT", "icon_source TEXT NOT NULL DEFAULT 'inferred'", "link TEXT NOT NULL DEFAULT ''"];
   for (const addition of taskAdditions) {
     const name = addition.split(" ")[0];
-    if (!taskColumns.results.some((column) => column.name === name)) await db3.prepare(`ALTER TABLE founder_tasks ADD COLUMN ${addition}`).run();
+    if (!taskColumns.results.some((column) => column.name === name)) await db2.prepare(`ALTER TABLE founder_tasks ADD COLUMN ${addition}`).run();
   }
   for (const addition of routineAdditions) {
     const name = addition.split(" ")[0];
-    if (!routineColumns.results.some((column) => column.name === name)) await db3.prepare(`ALTER TABLE routines ADD COLUMN ${addition}`).run();
+    if (!routineColumns.results.some((column) => column.name === name)) await db2.prepare(`ALTER TABLE routines ADD COLUMN ${addition}`).run();
   }
-  const untitledTaskIcons = await db3.prepare(`SELECT id, title FROM founder_tasks WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
-  const untitledRoutineIcons = await db3.prepare(`SELECT id, title FROM routines WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
+  const untitledTaskIcons = await db2.prepare(`SELECT id, title FROM founder_tasks WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
+  const untitledRoutineIcons = await db2.prepare(`SELECT id, title FROM routines WHERE owner_email=? AND (icon_type IS NULL OR icon_type='') AND (icon_source IS NULL OR icon_source='inferred')`).bind(EDITOR_EMAIL).all();
   if (untitledTaskIcons.results.length || untitledRoutineIcons.results.length) {
-    await db3.batch([
-      ...untitledTaskIcons.results.map((item) => db3.prepare("UPDATE founder_tasks SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id)),
-      ...untitledRoutineIcons.results.map((item) => db3.prepare("UPDATE routines SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id))
+    await db2.batch([
+      ...untitledTaskIcons.results.map((item) => db2.prepare("UPDATE founder_tasks SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id)),
+      ...untitledRoutineIcons.results.map((item) => db2.prepare("UPDATE routines SET icon_type=?, icon_source='inferred' WHERE id=?").bind(inferredType(item.title), item.id))
     ]);
   }
-  const count = await db3.prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
+  const count = await db2.prepare("SELECT COUNT(*) AS count FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
   if ((count?.count ?? 0) === 0) {
     const timestamp = now2();
-    await db3.batch([
-      db3.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-morning", EDITOR_EMAIL, "Morning Reddit post", "10:00", 0, timestamp, timestamp),
-      db3.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-evening", EDITOR_EMAIL, "Evening Reddit post", "19:00", 1, timestamp, timestamp),
-      db3.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-night", EDITOR_EMAIL, "Night Reddit post", "22:00", 2, timestamp, timestamp)
+    await db2.batch([
+      db2.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-morning", EDITOR_EMAIL, "Morning Reddit post", "10:00", 0, timestamp, timestamp),
+      db2.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-evening", EDITOR_EMAIL, "Evening Reddit post", "19:00", 1, timestamp, timestamp),
+      db2.prepare("INSERT INTO routines (id, owner_email, title, time, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)").bind("reddit-night", EDITOR_EMAIL, "Night Reddit post", "22:00", 2, timestamp, timestamp)
     ]);
   }
-  const misplaced = await db3.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all'").bind(EDITOR_EMAIL).all();
+  const misplaced = await db2.prepare("SELECT * FROM routines WHERE owner_email = ? AND lower(trim(title)) = 'plan all'").bind(EDITOR_EMAIL).all();
   if (misplaced.results.length) {
     const timestamp = now2();
     const date = indiaDate();
-    await db3.batch(misplaced.results.flatMap((routine) => [
-      db3.prepare(`INSERT OR IGNORE INTO founder_tasks
+    await db2.batch(misplaced.results.flatMap((routine) => [
+      db2.prepare(`INSERT OR IGNORE INTO founder_tasks
         (id, owner_email, title, description, due_date, due_time, priority, category, status, link, position, created_at, updated_at)
         VALUES (?, ?, ?, '', ?, ?, 'medium', 'Founder', 'open', '', 0, ?, ?)`).bind(`migrated-${String(routine.id)}`, EDITOR_EMAIL, String(routine.title), date, String(routine.time), timestamp, timestamp),
-      db3.prepare("DELETE FROM routine_occurrences WHERE routine_id = ? AND owner_email = ? AND date = ?").bind(String(routine.id), EDITOR_EMAIL, date),
-      db3.prepare("UPDATE routines SET active = 0, updated_at = ? WHERE id = ?").bind(timestamp, String(routine.id))
+      db2.prepare("DELETE FROM routine_occurrences WHERE routine_id = ? AND owner_email = ? AND date = ?").bind(String(routine.id), EDITOR_EMAIL, date),
+      db2.prepare("UPDATE routines SET active = 0, updated_at = ? WHERE id = ?").bind(timestamp, String(routine.id))
     ]));
   }
 }
@@ -1881,11 +1871,11 @@ function ensureWorkspace() {
   return workspaceSetup;
 }
 async function ensureToday(ownerEmail) {
-  const db3 = database2();
+  const db2 = database2();
   const date = indiaDate();
-  const routines = await db3.prepare("SELECT * FROM routines WHERE owner_email = ? AND active = 1 ORDER BY position").bind(ownerEmail).all();
+  const routines = await db2.prepare("SELECT * FROM routines WHERE owner_email = ? AND active = 1 ORDER BY position").bind(ownerEmail).all();
   const timestamp = now2();
-  await db3.batch(routines.results.map((routine) => db3.prepare(`INSERT OR IGNORE INTO routine_occurrences
+  await db2.batch(routines.results.map((routine) => db2.prepare(`INSERT OR IGNORE INTO routine_occurrences
     (id, routine_id, owner_email, date, title, time, status, note, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?)`).bind(`${String(routine.id)}-${date}`, String(routine.id), ownerEmail, date, String(routine.title), String(routine.time), timestamp)));
   return date;
 }
@@ -1896,27 +1886,27 @@ async function founderData(access) {
   requireEditor(access);
   await ensureWorkspace();
   const date = await ensureToday(EDITOR_EMAIL);
-  const db3 = database2();
+  const db2 = database2();
   const [routines, tasks, diary, diaryHistory, meetings, settings] = await Promise.all([
-    db3.prepare(`SELECT routine_occurrences.*, routines.icon_type, routines.icon_source, routines.link
+    db2.prepare(`SELECT routine_occurrences.*, routines.icon_type, routines.icon_source, routines.link
       FROM routine_occurrences LEFT JOIN routines ON routines.id = routine_occurrences.routine_id
       WHERE routine_occurrences.owner_email = ? AND routine_occurrences.date = ? ORDER BY routine_occurrences.time`).bind(EDITOR_EMAIL, date).all(),
-    db3.prepare(`SELECT * FROM founder_tasks WHERE owner_email = ? AND deleted_at IS NULL
+    db2.prepare(`SELECT * FROM founder_tasks WHERE owner_email = ? AND deleted_at IS NULL
       ORDER BY CASE status WHEN 'complete' THEN 1 ELSE 0 END, due_date IS NULL, due_date, due_time IS NULL, due_time, position, created_at DESC`).bind(EDITOR_EMAIL).all(),
-    db3.prepare("SELECT * FROM diary_entries WHERE owner_email = ? AND entry_date = ?").bind(EDITOR_EMAIL, date).first(),
-    db3.prepare("SELECT entry_date, mood, finished_at FROM diary_entries WHERE owner_email = ? ORDER BY entry_date DESC LIMIT 14").bind(EDITOR_EMAIL).all(),
-    db3.prepare("SELECT * FROM founder_meetings WHERE owner_email = ? AND deleted_at IS NULL ORDER BY scheduled_date, scheduled_time").bind(EDITOR_EMAIL).all(),
-    db3.prepare("SELECT launch_date FROM founder_settings WHERE owner_email = ?").bind(EDITOR_EMAIL).first()
+    db2.prepare("SELECT * FROM diary_entries WHERE owner_email = ? AND entry_date = ?").bind(EDITOR_EMAIL, date).first(),
+    db2.prepare("SELECT entry_date, mood, finished_at FROM diary_entries WHERE owner_email = ? ORDER BY entry_date DESC LIMIT 14").bind(EDITOR_EMAIL).all(),
+    db2.prepare("SELECT * FROM founder_meetings WHERE owner_email = ? AND deleted_at IS NULL ORDER BY scheduled_date, scheduled_time").bind(EDITOR_EMAIL).all(),
+    db2.prepare("SELECT launch_date FROM founder_settings WHERE owner_email = ?").bind(EDITOR_EMAIL).first()
   ]);
   return { date, routines: routines.results, tasks: tasks.results, diary: diary ?? null, diaryHistory: diaryHistory.results, meetings: meetings.results, launchDate: settings?.launch_date ?? null, integrations: { googleCalendar: false, zohoEmail: false } };
 }
 async function suggestionData(access) {
   await ensureWorkspace();
-  const db3 = database2();
+  const db2 = database2();
   const [suggestions, replies, votes] = await Promise.all([
-    db3.prepare("SELECT * FROM suggestions ORDER BY pinned DESC, founder_priority DESC, created_at DESC").all(),
-    db3.prepare("SELECT * FROM suggestion_replies ORDER BY created_at").all(),
-    db3.prepare("SELECT suggestion_id, COUNT(*) AS count FROM suggestion_votes GROUP BY suggestion_id").all()
+    db2.prepare("SELECT * FROM suggestions ORDER BY pinned DESC, founder_priority DESC, created_at DESC").all(),
+    db2.prepare("SELECT * FROM suggestion_replies ORDER BY created_at").all(),
+    db2.prepare("SELECT suggestion_id, COUNT(*) AS count FROM suggestion_votes GROUP BY suggestion_id").all()
   ]);
   return { suggestions: suggestions.results, replies: replies.results, votes: votes.results, viewerEmail: access.viewerEmail, canEdit: access.canEdit };
 }
@@ -1940,7 +1930,7 @@ async function POST(request) {
     if (!access.authenticated) return Response.json({ error: "Sign in required." }, { status: 401 });
     await ensureWorkspace();
     const body = await request.json();
-    const db3 = database2();
+    const db2 = database2();
     const timestamp = now2();
     if (body.action.startsWith("task_") || body.action.startsWith("routine_") || body.action.startsWith("diary_") || body.action.startsWith("meeting_") || body.action === "settings_update") requireEditor(access);
     if (body.action === "task_create") {
@@ -1950,12 +1940,12 @@ async function POST(request) {
       if (!TASK_PRIORITIES.has(priority)) throw new Error("Use a valid priority.");
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
       const iconType = iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title);
-      await db3.prepare(`INSERT INTO founder_tasks (id, owner_email, title, description, due_date, due_time, priority, category, status, link, icon_type, icon_source, position, created_at, updated_at)
+      await db2.prepare(`INSERT INTO founder_tasks (id, owner_email, title, description, due_date, due_time, priority, category, status, link, icon_type, icon_source, position, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 0, ?, ?)`).bind(id("task"), EDITOR_EMAIL, title, String(p.description ?? ""), cleanDate(p.dueDate), cleanTime(p.dueTime), priority, String(p.category ?? "General"), cleanUrl(p.link), iconType, iconSource, timestamp, timestamp).run();
     } else if (body.action === "task_reorder") {
       const order = Array.isArray(body.patch?.order) ? body.patch.order.map(String) : [];
       if (order.length) {
-        await db3.batch(order.map((taskId, position) => db3.prepare(`UPDATE founder_tasks
+        await db2.batch(order.map((taskId, position) => db2.prepare(`UPDATE founder_tasks
           SET position = ?, updated_at = ?
           WHERE id = ? AND owner_email = ? AND deleted_at IS NULL`).bind(position, timestamp, taskId, EDITOR_EMAIL)));
       }
@@ -1967,43 +1957,43 @@ async function POST(request) {
       if (!TASK_PRIORITIES.has(priority) || !["open", "complete"].includes(status)) throw new Error("Use valid task details.");
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
       const iconType = iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title);
-      await db3.prepare(`UPDATE founder_tasks SET title=?, description=?, due_date=?, due_time=?, priority=?, category=?, status=?, link=?, icon_type=?, icon_source=?, completed_at=?, updated_at=? WHERE id=? AND owner_email=?`).bind(title, String(p.description ?? ""), cleanDate(p.dueDate), cleanTime(p.dueTime), priority, String(p.category ?? "General"), status, cleanUrl(p.link), iconType, iconSource, status === "complete" ? timestamp : null, timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare(`UPDATE founder_tasks SET title=?, description=?, due_date=?, due_time=?, priority=?, category=?, status=?, link=?, icon_type=?, icon_source=?, completed_at=?, updated_at=? WHERE id=? AND owner_email=?`).bind(title, String(p.description ?? ""), cleanDate(p.dueDate), cleanTime(p.dueTime), priority, String(p.category ?? "General"), status, cleanUrl(p.link), iconType, iconSource, status === "complete" ? timestamp : null, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "task_delete" && body.id) {
-      await db3.prepare("UPDATE founder_tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare("UPDATE founder_tasks SET deleted_at = ?, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "task_restore" && body.id) {
-      await db3.prepare("UPDATE founder_tasks SET deleted_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare("UPDATE founder_tasks SET deleted_at = NULL, updated_at = ? WHERE id = ? AND owner_email = ?").bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "routine_create") {
       const p = body.patch ?? {};
-      const next = await db3.prepare("SELECT COALESCE(MAX(position), -1) AS position FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
+      const next = await db2.prepare("SELECT COALESCE(MAX(position), -1) AS position FROM routines WHERE owner_email = ?").bind(EDITOR_EMAIL).first();
       const title = cleanTitle(p.title);
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
-      await db3.prepare("INSERT INTO routines (id, owner_email, title, time, icon_type, icon_source, link, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").bind(id("routine"), EDITOR_EMAIL, title, cleanTime(p.time) ?? "09:00", iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), Number(next?.position ?? -1) + 1, timestamp, timestamp).run();
+      await db2.prepare("INSERT INTO routines (id, owner_email, title, time, icon_type, icon_source, link, position, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)").bind(id("routine"), EDITOR_EMAIL, title, cleanTime(p.time) ?? "09:00", iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), Number(next?.position ?? -1) + 1, timestamp, timestamp).run();
     } else if (body.action === "routine_update" && body.id) {
       const p = body.patch ?? {};
-      await db3.prepare("UPDATE routine_occurrences SET status=?, note=?, updated_at=?, completed_at=? WHERE id=? AND owner_email=?").bind(String(p.status ?? "pending"), String(p.note ?? ""), timestamp, p.status === "completed" || p.status === "skipped" ? timestamp : null, body.id, EDITOR_EMAIL).run();
+      await db2.prepare("UPDATE routine_occurrences SET status=?, note=?, updated_at=?, completed_at=? WHERE id=? AND owner_email=?").bind(String(p.status ?? "pending"), String(p.note ?? ""), timestamp, p.status === "completed" || p.status === "skipped" ? timestamp : null, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "routine_edit" && body.id) {
       const p = body.patch ?? {};
       const date = indiaDate();
       const title = cleanTitle(p.title);
       const iconSource = p.iconSource === "manual" ? "manual" : "inferred";
       const time = cleanTime(p.time) ?? "09:00";
-      await db3.batch([
-        db3.prepare("UPDATE routines SET title=?, time=?, icon_type=?, icon_source=?, link=?, updated_at=? WHERE id=? AND owner_email=?").bind(title, time, iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), timestamp, body.id, EDITOR_EMAIL),
-        db3.prepare("UPDATE routine_occurrences SET title=?, time=?, updated_at=? WHERE routine_id=? AND owner_email=? AND date=?").bind(title, time, timestamp, body.id, EDITOR_EMAIL, date)
+      await db2.batch([
+        db2.prepare("UPDATE routines SET title=?, time=?, icon_type=?, icon_source=?, link=?, updated_at=? WHERE id=? AND owner_email=?").bind(title, time, iconSource === "manual" && p.iconType ? String(p.iconType) : inferredType(title), iconSource, cleanUrl(p.link), timestamp, body.id, EDITOR_EMAIL),
+        db2.prepare("UPDATE routine_occurrences SET title=?, time=?, updated_at=? WHERE routine_id=? AND owner_email=? AND date=?").bind(title, time, timestamp, body.id, EDITOR_EMAIL, date)
       ]);
     } else if (body.action === "routine_delete" && body.id) {
       const date = indiaDate();
-      await db3.batch([
-        db3.prepare("UPDATE routines SET active=0, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL),
-        db3.prepare("DELETE FROM routine_occurrences WHERE routine_id=? AND owner_email=? AND date=?").bind(body.id, EDITOR_EMAIL, date)
+      await db2.batch([
+        db2.prepare("UPDATE routines SET active=0, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL),
+        db2.prepare("DELETE FROM routine_occurrences WHERE routine_id=? AND owner_email=? AND date=?").bind(body.id, EDITOR_EMAIL, date)
       ]);
     } else if (body.action === "routine_restore" && body.id) {
-      await db3.prepare("UPDATE routines SET active=1, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare("UPDATE routines SET active=1, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "meeting_create") {
       const p = body.patch ?? {};
       const category = String(p.category ?? "Other");
       if (!MEETING_CATEGORIES.has(category)) throw new Error("Use a valid meeting category.");
-      await db3.prepare(`INSERT INTO founder_meetings
+      await db2.prepare(`INSERT INTO founder_meetings
         (id, owner_email, title, category, contact, scheduled_date, scheduled_time, meeting_link, description, status, preparation_goal, talking_points, questions, desired_next_step, outcome, next_step, follow_up_date, private_notes, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', '', '', '', '', '', '', NULL, '', ?, ?)`).bind(id("meeting"), EDITOR_EMAIL, cleanTitle(p.title), category, String(p.contact ?? ""), cleanDate(p.date) ?? indiaDate(), cleanTime(p.time) ?? "09:00", cleanUrl(p.meetingLink), String(p.description ?? ""), timestamp, timestamp).run();
     } else if (body.action === "meeting_update" && body.id) {
@@ -2011,14 +2001,14 @@ async function POST(request) {
       const category = String(p.category ?? "Other");
       const status = String(p.status ?? "scheduled");
       if (!MEETING_CATEGORIES.has(category) || !["scheduled", "follow-up", "followed-up", "cancelled"].includes(status)) throw new Error("Use valid meeting details.");
-      await db3.prepare(`UPDATE founder_meetings SET title=?, category=?, contact=?, scheduled_date=?, scheduled_time=?, meeting_link=?, description=?, status=?, preparation_goal=?, talking_points=?, questions=?, desired_next_step=?, outcome=?, next_step=?, follow_up_date=?, private_notes=?, updated_at=? WHERE id=? AND owner_email=?`).bind(cleanTitle(p.title), category, String(p.contact ?? ""), cleanDate(p.date) ?? indiaDate(), cleanTime(p.time) ?? "09:00", cleanUrl(p.meetingLink), String(p.description ?? ""), status, String(p.preparationGoal ?? ""), String(p.talkingPoints ?? ""), String(p.questions ?? ""), String(p.desiredNextStep ?? ""), String(p.outcome ?? ""), String(p.nextStep ?? ""), cleanDate(p.followUpDate), String(p.privateNotes ?? ""), timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare(`UPDATE founder_meetings SET title=?, category=?, contact=?, scheduled_date=?, scheduled_time=?, meeting_link=?, description=?, status=?, preparation_goal=?, talking_points=?, questions=?, desired_next_step=?, outcome=?, next_step=?, follow_up_date=?, private_notes=?, updated_at=? WHERE id=? AND owner_email=?`).bind(cleanTitle(p.title), category, String(p.contact ?? ""), cleanDate(p.date) ?? indiaDate(), cleanTime(p.time) ?? "09:00", cleanUrl(p.meetingLink), String(p.description ?? ""), status, String(p.preparationGoal ?? ""), String(p.talkingPoints ?? ""), String(p.questions ?? ""), String(p.desiredNextStep ?? ""), String(p.outcome ?? ""), String(p.nextStep ?? ""), cleanDate(p.followUpDate), String(p.privateNotes ?? ""), timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "meeting_delete" && body.id) {
-      await db3.prepare("UPDATE founder_meetings SET deleted_at=?, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare("UPDATE founder_meetings SET deleted_at=?, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "meeting_restore" && body.id) {
-      await db3.prepare("UPDATE founder_meetings SET deleted_at=NULL, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
+      await db2.prepare("UPDATE founder_meetings SET deleted_at=NULL, updated_at=? WHERE id=? AND owner_email=?").bind(timestamp, body.id, EDITOR_EMAIL).run();
     } else if (body.action === "settings_update") {
       const p = body.patch ?? {};
-      await db3.prepare(`INSERT INTO founder_settings (owner_email, launch_date, updated_at) VALUES (?, ?, ?)
+      await db2.prepare(`INSERT INTO founder_settings (owner_email, launch_date, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(owner_email) DO UPDATE SET launch_date=excluded.launch_date, updated_at=excluded.updated_at`).bind(EDITOR_EMAIL, cleanDate(p.launchDate), timestamp).run();
     } else if (body.action === "diary_save") {
       const p = body.patch ?? {};
@@ -2026,29 +2016,29 @@ async function POST(request) {
       let completed = String(p.completed ?? "");
       if (p.finished && !completed) {
         const [finishedTasks, finishedRoutines] = await Promise.all([
-          db3.prepare(`SELECT title FROM founder_tasks WHERE owner_email=? AND status='complete' AND deleted_at IS NULL AND (due_date IS NULL OR due_date <= ?) ORDER BY completed_at`).bind(EDITOR_EMAIL, entryDate).all(),
-          db3.prepare(`SELECT title, status FROM routine_occurrences WHERE owner_email=? AND date=? AND status IN ('completed', 'skipped') ORDER BY time`).bind(EDITOR_EMAIL, entryDate).all()
+          db2.prepare(`SELECT title FROM founder_tasks WHERE owner_email=? AND status='complete' AND deleted_at IS NULL AND (due_date IS NULL OR due_date <= ?) ORDER BY completed_at`).bind(EDITOR_EMAIL, entryDate).all(),
+          db2.prepare(`SELECT title, status FROM routine_occurrences WHERE owner_email=? AND date=? AND status IN ('completed', 'skipped') ORDER BY time`).bind(EDITOR_EMAIL, entryDate).all()
         ]);
         completed = [...finishedTasks.results.map((item) => item.title), ...finishedRoutines.results.map((item) => `${item.title}${item.status === "skipped" ? " (Skipped)" : ""}`)].join(" \xB7 ");
       }
-      await db3.prepare(`INSERT INTO diary_entries (id, owner_email, entry_date, completed, moved_forward, learned, blocker, insight, tomorrow, mood, notes, finished_at, updated_at)
+      await db2.prepare(`INSERT INTO diary_entries (id, owner_email, entry_date, completed, moved_forward, learned, blocker, insight, tomorrow, mood, notes, finished_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(owner_email, entry_date) DO UPDATE SET completed=excluded.completed, moved_forward=excluded.moved_forward, learned=excluded.learned, blocker=excluded.blocker, insight=excluded.insight, tomorrow=excluded.tomorrow, mood=excluded.mood, notes=excluded.notes, finished_at=excluded.finished_at, updated_at=excluded.updated_at`).bind(`diary-${entryDate}`, EDITOR_EMAIL, entryDate, completed, String(p.movedForward ?? ""), String(p.learned ?? ""), String(p.blocker ?? ""), String(p.insight ?? ""), String(p.tomorrow ?? ""), String(p.mood ?? "Focused"), String(p.notes ?? ""), p.finished ? timestamp : null, timestamp).run();
     } else if (body.action === "suggestion_create") {
       const p = body.patch ?? {};
-      await db3.prepare(`INSERT INTO suggestions (id, author_email, title, body, category, priority, phase_id, status, created_at, updated_at)
+      await db2.prepare(`INSERT INTO suggestions (id, author_email, title, body, category, priority, phase_id, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`).bind(id("suggestion"), access.viewerEmail, String(p.title ?? "").trim(), String(p.body ?? "").trim(), String(p.category ?? "Other"), String(p.priority ?? "medium"), p.phaseId ? String(p.phaseId) : null, timestamp, timestamp).run();
     } else if (body.action === "suggestion_reply" && body.suggestionId) {
       const p = body.patch ?? {};
-      await db3.prepare("INSERT INTO suggestion_replies (id, suggestion_id, author_email, body, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id("reply"), body.suggestionId, access.viewerEmail, String(p.body ?? "").trim(), p.parentId ? String(p.parentId) : null, timestamp, timestamp).run();
+      await db2.prepare("INSERT INTO suggestion_replies (id, suggestion_id, author_email, body, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id("reply"), body.suggestionId, access.viewerEmail, String(p.body ?? "").trim(), p.parentId ? String(p.parentId) : null, timestamp, timestamp).run();
     } else if (body.action === "suggestion_vote" && body.suggestionId) {
-      const existing = await db3.prepare("SELECT suggestion_id FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).first();
-      if (existing) await db3.prepare("DELETE FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).run();
-      else await db3.prepare("INSERT INTO suggestion_votes (suggestion_id, author_email, created_at) VALUES (?, ?, ?)").bind(body.suggestionId, access.viewerEmail, timestamp).run();
+      const existing = await db2.prepare("SELECT suggestion_id FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).first();
+      if (existing) await db2.prepare("DELETE FROM suggestion_votes WHERE suggestion_id=? AND author_email=?").bind(body.suggestionId, access.viewerEmail).run();
+      else await db2.prepare("INSERT INTO suggestion_votes (suggestion_id, author_email, created_at) VALUES (?, ?, ?)").bind(body.suggestionId, access.viewerEmail, timestamp).run();
     } else if (body.action === "suggestion_manage" && body.suggestionId) {
       requireEditor(access);
       const p = body.patch ?? {};
-      await db3.prepare("UPDATE suggestions SET status=?, pinned=?, founder_priority=?, founder_note=?, phase_id=?, updated_at=? WHERE id=?").bind(String(p.status ?? "new"), p.pinned ? 1 : 0, p.founderPriority ? 1 : 0, String(p.founderNote ?? ""), p.phaseId ? String(p.phaseId) : null, timestamp, body.suggestionId).run();
+      await db2.prepare("UPDATE suggestions SET status=?, pinned=?, founder_priority=?, founder_note=?, phase_id=?, updated_at=? WHERE id=?").bind(String(p.status ?? "new"), p.pinned ? 1 : 0, p.founderPriority ? 1 : 0, String(p.founderNote ?? ""), p.phaseId ? String(p.phaseId) : null, timestamp, body.suggestionId).run();
     } else {
       return Response.json({ error: "Unsupported action." }, { status: 400 });
     }
@@ -2085,228 +2075,663 @@ async function POST3() {
   return Response.json({ ok: true }, { headers: { "Set-Cookie": clearSessionCookie(), "Cache-Control": "no-store" } });
 }
 
-// app/api/control/users/route.ts
-function db2() {
-  if (!env.DB) throw new Error("Database is unavailable.");
-  return env.DB;
-}
-function userSummary(row, firstOpenAt, lastActiveAt) {
+// lib/analytics-v2/model.ts
+var COHORTS = [
+  "all",
+  "phase-0",
+  "phase-1a",
+  "phase-1b",
+  "phase-2"
+];
+var DAYS = [1, 3, 7, 15, 30];
+var missing = (detail, source = "PostHog", state = "not-connected") => ({ value: null, state, source, detail });
+var measured = (value, detail, source = "PostHog") => ({ value, state: "available", source, detail });
+function ratio(numerator, denominator, detail, pending2 = 0) {
   return {
-    id: row.id,
-    name: row.participant_id,
-    email: null,
-    phone: null,
-    onboardedAt: row.onboarding_completed ? row.updated_at : null,
-    firstOpenAt,
-    lastActiveAt
+    value: denominator ? numerator / denominator * 100 : null,
+    numerator,
+    denominator,
+    pending: pending2,
+    state: denominator ? "available" : pending2 ? "not-eligible" : "no-data",
+    source: "PostHog",
+    detail,
+    unit: "%"
   };
 }
-async function firstOpenAndLastActive(distinctId) {
-  if (!distinctId) return { firstOpenAt: null, lastActiveAt: null };
-  const identity = hogqlString(distinctId);
-  try {
-    const rows = await postHogQuery(
-      `SELECT
-         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = ${identity}) AS first_open_at,
-         (SELECT max(timestamp) FROM events WHERE event = 'wingman_opened' AND distinct_id = ${identity}) AS last_active_at`
-    );
-    const [firstOpenAt, lastActiveAt] = rows[0] ?? [null, null];
-    return { firstOpenAt, lastActiveAt };
-  } catch {
-    return { firstOpenAt: null, lastActiveAt: null };
-  }
+var DAY2 = 864e5;
+function periodStart(period, now3) {
+  return period === "all" ? -Infinity : period === "today" ? Math.floor((now3 + 198e5) / DAY2) * DAY2 - 198e5 : now3 - (period === "7d" ? 7 : 30) * DAY2;
 }
-var PAGE_SIZE = 50;
-async function listUsers(cursor) {
-  await ensurePhase0PostHogSchema();
-  const database3 = db2();
-  const offset = cursor ? Math.max(0, parseInt(Buffer.from(cursor, "base64url").toString("utf8"), 10) || 0) : 0;
-  const rows = await database3.prepare(
-    "SELECT id, participant_id, posthog_distinct_id, onboarding_completed, created_at, updated_at FROM cohort_evidence WHERE phase_id='phase-0' AND onboarding_completed=1 ORDER BY participant_id LIMIT ? OFFSET ?"
-  ).bind(PAGE_SIZE + 1, offset).all();
-  const page = rows.results.slice(0, PAGE_SIZE);
-  const hasMore = rows.results.length > PAGE_SIZE;
-  const users = await Promise.all(
-    page.map(async (row) => {
-      const { firstOpenAt, lastActiveAt } = await firstOpenAndLastActive(row.posthog_distinct_id);
-      return userSummary(row, firstOpenAt, lastActiveAt);
-    })
+function calculate(data, cohort, period) {
+  const now3 = Date.parse(data.asOf), since = periodStart(period, now3);
+  const selectedMembers = data.members.filter(
+    (m) => !m.internal && !m.test && (cohort === "all" || m.cohort === cohort) && Date.parse(m.from) <= now3
   );
-  return {
-    version: 1,
-    status: "available",
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    users,
-    nextCursor: hasMore ? Buffer.from(String(offset + PAGE_SIZE)).toString("base64url") : null
+  const grouped = /* @__PURE__ */ new Map();
+  for (const m of selectedMembers.sort(
+    (a, b) => a.from.localeCompare(b.from)
+  )) {
+    const previous = grouped.get(m.id);
+    if (!previous)
+      grouped.set(m.id, {
+        ...m,
+        intervals: [{ from: m.from, to: m.to }],
+        cohorts: [m.cohort]
+      });
+    else {
+      previous.intervals.push({ from: m.from, to: m.to });
+      if (!previous.cohorts.includes(m.cohort))
+        previous.cohorts.push(m.cohort);
+      if (m.firstOpen && (!previous.firstOpen || m.firstOpen < previous.firstOpen))
+        previous.firstOpen = m.firstOpen;
+    }
+  }
+  const members = [...grouped.values()];
+  const observed = members.filter(
+    (m) => m.firstOpen && Date.parse(m.firstOpen) <= now3
+  );
+  const has = (cap) => data.capabilities.includes(cap);
+  const unavailable2 = (cap) => missing(
+    data.state !== "available" ? data.detail : `Awaiting verified ${cap} instrumentation.`,
+    "PostHog",
+    data.state !== "available" ? data.state : "not-connected"
+  );
+  const facts = /* @__PURE__ */ new Map();
+  for (const m of members) {
+    const dedup = /* @__PURE__ */ new Map();
+    for (const f of data.facts)
+      if (!f.internal && !f.test && f.user === m.id && Date.parse(f.at) <= now3 && m.intervals.some(
+        (interval) => Date.parse(f.at) >= Date.parse(interval.from) && (!interval.to || Date.parse(f.at) < Date.parse(interval.to))
+      )) {
+        const key = ["message", "complete", "failed"].includes(f.kind) && f.request ? `${f.kind}:${f.request}` : f.id;
+        const previous = dedup.get(key);
+        if (!previous || f.at < previous.at) dedup.set(key, f);
+      }
+    facts.set(m.id, [...dedup.values()]);
+  }
+  const selected = (m, start = since) => (facts.get(m.id) ?? []).filter((f) => Date.parse(f.at) >= start);
+  const all = members.flatMap((m) => selected(m));
+  const count = (cap, value, detail) => data.state !== "available" || !has(cap) ? unavailable2(cap) : members.length ? measured(value, detail) : missing("No members in this cohort.", "Reconciled", "no-data");
+  const usersWith2 = (cap, pred, detail) => count(cap, members.filter((m) => selected(m).some(pred)).length, detail);
+  const firstMilestone = (cap, kind) => count(
+    cap,
+    members.filter((m) => {
+      const first = (facts.get(m.id) ?? []).filter((f) => f.kind === kind).map((f) => Date.parse(f.at)).sort((a, b) => a - b)[0];
+      return first !== void 0 && first >= since && m.firstOpen !== null && Date.parse(m.firstOpen) >= Date.parse(data.coverageFrom);
+    }).length,
+    `Users whose first observed ${kind} in this cohort occurred in the selected period. Requires coverage from first open.`
+  );
+  const milestone = (kind, field, n) => usersWith2(
+    field === "people" ? "people" : "memory",
+    (f) => f.kind === kind && (f[field] ?? -1) >= n,
+    `Unique users with a recorded ${field} count of at least ${n} in the selected period. Not a conversion funnel.`
+  );
+  const activeKinds = /* @__PURE__ */ new Set([
+    "app",
+    "first_open",
+    "onboarding",
+    "person",
+    "memory",
+    "wingman",
+    "message",
+    "calendar",
+    "situation"
+  ]);
+  const active = members.filter(
+    (m) => selected(m).some((f) => activeKinds.has(f.kind))
+  );
+  const retained = (type, day, population = observed) => {
+    const cap = type === "app" ? "app-return" : type === "wingman" ? "wingman" : "situations";
+    if (data.state !== "available" || !has(cap)) return unavailable2(cap);
+    let eligible = 0, returned = 0, pending2 = 0;
+    for (const m of population) {
+      if (!m.firstOpen) continue;
+      const start = Date.parse(m.firstOpen) + day * DAY2, end = start + DAY2;
+      if (!m.intervals.some(
+        (interval) => start >= Date.parse(interval.from) && (!interval.to || end <= Date.parse(interval.to))
+      ))
+        continue;
+      if (end > now3) {
+        pending2++;
+        continue;
+      }
+      if (end < since) continue;
+      if (Date.parse(m.firstOpen) < Date.parse(data.coverageFrom)) continue;
+      eligible++;
+      if ((facts.get(m.id) ?? []).some(
+        (f) => Date.parse(f.at) >= start && Date.parse(f.at) < end && (type === "app" ? activeKinds.has(f.kind) : type === "wingman" ? f.kind === "message" : f.kind === "situation")
+      ))
+        returned++;
+    }
+    return ratio(
+      returned,
+      eligible,
+      `D${day}: [${day * 24}, ${(day + 1) * 24}) hours after first open. Only fully closed windows; time filter selects window-end dates. ${pending2} windows pending.`,
+      pending2
+    );
   };
-}
-async function userDetail(id2) {
-  await ensurePhase0PostHogSchema();
-  const database3 = db2();
-  const row = await database3.prepare(
-    "SELECT id, participant_id, posthog_distinct_id, onboarding_completed, created_at, updated_at FROM cohort_evidence WHERE phase_id='phase-0' AND id=?"
-  ).bind(id2).first();
-  if (!row) return null;
-  if (!row.posthog_distinct_id) {
-    return {
-      version: 1,
-      status: "pending",
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      user: userSummary(row, null, null),
-      totals: { wingmanSessions: null, messages: null, activeSeconds: null, profiles: null, memories: null, calendarEvents: null },
-      days: [],
-      activities: [],
-      activityTruncated: false
+  const retentionFor = (population = observed) => Object.fromEntries(
+    ["app", "wingman", "situation"].map((type) => [
+      type,
+      Object.fromEntries(
+        DAYS.map((day) => [`d${day}`, retained(type, day, population)])
+      )
+    ])
+  );
+  const average = (cap, values, detail) => data.state !== "available" || !has(cap) ? unavailable2(cap) : !values.length ? missing("No observed users.", "PostHog", "no-data") : count(cap, values.reduce((a, b) => a + b, 0) / values.length, detail);
+  const volume = (cap, kind, start, population = members.filter(
+    (m) => selected(m, Math.max(since, start)).some((f) => activeKinds.has(f.kind))
+  )) => average(
+    cap,
+    population.map(
+      (m) => selected(m, Math.max(since, start)).filter((f) => f.kind === kind).length
+    ),
+    "Average number of Wingman messages sent per active user in this window (only users active in the window count). The named window is intersected with the global time filter \u2014 e.g. with Time = 7D, the 30D tile also covers 7 days."
+  );
+  const second = (m, organic = false) => {
+    const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation" && f.situation).sort((a, b) => a.at.localeCompare(b.at));
+    const seen = /* @__PURE__ */ new Set();
+    for (const f of situations) {
+      if (seen.has(f.situation)) continue;
+      seen.add(f.situation);
+      if (seen.size === 2)
+        return Date.parse(f.at) >= since && (!organic || f.attribution === "organic" && f.assisted === false);
+    }
+    return false;
+  };
+  const metrics = {
+    active: count(
+      "activity",
+      active.length,
+      "Unique users with a foreground/product activity event; background response events are excluded."
+    ),
+    activated: has("activation") && data.state === "available" ? ratio(
+      members.filter(
+        (m) => selected(m).some((f) => f.kind === "onboarding") && selected(m).some((f) => f.kind === "activated")
+      ).length,
+      members.filter(
+        (m) => selected(m).some((f) => f.kind === "onboarding")
+      ).length,
+      "Verified meaningful activation among users who onboarded in this period; requires reconciled qualification, not just five messages."
+    ) : unavailable2("activation"),
+    downloads: missing(
+      "Play Console store-level downloads are not individual first opens. No store connector configured.",
+      "Play Console"
+    ),
+    first_opens: usersWith2(
+      "activity",
+      (f) => f.kind === "first_open",
+      "Unique first app opens in the selected period."
+    ),
+    onboarded: usersWith2(
+      "onboarding",
+      (f) => f.kind === "onboarding",
+      "Unique users completing onboarding in the selected period."
+    ),
+    wingman_opened: usersWith2(
+      "wingman",
+      (f) => f.kind === "wingman",
+      "Unique users opening Wingman in the selected period."
+    ),
+    first_message: firstMilestone("wingman", "message"),
+    first_answer: firstMilestone("responses", "complete"),
+    five_messages: count(
+      "wingman",
+      members.filter(
+        (m) => selected(m).filter((f) => f.kind === "message").length >= 5
+      ).length,
+      "Users sending at least five distinct requests in the selected period."
+    ),
+    second_situation: count(
+      "situations",
+      members.filter((m) => second(m)).length,
+      "Users whose second distinct, verified genuine situation occurred in the selected period. A message is not a situation."
+    ),
+    organic_second: has("situations") && has("attribution") ? count(
+      "situations",
+      members.filter((m) => second(m, true)).length,
+      "Second verified situation, independently initiated and positively attributed organic. Unknown attribution is excluded, not assumed organic."
+    ) : unavailable2("attribution"),
+    messages_day: volume("wingman", "message", periodStart("today", now3)),
+    messages_7d: volume("wingman", "message", now3 - 7 * DAY2),
+    messages_30d: volume("wingman", "message", now3 - 30 * DAY2),
+    sessions: average(
+      "sessions",
+      active.map(
+        (m) => new Set(
+          selected(m).filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
+        ).size
+      ),
+      "Distinct Wingman session IDs per active user. Never approximated as calendar days."
+    ),
+    people_used: count(
+      "people-use",
+      new Set(
+        all.filter((f) => f.kind === "message" && f.person).map((f) => `${f.user}:${f.person}`)
+      ).size,
+      "Distinct user/person pairs actually used with Wingman in this period."
+    ),
+    people_used_2: count(
+      "people-use",
+      members.filter(
+        (m) => new Set(
+          selected(m).filter((f) => f.kind === "message").map((f) => f.person).filter(Boolean)
+        ).size >= 2
+      ).length,
+      "Users who used Wingman with two or more distinct saved people in this period."
+    ),
+    memory_reused: usersWith2(
+      "memory-reuse",
+      (f) => f.kind === "memory_reused",
+      "Users with a verified later request using previously saved memory context; memory creation is not reuse."
+    )
+  };
+  for (const n of [1, 2, 3, 5])
+    metrics[`people_${n}`] = milestone("person", "people", n);
+  for (const n of [1, 3, 5, 20])
+    metrics[`memory_${n}`] = milestone("memory", "memories", n);
+  const peak = (m, field) => Math.max(0, ...(facts.get(m.id) ?? []).map((f) => f[field] ?? 0));
+  metrics.people_average = average(
+    "people",
+    active.map((m) => peak(m, "people")),
+    "Average observed peak people count per active user in the selected period; not current inventory after deletion."
+  );
+  metrics.memory_average = average(
+    "memory",
+    active.map((m) => peak(m, "memories")),
+    "Average observed peak memory count per active user in the selected period; not current inventory after deletion."
+  );
+  const mem = active.map((m) => peak(m, "memories")).sort((a, b) => a - b);
+  metrics.memory_median = data.state !== "available" || !has("memory") ? unavailable2("memory") : mem.length ? count(
+    "memory",
+    (mem[Math.floor((mem.length - 1) / 2)] + mem[Math.floor(mem.length / 2)]) / 2,
+    "Median observed peak memory count among active users in the selected period."
+  ) : missing("No observed users.", "PostHog", "no-data");
+  const requests = all.filter((f) => f.kind === "message");
+  const completed = all.filter((f) => f.kind === "complete");
+  const completedIds = new Set(
+    completed.map((f) => `${f.user}:${f.request ?? f.id}`)
+  );
+  const failed = all.filter(
+    (f) => f.kind === "failed" && !completedIds.has(`${f.user}:${f.request ?? f.id}`)
+  );
+  metrics.complete = count(
+    "responses",
+    completed.length,
+    "Completed unique requests; retries deduplicated by request ID."
+  );
+  metrics.failed = count(
+    "responses",
+    failed.length,
+    "Failed requests without a completion in this period. Pending requests are not failures."
+  );
+  metrics.success = has("responses") && data.state === "available" ? ratio(
+    completed.length,
+    completed.length + failed.length,
+    "Completed / resolved requests. In-flight requests excluded; late successes reconcile failures."
+  ) : unavailable2("responses");
+  for (const [key, cap, kind] of [
+    ["retries", "retries", "retry"],
+    ["fallbacks", "fallbacks", "fallback"]
+  ])
+    metrics[key] = count(
+      cap,
+      all.filter((f) => f.kind === kind).length,
+      `Recorded ${key} events in the selected period.`
+    );
+  const latencies = completed.map((f) => f.latency).filter((n) => n !== void 0).sort((a, b) => a - b);
+  for (const [key, q] of [
+    ["latency_median", 0.5],
+    ["latency_p95", 0.95]
+  ])
+    metrics[key] = !has("latency") ? unavailable2("latency") : latencies.length ? {
+      ...count(
+        "latency",
+        latencies[Math.max(0, Math.ceil(q * latencies.length) - 1)],
+        "Nearest-rank latency over complete responses in milliseconds."
+      ),
+      unit: "ms"
+    } : missing("No latency observations.", "Backend", "no-data");
+  metrics.requests = count(
+    "wingman",
+    requests.length,
+    "Unique user requests in the selected period, excluding automatic retries."
+  );
+  const usage = all.filter((f) => f.kind === "usage");
+  for (const [key, field] of [
+    ["input_tokens", "input"],
+    ["output_tokens", "output"],
+    ["cost", "cost"]
+  ]) {
+    const cap = field === "cost" ? "cost" : "tokens";
+    metrics[key] = !has(cap) || data.state !== "available" ? unavailable2(cap) : !usage.length || usage.some((f) => f[field] === void 0) ? missing(
+      "No complete billing coverage; totals withheld.",
+      "Backend",
+      "no-data"
+    ) : {
+      ...count(
+        cap,
+        usage.reduce((sum, f) => sum + (f[field] ?? 0), 0),
+        "Sum over all billable usage records, including retries/failures; verified complete coverage required."
+      ),
+      source: "Backend",
+      ...field === "cost" ? { unit: "USD" } : {}
     };
   }
-  const distinctId = row.posthog_distinct_id;
-  const identity = hogqlString(distinctId);
-  try {
-    const totalsRows = await postHogQuery(
-      `SELECT
-         countIf(event = 'response_started') AS messages,
-         countIf(event = 'person_context_created') AS profiles,
-         countIf(event = 'memory_added') AS memories,
-         countIf(event = 'calendar_event_created') AS calendar_events,
-         (SELECT min(timestamp) FROM events WHERE event = 'first_open' AND distinct_id = ${identity}) AS first_open_at
-       FROM events WHERE distinct_id = ${identity}`
+  metrics.total_tokens = metrics.input_tokens.state === "available" && metrics.output_tokens.state === "available" ? measured(
+    metrics.input_tokens.value + metrics.output_tokens.value,
+    "Input plus output tokens.",
+    "Backend"
+  ) : missing(
+    "Awaiting complete token telemetry.",
+    "Backend",
+    metrics.input_tokens.state !== "available" ? metrics.input_tokens.state : metrics.output_tokens.state
+  );
+  for (const [key, denom] of [
+    ["cost_request", "requests"],
+    ["cost_active", "active"],
+    ["cost_activation", "activated"],
+    ["cost_repeater", "organic_second"]
+  ]) {
+    const d = denom === "activated" ? metrics[denom].numerator : metrics[denom].value;
+    metrics[key] = metrics.cost.state === "available" && metrics[denom].state === "available" && d ? {
+      ...measured(
+        metrics.cost.value / d,
+        `Measured AI cost / ${denom.replaceAll("_", " ")} in the same selected period.`,
+        "Backend"
+      ),
+      unit: "USD"
+    } : missing(
+      "Awaiting measured cost and a non-zero, verified denominator.",
+      "Backend",
+      metrics.cost.state !== "available" ? metrics.cost.state : metrics[denom].state !== "available" ? metrics[denom].state : "no-data"
     );
-    const [messages, profiles, memories, calendarEvents, firstOpenAt] = totalsRows[0] ?? [0, 0, 0, 0, null];
-    const sessionRows = firstOpenAt ? await postHogQuery(
-      `SELECT count(DISTINCT toDate(timestamp)) FROM events WHERE event = 'response_started' AND distinct_id = ${identity}`
-    ) : [[0]];
-    const wingmanSessions = sessionRows[0]?.[0] ?? null;
-    const activityRows = firstOpenAt ? await postHogQuery(
-      `SELECT timestamp, event FROM events
-           WHERE distinct_id = ${identity}
-             AND event IN ('response_started','response_completed','person_context_created','memory_added','calendar_event_created')
-           ORDER BY timestamp DESC LIMIT 101`
-    ) : [];
-    const activityLabels = {
-      response_started: "Sent a Wingman message",
-      response_completed: "Received a Wingman reply",
-      person_context_created: "Added a person",
-      memory_added: "Added a memory",
-      calendar_event_created: "Added a calendar event"
+  }
+  const users = observed.map((m) => {
+    const uf = selected(m);
+    const um = {
+      onboarding: count(
+        "onboarding",
+        (facts.get(m.id) ?? []).some((f) => f.kind === "onboarding") ? 1 : 0,
+        "Onboarding status as of the latest source snapshot, within cohort boundaries."
+      ),
+      people: count(
+        "people",
+        peak(m, "people"),
+        "Observed peak people count in selected period."
+      ),
+      memories: count(
+        "memory",
+        peak(m, "memories"),
+        "Observed peak memory count in selected period."
+      ),
+      people_used: count(
+        "people-use",
+        new Set(
+          uf.filter((f) => f.kind === "message").map((f) => f.person).filter(Boolean)
+        ).size,
+        "Distinct people used with Wingman."
+      ),
+      second_situation: count(
+        "situations",
+        second(m) ? 1 : 0,
+        "Second verified situation in selected period."
+      ),
+      independent: count(
+        "attribution",
+        uf.filter((f) => f.kind === "message" && f.assisted === false).length,
+        "Messages explicitly marked independent. Unknowns are not independent."
+      ),
+      assisted: count(
+        "attribution",
+        uf.filter((f) => f.kind === "message" && f.assisted === true).length,
+        "Messages explicitly marked assisted."
+      )
     };
-    const activityTruncated = activityRows.length > 100;
-    const activities = activityRows.slice(0, 100).map((activityRow, index) => {
-      const [timestamp, event] = activityRow;
-      return { id: `${distinctId}-${index}`, at: timestamp, label: activityLabels[event] ?? "Activity" };
-    });
-    const days = [];
-    if (firstOpenAt) {
-      const firstOpenMs = Date.parse(firstOpenAt);
-      for (let day = 0; day < 4; day += 1) {
-        const startMs = firstOpenMs + day * 24 * 60 * 60 * 1e3;
-        const endMs = startMs + 24 * 60 * 60 * 1e3;
-        const closed = Date.now() >= endMs;
-        const dayRows = await postHogQuery(
-          `SELECT
-             countIf(event='response_started') AS messages,
-             countIf(event='person_context_created') AS profiles,
-             countIf(event='memory_added') AS memories,
-             countIf(event='calendar_event_created') AS calendar_events
-           FROM events
-           WHERE distinct_id = ${identity}
-             AND timestamp >= toDateTime('${new Date(startMs).toISOString()}')
-             AND timestamp < toDateTime('${new Date(endMs).toISOString()}')`
-        );
-        const [dayMessages, dayProfiles, dayMemories, dayCalendar] = dayRows[0] ?? [0, 0, 0, 0];
-        days.push({
-          day,
-          startedAt: new Date(startMs).toISOString(),
-          status: closed ? "available" : "pending",
-          wingmanSessions: null,
-          messages: dayMessages ?? null,
-          activeSeconds: null,
-          profiles: dayProfiles ?? null,
-          memories: dayMemories ?? null,
-          calendarEvents: dayCalendar ?? null
-        });
-      }
-    }
-    return {
-      version: 1,
-      status: "available",
-      updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      user: userSummary(row, firstOpenAt, activities[0]?.at ?? null),
-      totals: {
-        wingmanSessions,
-        messages,
-        // activeSeconds requires foreground heartbeat instrumentation that
-        // doesn't exist yet — never approximated from session duration.
-        activeSeconds: null,
-        profiles,
-        memories,
-        calendarEvents
-      },
-      days,
-      activities,
-      activityTruncated
-    };
-  } catch (error) {
-    if (error instanceof PostHogUnavailableError) {
-      return {
-        version: 1,
-        status: "unavailable",
-        updatedAt: null,
-        user: userSummary(row, null, null),
-        totals: { wingmanSessions: null, messages: null, activeSeconds: null, profiles: null, memories: null, calendarEvents: null },
-        days: [],
-        activities: [],
-        activityTruncated: false
+    for (const p of ["today", "7d", "30d"]) {
+      const fs = selected(m, Math.max(since, periodStart(p, now3)));
+      um[`messages_${p}`] = count(
+        "wingman",
+        fs.filter((f) => f.kind === "message").length,
+        `${p} intersected with global time filter.`
+      );
+      um[`sessions_${p}`] = count(
+        "sessions",
+        new Set(
+          fs.filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
+        ).size,
+        "Distinct Wingman session IDs."
+      );
+      um[`time_${p}`] = {
+        ...count(
+          "foreground",
+          fs.filter((f) => f.kind === "foreground").reduce((sum, f) => sum + (f.seconds ?? 0), 0),
+          "Sum of deduplicated foreground duration events; background time excluded."
+        ),
+        unit: "seconds"
       };
-    }
-    throw error;
-  }
-}
-async function GET3(request) {
-  const access = await trackerAccess(request);
-  if (!access.canEdit) {
-    return Response.json(
-      { error: "Sign in with an authorized staff account." },
-      { status: 403, headers: { "Cache-Control": "private, no-store" } }
-    );
-  }
-  const url = new URL(request.url);
-  const id2 = url.searchParams.get("id");
-  const cursor = url.searchParams.get("cursor");
-  if (id2 && id2.length > 256) {
-    return Response.json({ error: "Invalid request." }, { status: 400, headers: { "Cache-Control": "private, no-store" } });
-  }
-  if (id2) {
-    try {
-      const detail = await userDetail(id2);
-      if (!detail) {
-        return Response.json({ error: "Not found." }, { status: 404, headers: { "Cache-Control": "private, no-store" } });
-      }
-      return Response.json(detail, { headers: { "Cache-Control": "private, no-store" } });
-    } catch {
-      return Response.json(
-        {
-          version: 1,
-          status: "unavailable",
-          updatedAt: null,
-          user: null,
-          totals: { wingmanSessions: null, messages: null, activeSeconds: null, profiles: null, memories: null, calendarEvents: null },
-          days: [],
-          activities: [],
-          activityTruncated: false
-        },
-        { headers: { "Cache-Control": "private, no-store" } }
+      um[`days_${p}`] = count(
+        "activity",
+        new Set(
+          fs.filter((f) => activeKinds.has(f.kind)).map((f) => Math.floor((Date.parse(f.at) + 198e5) / DAY2))
+        ).size,
+        "Distinct active calendar days in Asia/Kolkata."
       );
     }
+    for (const a of ["organic", "reminder", "founder", "unknown"])
+      um[`return_${a}`] = count(
+        "attribution",
+        uf.filter(
+          (f) => f.kind === "message" && Date.parse(f.at) >= Date.parse(m.firstOpen) + DAY2 && (f.attribution ?? "unknown") === a
+        ).length,
+        `Return requests after the first 24 hours, attributed ${a}. This is attribution, not causal proof.`
+      );
+    return {
+      id: m.id,
+      cohort: m.cohort,
+      cohorts: m.cohorts,
+      acquisition: m.acquisition,
+      firstOpen: m.firstOpen,
+      lastActive: (facts.get(m.id) ?? []).filter((f) => activeKinds.has(f.kind)).map((f) => f.at).sort().at(-1) ?? null,
+      metrics: um,
+      retention: retentionFor([m])
+    };
+  });
+  const restamp = (record) => {
+    if (!data.source) return record;
+    for (const key of Object.keys(record))
+      if (record[key].source === "PostHog") record[key] = { ...record[key], source: data.source };
+    return record;
+  };
+  const restampRetention = (r) => {
+    for (const type of Object.keys(r)) restamp(r[type]);
+    return r;
+  };
+  for (const u of users) {
+    restamp(u.metrics);
+    restampRetention(u.retention);
   }
-  try {
-    const list = await listUsers(cursor);
-    return Response.json(list, { headers: { "Cache-Control": "private, no-store" } });
-  } catch {
-    return Response.json(
-      { version: 1, status: "unavailable", updatedAt: null, users: [], nextCursor: null },
-      { headers: { "Cache-Control": "private, no-store" } }
-    );
+  return {
+    version: 2,
+    mode: data.mode,
+    asOf: data.asOf,
+    coverageFrom: data.coverageFrom,
+    cohort,
+    period,
+    state: data.state,
+    detail: data.detail,
+    metrics: restamp(metrics),
+    retention: restampRetention(retentionFor()),
+    users,
+    excluded: data.members.filter((m) => m.internal || m.test).length
+  };
+}
+
+// lib/analytics-v2/fixture.ts
+function fixture(now3 = Date.now()) {
+  const iso = (n) => new Date(n).toISOString();
+  const data = {
+    mode: "test",
+    state: "available",
+    detail: "Synthetic preview data \xB7 not Phase 0 results",
+    asOf: iso(now3),
+    coverageFrom: iso(now3 - 90 * DAY2),
+    members: [],
+    facts: [],
+    capabilities: [
+      "activity",
+      "app-return",
+      "onboarding",
+      "people",
+      "memory",
+      "wingman",
+      "responses",
+      "sessions",
+      "foreground",
+      "situations",
+      "activation",
+      "memory-reuse",
+      "people-use",
+      "retries",
+      "fallbacks",
+      "latency",
+      "tokens",
+      "cost",
+      "attribution"
+    ]
+  };
+  const ages = [45, 34, 20, 10, 5, 2.5, 0.5];
+  for (let i = 0; i < ages.length; i++) {
+    const id2 = `participant-${String(i + 1).padStart(3, "0")}`, first = now3 - ages[i] * DAY2;
+    data.members.push({
+      id: id2,
+      cohort: i < 4 ? "phase-0" : i < 6 ? "phase-1a" : "phase-1b",
+      from: iso(first),
+      firstOpen: iso(first),
+      internal: false,
+      test: false,
+      acquisition: i % 2 ? "referral" : "organic"
+    });
+    let sequence = 0;
+    const add = (offset, kind, extra = {}) => {
+      if (first + offset * DAY2 <= now3)
+        data.facts.push({
+          id: `${id2}-${sequence++}`,
+          user: id2,
+          at: iso(first + offset * DAY2),
+          kind,
+          ...extra
+        });
+    };
+    add(0, "first_open");
+    add(0.01, "onboarding");
+    add(0.03, "person", { people: [5, 3, 2, 1, 5, 2, 1][i] });
+    add(0.04, "memory", { memories: [20, 5, 3, 1, 5, 1, 0][i] });
+    if (i % 2 === 0) add(0.05, "activated");
+    for (const day of [0, 1, 3, 7, 15, 30]) {
+      if (day && i % 3 === 1) continue;
+      add(day + 0.1, "app");
+      add(day + 0.1, "wingman", { session: `s-${i}-${day}` });
+      add(day + 0.2, "foreground", { seconds: 180 + i * 17 });
+      for (let msg = 0; msg < (i % 2 ? 2 : 6); msg++) {
+        const request = `r-${i}-${day}-${msg}`;
+        add(day + 0.11 + msg * 1e-3, "message", {
+          request,
+          session: `s-${i}-${day}`,
+          person: `person-${msg % 2}`,
+          assisted: i === 2,
+          attribution: i === 2 ? "founder" : "organic"
+        });
+        add(
+          day + 0.112 + msg * 1e-3,
+          msg === 1 && i === 3 ? "failed" : "complete",
+          {
+            request,
+            latency: 600 + msg * 100,
+            input: 100,
+            output: 50,
+            cost: 2e-3
+          }
+        );
+        add(day + 0.112 + msg * 1e-3, "usage", {
+          request,
+          input: 100,
+          output: 50,
+          cost: 2e-3
+        });
+      }
+      add(day + 0.12, "situation", {
+        situation: `situation-${i}-${day}`,
+        assisted: false,
+        attribution: i === 2 ? "founder" : "organic"
+      });
+      if (day > 0) add(day + 0.13, "memory_reused");
+    }
+    add(ages[i] - 0.1, "app");
+    add(ages[i] - 0.09, "wingman", { session: `recent-${i}` });
+    add(ages[i] - 0.08, "message", {
+      request: `recent-r-${i}`,
+      session: `recent-${i}`,
+      person: "person-0",
+      attribution: "organic",
+      assisted: false
+    });
+    add(ages[i] - 0.079, "complete", {
+      request: `recent-r-${i}`,
+      latency: 1200,
+      input: 200,
+      output: 80,
+      cost: 4e-3
+    });
+    add(ages[i] - 0.079, "usage", {
+      request: `recent-r-${i}`,
+      input: 200,
+      output: 80,
+      cost: 4e-3
+    });
   }
+  data.members.push(
+    { ...data.members[0], id: "excluded-internal", internal: true },
+    { ...data.members[0], id: "excluded-test", test: true }
+  );
+  data.facts.push({
+    id: "excluded-message",
+    user: "excluded-internal",
+    at: iso(now3 - 1e3),
+    kind: "message",
+    request: "excluded"
+  });
+  return data;
+}
+
+// app/api/analytics/v2/route.ts
+async function GET3(request) {
+  const url = new URL(request.url);
+  const cohort = url.searchParams.get("cohort") || "all", period = url.searchParams.get("period") || "all";
+  const users = url.searchParams.get("view") === "users";
+  if (!COHORTS.includes(cohort) || !["today", "7d", "30d", "all"].includes(period))
+    return Response.json({ error: "Invalid filter" }, { status: 400 });
+  const synthetic = url.searchParams.get("dataset") === "test";
+  if (synthetic && !(process.env.VERCEL_ENV === "preview" || process.env.CONTROL_V2_LOCAL_TEST === "true"))
+    return Response.json({ error: "Test data disabled" }, { status: 403 });
+  if (users && !synthetic && !(await trackerAccess(request)).canEdit)
+    return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+  const result2 = calculate(
+    synthetic ? fixture() : await liveDatasetFromBackend(),
+    cohort,
+    period
+  );
+  const names2 = users && !synthetic ? backendDisplayNames() : void 0;
+  return Response.json(
+    {
+      ...result2,
+      users: users ? result2.users.map((u) => {
+        const label = names2?.get(u.id);
+        return label ? { ...u, label } : u;
+      }) : []
+    },
+    { headers: { "Cache-Control": "private, no-store" } }
+  );
 }
 
 // server/vercel-handler.ts
@@ -2316,16 +2741,13 @@ async function handle(request) {
   const method = request.method;
   const json = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   if (path === "/api/health") return json({ host: "vercel", database: process.env.TURSO_DATABASE_URL ? "configured" : "missing", sitesDependency: false });
+  if (path === "/api/analytics/v2/access" && method === "GET") return json({ ...await trackerAccess(request), phases: [], releaseGates: [] });
   const handlers = {
+    "/api/analytics/v2": { GET: GET3 },
     "/api/tracker": { GET, PATCH },
     "/api/workspace": { GET: GET2, POST },
     "/api/auth/login": { POST: POST2 },
-    "/api/auth/logout": { POST: POST3 },
-    // control/users enforces its own staff-only access check internally
-    // (see app/api/control/users/route.ts) — not gated here, matching the
-    // "backend verifies access itself, the gateway is defense in depth"
-    // requirement in USERS_POSTHOG_HANDOFF.md.
-    "/api/control/users": { GET: GET3 }
+    "/api/auth/logout": { POST: POST3 }
   };
   const route = handlers[path];
   if (!route) return json({ error: "Not found" }, 404);

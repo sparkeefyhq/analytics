@@ -5,9 +5,11 @@ let client: Client | undefined;
 const context = new AsyncLocalStorage<Transaction>();
 function connection() {
   if (!client) {
-    const url = process.env.TURSO_DATABASE_URL;
+    const isolated = process.env.VERCEL_ENV === 'preview';
+    const url = isolated ? process.env.V2_TURSO_DATABASE_URL : process.env.TURSO_DATABASE_URL;
     if (!url) throw Error('TURSO_DATABASE_URL is required.');
-    client = createClient({url, authToken:process.env.TURSO_AUTH_TOKEN});
+    if (isolated && url === process.env.TURSO_DATABASE_URL) throw Error('Preview must not use production storage.');
+    client = createClient({url, authToken:isolated ? process.env.V2_TURSO_AUTH_TOKEN : process.env.TURSO_AUTH_TOKEN});
   }
   return client;
 }

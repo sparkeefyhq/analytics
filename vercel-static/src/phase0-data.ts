@@ -5,9 +5,9 @@ export type Observation = {
   pending?: number;
   excluded?: number;
   status: 'available' | 'pending' | 'unavailable' | 'error';
-  source: 'posthog' | 'play-console' | 'manual' | 'reconciled';
+  source: 'backend' | 'posthog' | 'play-console' | 'manual' | 'reconciled';
 };
-export type TopUser = { distinctId: string; email: string | null; name: string | null; messageCount: number };
+export type TopUser = { distinctId: string; email: string | null; name?: string | null; messageCount: number };
 
 /** Optional, additive GET /api/tracker.analytics.phase0 contract. */
 export type Phase0Snapshot = {
@@ -17,9 +17,6 @@ export type Phase0Snapshot = {
   metrics: Record<string, Observation>;
   activeUsers?: Partial<Record<Period, Observation>>;
   topUsers?: TopUser[];
-  topUsersNameSource?: 'ok' | 'not_configured' | 'unauthorized' | 'backend_error' | 'network_error';
-  /** The backend's live ANALYTICS_PHASE, read off recent events — not a UI assumption. */
-  activePhase?: 'phase_0' | 'phase_1' | null;
 };
 export const groups = [
   { title: 'Getting started', rows: [
@@ -68,5 +65,5 @@ export function statusText(item?: Observation): string {
   if (!item || item.status === 'unavailable') return 'Not connected';
   if (item.status === 'pending') return 'Observing';
   if (item.status === 'error') return 'Source unavailable';
-  return {posthog:'PostHog', 'play-console':'Google Play', manual:'Manual', reconciled:'Reconciled'}[item.source];
+  return {backend:'Backend', posthog:'PostHog', 'play-console':'Google Play', manual:'Manual', reconciled:'Reconciled'}[item.source];
 }

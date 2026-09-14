@@ -31,7 +31,7 @@ const phaseOneFallbackMetrics: Metric[] = [
 ];
 // Kept only for backwards-compatible action handling; the Phase 0 UI no longer
 // renders participant evidence or release-gate controls.
-type ReleaseGate = { id: string; actual: number };
+type ReleaseGate = { id: string; actual: number; name?: string };
 type CohortParticipant = any;
 type Check = { id: string; label: string; completed: boolean };
 type Phase = {
@@ -2300,7 +2300,7 @@ function SarthakV3({
             ("meeting_link" in focus && focus.meeting_link) ? (
               <a
                 className="outline"
-                href={("link" in focus ? focus.link : focus.meeting_link) || ""}
+                href={("link" in focus ? focus.link : "meeting_link" in focus ? focus.meeting_link : "") || ""}
                 target="_blank"
                 rel="noreferrer"
               >
@@ -2983,7 +2983,7 @@ function Launch({
           ? `${m.actual}/${m.actualDenominator || 0}`
           : `${m.actual}`;
   const metricPercent = (m: Metric) =>
-    m.actual === null || m.actualDenominator === null
+    m.actual === null || m.actualDenominator == null
       ? null
       : m.actualDenominator > 0
         ? Math.round((m.actual / m.actualDenominator) * 100)
@@ -4385,7 +4385,7 @@ function App() {
 
   async function load() {
     try {
-      const response = await fetch("/api/tracker");
+      const response = await fetch(location.pathname === '/plan' ? '/api/tracker' : '/api/analytics/v2/access');
       if (response.status === 401) {
         setNeedsLogin(true);
         return;
@@ -4403,13 +4403,13 @@ function App() {
     // moved into the two Control surfaces.
     if (["/launch", "/sarthak", "/suggestions", "/"].includes(location.pathname))
       history.replaceState({}, "", "/analytics");
-    void load();
     const onPopState = () => setView(location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : "analytics");
     addEventListener("popstate", onPopState);
     return () => removeEventListener("popstate", onPopState);
   }, []);
+  useEffect(() => { void load(); }, [view]);
   const navigate = (next: "analytics" | "plan" | "users") => {
-    history.pushState({}, "", `/${next}`);
+    history.pushState({}, "", `/${next}${location.search}`);
     setView(next);
   };
   async function save(action: string, patch?: Record<string, unknown>, id?: string) {
