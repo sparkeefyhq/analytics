@@ -157,12 +157,56 @@ test('topUsersByMessages ranks by message volume and passes through a null email
     const result = await topUsersByMessages(10);
     assert.equal(result.status, 'available');
     assert.deepEqual(result.users, [
-      { distinctId: 'user-a', messageCount: 33, email: 'sarthakverma0802@gmail.com' },
-      { distinctId: 'user-b', messageCount: 3, email: null },
+      { distinctId: 'user-a', messageCount: 33, email: 'sarthakverma0802@gmail.com', name: null },
+      { distinctId: 'user-b', messageCount: 3, email: null, name: null },
     ]);
   } finally {
     global.fetch = originalFetch;
     for (const [key, value] of Object.entries({ POSTHOG_HOST: originalEnv.host, POSTHOG_PROJECT_ID: originalEnv.project, POSTHOG_API_KEY: originalEnv.key })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
+test('topUsersByMessages resolves a real profile name from the backend for a phone-auth user with no PostHog email', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    host: process.env.POSTHOG_HOST,
+    project: process.env.POSTHOG_PROJECT_ID,
+    key: process.env.POSTHOG_API_KEY,
+    backendUrl: process.env.SPARKEEFY_BACKEND_URL,
+    backendKey: process.env.SPARKEEFY_BACKEND_ADMIN_KEY,
+  };
+  process.env.POSTHOG_HOST = 'https://posthog.example.test';
+  process.env.POSTHOG_PROJECT_ID = '1';
+  process.env.POSTHOG_API_KEY = 'test-key';
+  process.env.SPARKEEFY_BACKEND_URL = 'https://backend.example.test';
+  process.env.SPARKEEFY_BACKEND_ADMIN_KEY = 'test-admin-key';
+  global.fetch = async (url, init) => {
+    if (String(url).includes('posthog.example.test')) {
+      return new Response(JSON.stringify({ results: [['user-a', 33, null]] }), { status: 200 });
+    }
+    assert.equal(init?.headers?.['x-admin-api-key'], 'test-admin-key');
+    return new Response(
+      JSON.stringify({ data: { users: [{ userId: 'user-a', name: 'Rahul' }, { userId: 'user-c', name: 'Someone else' }] } }),
+      { status: 200 },
+    );
+  };
+  try {
+    const result = await topUsersByMessages(10);
+    assert.equal(result.status, 'available');
+    assert.deepEqual(result.users, [
+      { distinctId: 'user-a', messageCount: 33, email: null, name: 'Rahul' },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+    for (const [key, value] of Object.entries({
+      POSTHOG_HOST: originalEnv.host,
+      POSTHOG_PROJECT_ID: originalEnv.project,
+      POSTHOG_API_KEY: originalEnv.key,
+      SPARKEEFY_BACKEND_URL: originalEnv.backendUrl,
+      SPARKEEFY_BACKEND_ADMIN_KEY: originalEnv.backendKey,
+    })) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
   }

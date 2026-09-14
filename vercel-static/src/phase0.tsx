@@ -27,7 +27,7 @@ function TopUsers({ users }: { users?: TopUser[] }) {
     <div className="card-row"><h2>Most active users</h2><span className="data-chip">PostHog</span></div>
     {!users || users.length === 0
       ? <p className="p0-caption">No Wingman requests recorded yet.</p>
-      : <ol className="p0-top-users-list">{users.map(user => <li key={user.distinctId}><span>{user.email || `${user.distinctId.slice(0, 12)}…`}</span><strong>{user.messageCount.toLocaleString('en-IN')}<small> messages</small></strong></li>)}</ol>}
+      : <ol className="p0-top-users-list">{users.map(user => <li key={user.distinctId}><span>{user.name || user.email || `${user.distinctId.slice(0, 12)}…`}</span><strong>{user.messageCount.toLocaleString('en-IN')}<small> messages</small></strong></li>)}</ol>}
   </section>;
 }
 

@@ -1,4 +1,5 @@
 import { env } from "@/lib/runtime-env";
+import { fetchUserNames } from "@/lib/backend-admin";
 
 /**
  * Server-only PostHog query client + Phase 0 metric builders.
@@ -394,12 +395,17 @@ export async function responsesRetried(): Promise<Observation> {
   }
 }
 
-export type TopUser = { distinctId: string; email: string | null; messageCount: number };
+export type TopUser = { distinctId: string; email: string | null; name: string | null; messageCount: number };
 
 /** "Which user used Wingman most" — ranked by raw message volume,
- * project-wide, straight from PostHog. Email comes from whatever the app
- * already sent PostHog via $identify; genuinely anonymous distinct_ids show
- * up with a null email rather than a fabricated name. */
+ * project-wide, straight from PostHog. `email` comes from whatever the app
+ * already sent PostHog via $identify (rarely set — Sparkeefy signs users in
+ * by phone, not email). `name` is resolved separately from the backend's own
+ * profile data (see lib/backend-admin.ts): for a signed-in user, PostHog's
+ * distinct_id is the same Supabase user id used as user_profiles.userId, so
+ * it's a direct lookup, not a guess. Admin-only view — showing a user's own
+ * chosen profile name to Sparkeefy staff here is not a privacy issue; the
+ * privacy rule that matters is never sending that name *to PostHog*. */
 export async function topUsersByMessages(limit = 10): Promise<{ users: TopUser[]; status: "available" | "error" }> {
   try {
     const rows = await postHogQuery(
@@ -407,9 +413,10 @@ export async function topUsersByMessages(limit = 10): Promise<{ users: TopUser[]
        FROM events WHERE event = 'response_started' AND ${phase0Filter()}
        GROUP BY distinct_id ORDER BY messages DESC LIMIT ${Math.max(1, Math.floor(limit))}`,
     );
+    const names = await fetchUserNames();
     const users = rows.map((row) => {
       const [distinctId, messageCount, email] = row as [string, number, string | null];
-      return { distinctId, messageCount, email: email ?? null };
+      return { distinctId, messageCount, email: email ?? null, name: names.get(distinctId) ?? null };
     });
     return { users, status: "available" };
   } catch {
