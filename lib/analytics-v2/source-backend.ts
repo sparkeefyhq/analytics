@@ -135,6 +135,7 @@ export async function liveDatasetFromBackend(): Promise<Dataset> {
 async function load(): Promise<Dataset> {
   const base: Dataset = {
     mode: 'live',
+    source: 'Backend',
     state: 'not-connected',
     detail: 'Awaiting backend connection configuration.',
     asOf: new Date().toISOString(),

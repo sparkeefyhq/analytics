@@ -76,7 +76,7 @@ function Tile({
         </details>
       </div>
       <Value metric={metric} />
-      <small className="v2-source">{metric?.source ?? 'PostHog'}</small>
+      <small className="v2-source">{metric?.source ?? '—'}</small>
     </article>
   );
 }
@@ -364,10 +364,10 @@ export function AnalyticsV2({
                     ['first_answer', 'Received first complete answer'],
                     ['five_messages', 'Sent 5+ messages'],
                     ['people_used_2', 'Used with 2+ people'],
-                    ['sessions', 'Sessions / active user'],
-                    ['messages_day', 'Messages / active user · today'],
-                    ['messages_7d', 'Messages / active user · 7D'],
-                    ['messages_30d', 'Messages / active user · 30D'],
+                    ['sessions', 'Avg sessions per active user'],
+                    ['messages_day', 'Avg messages per active user · today'],
+                    ['messages_7d', 'Avg messages per active user · 7D'],
+                    ['messages_30d', 'Avg messages per active user · 30D'],
                   ]}
                 />
               </Section>

@@ -89,6 +89,8 @@ export type Fact = {
 };
 export type Dataset = {
   mode: 'live' | 'test';
+  /** Where the facts came from; stamped on every metric so tiles never claim a source they did not use. */
+  source?: Source;
   state: State;
   detail: string;
   asOf: string;
@@ -371,7 +373,7 @@ export function calculate(
           selected(m, Math.max(since, start)).filter((f) => f.kind === kind)
             .length,
       ),
-      'Per active user in this time-filtered population; named window is intersected with the global time filter.',
+      'Average number of Wingman messages sent per active user in this window (only users active in the window count). The named window is intersected with the global time filter — e.g. with Time = 7D, the 30D tile also covers 7 days.',
     );
   const second = (m: Member, organic = false) => {
     const situations = (facts.get(m.id) ?? [])
@@ -765,6 +767,23 @@ export function calculate(
       retention: retentionFor([m]),
     };
   });
+  // The calculation helpers default to the original PostHog source label;
+  // restamp with the dataset's real source (Backend Postgres for live data)
+  // so no tile claims PostHog when PostHog was never queried.
+  const restamp = (record: Record<string, Metric>) => {
+    if (!data.source) return record;
+    for (const key of Object.keys(record))
+      if (record[key].source === 'PostHog') record[key] = { ...record[key], source: data.source };
+    return record;
+  };
+  const restampRetention = (r: Snapshot['retention']) => {
+    for (const type of Object.keys(r) as ReturnType[]) restamp(r[type]);
+    return r;
+  };
+  for (const u of users) {
+    restamp(u.metrics);
+    restampRetention(u.retention);
+  }
   return {
     version: 2,
     mode: data.mode,
@@ -774,8 +793,8 @@ export function calculate(
     period,
     state: data.state,
     detail: data.detail,
-    metrics,
-    retention: retentionFor(),
+    metrics: restamp(metrics),
+    retention: restampRetention(retentionFor()),
     users,
     excluded: data.members.filter((m) => m.internal || m.test).length,
   };
