@@ -17,6 +17,8 @@ export type Phase0Snapshot = {
   metrics: Record<string, Observation>;
   activeUsers?: Partial<Record<Period, Observation>>;
   topUsers?: TopUser[];
+  /** The backend's live ANALYTICS_PHASE, read off recent events — not a UI assumption. */
+  activePhase?: 'phase_0' | 'phase_1' | null;
 };
 export const groups = [
   { title: 'Getting started', rows: [

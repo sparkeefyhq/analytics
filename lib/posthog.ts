@@ -37,6 +37,11 @@ export type Phase0Snapshot = {
    * project-wide, straight from PostHog. Populated once TopUser is defined
    * further down this file. */
   topUsers?: TopUser[];
+  /** The backend's live ANALYTICS_PHASE, read straight off recent events'
+   * `phase` property — not something this dashboard decides or assumes.
+   * `null` when it can't be determined (PostHog unreachable, or no events
+   * yet). See apps/api/src/lib/analytics-context.ts on the backend. */
+  activePhase?: "phase_0" | "phase_1" | null;
 };
 
 export const unavailable = (source: ObservationSource = "posthog"): Observation => ({
@@ -421,6 +426,25 @@ export async function topUsersByMessages(limit = 10): Promise<{ users: TopUser[]
     return { users, status: "available" };
   } catch {
     return { users: [], status: "error" };
+  }
+}
+
+/**
+ * The backend's live ANALYTICS_PHASE (see analytics-context.ts on the
+ * backend), read off the most recent event's `phase` property rather than
+ * assumed. This dashboard has no authority over which phase is active — it
+ * only reports what the backend is actually stamping on events right now.
+ * `null` when it can't be determined (no events yet, or PostHog unreachable).
+ */
+export async function currentAnalyticsPhase(): Promise<"phase_0" | "phase_1" | null> {
+  try {
+    const rows = await postHogQuery(
+      `SELECT properties.phase FROM events WHERE ${phase0Filter()} ORDER BY timestamp DESC LIMIT 1`,
+    );
+    const value = rows[0]?.[0];
+    return value === "phase_0" || value === "phase_1" ? value : null;
+  } catch {
+    return null;
   }
 }
 

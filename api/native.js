@@ -477,6 +477,17 @@ async function topUsersByMessages(limit = 10) {
     return { users: [], status: "error" };
   }
 }
+async function currentAnalyticsPhase() {
+  try {
+    const rows = await postHogQuery(
+      `SELECT properties.phase FROM events WHERE ${phase0Filter()} ORDER BY timestamp DESC LIMIT 1`
+    );
+    const value = rows[0]?.[0];
+    return value === "phase_0" || value === "phase_1" ? value : null;
+  } catch {
+    return null;
+  }
+}
 var IST_TZ = "Asia/Kolkata";
 async function activeUsersForPeriod(period) {
   const boundary = period === "today" ? `toStartOfDay(toTimeZone(now(), '${IST_TZ}'))` : period === "week" ? `toStartOfWeek(toTimeZone(now(), '${IST_TZ}'), 1)` : period === "month" ? `toStartOfMonth(toTimeZone(now(), '${IST_TZ}'))` : `toDateTime('${MEASUREMENT_START}')`;
@@ -1161,7 +1172,8 @@ async function loadPhase0Analytics() {
     activeWeek,
     activeMonth,
     activeAll,
-    topUsers
+    topUsers,
+    activePhase
   ] = await Promise.all([
     milestone("first_open"),
     milestone("onboarding_completed"),
@@ -1194,12 +1206,14 @@ async function loadPhase0Analytics() {
     activeUsersForPeriod("week"),
     activeUsersForPeriod("month"),
     activeUsersForPeriod("all"),
-    topUsersByMessages(10)
+    topUsersByMessages(10),
+    currentAnalyticsPhase()
   ]);
   const snapshot = {
     version: 1,
     cohort: "phase-0",
     updatedAt: now(),
+    activePhase,
     metrics: {
       // Google Play downloads have no connector in this codebase and are
       // never substituted with first_open — see CONTROL_PHASE0_API_CONTRACT.md.
