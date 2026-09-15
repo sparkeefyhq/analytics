@@ -409,6 +409,11 @@ export function calculate(
     return false;
   };
   const metrics: Record<string, Metric> = {
+    total_users: count(
+      'activity',
+      members.length,
+      'Everyone who has signed up in this cohort, regardless of activity. Not scoped to the selected time period.',
+    ),
     active: count(
       'activity',
       active.length,
