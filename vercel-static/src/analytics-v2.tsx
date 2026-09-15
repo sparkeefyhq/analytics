@@ -297,6 +297,11 @@ export function AnalyticsV2({
       <div>
         <p className="v2-eyebrow">SPARKEEFY / LAUNCH CONTROL</p>
         <h1>{users ? 'Users' : page === 'retention' ? 'Retention' : 'Analytics'}</h1>
+        {page === 'analytics' && (
+          <p className="v2-total-users">
+            {format(m.total_users)} total users
+          </p>
+        )}
         <p className="v2-subtitle">
           {data
             ? `Live from the production database · checked ${ist(data.asOf)} IST · ${data.excluded} internal accounts excluded`
