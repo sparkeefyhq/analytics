@@ -388,7 +388,6 @@
 .v2-page .control-header { margin-bottom: 26px; align-items: center; }
 .v2-eyebrow { margin: 0 0 10px; color: #afa0cd; font-size: 10px; font-weight: 600; letter-spacing: .15em; }
 .v2-subtitle { margin: 10px 0 0; color: #a5a7b2; font-size: 13px; line-height: 1.5; }
-.v2-total-users { margin: 0; color: #f2ebff; font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
 .v2-launch-brief { display: flex; align-items: center; gap: 24px; padding: 22px; border: 1px solid #514065; border-radius: 14px; background: linear-gradient(115deg, #251e32, #17171e); }
 .v2-date { display: flex; gap: 12px; align-items: flex-start; flex-shrink: 0; color: var(--pulse); }
 .v2-date>span { display: grid; gap: 5px; font-size: 9px; letter-spacing: .1em; }
