@@ -259,6 +259,22 @@ var names = /* @__PURE__ */ new Map();
 function backendDisplayNames() {
   return names;
 }
+var backendIds = /* @__PURE__ */ new Map();
+function backendUserIdFor(participant) {
+  return backendIds.get(participant);
+}
+async function fetchBackendConversations(userId) {
+  const config = backendConfig();
+  if (!config) throw Error("Backend admin URL/key not configured");
+  const response = await fetch(
+    `${config.baseUrl}/api/admin/analytics/v2/conversations?user=${encodeURIComponent(userId)}`,
+    { headers: { "x-admin-api-key": config.adminKey }, signal: AbortSignal.timeout(1e4) }
+  );
+  if (!response.ok) throw Error(`Backend responded ${response.status}`);
+  const body = await response.json();
+  if (!body.data) throw Error("Unexpected backend response shape");
+  return body.data;
+}
 var cached;
 var pending;
 async function liveDatasetFromBackend() {
@@ -304,11 +320,14 @@ async function load() {
     ).toISOString();
     const allowed2 = realMembers.filter((m) => !excluded.has(m.id));
     const nextNames = /* @__PURE__ */ new Map();
+    const nextIds = /* @__PURE__ */ new Map();
     for (const m of realMembers) {
       const name = typeof m.name === "string" ? m.name.trim() : "";
       if (name) nextNames.set(opaque(m.id), name);
+      nextIds.set(opaque(m.id), m.id);
     }
     names = nextNames;
+    backendIds = nextIds;
     base.members = realMembers.map((m) => ({
       id: opaque(m.id),
       cohort: cohortFor(Date.parse(m.firstOpen)),
@@ -385,6 +404,7 @@ async function load() {
     };
   } catch {
     names = /* @__PURE__ */ new Map();
+    backendIds = /* @__PURE__ */ new Map();
     return {
       ...base,
       state: "query-error",
@@ -2277,7 +2297,13 @@ function calculate(data, cohort, period) {
       )
     ])
   );
-  const average = (cap, values, detail) => data.state !== "available" || !has(cap) ? unavailable2(cap) : !values.length ? missing("No observed users.", "PostHog", "no-data") : count(cap, values.reduce((a, b) => a + b, 0) / values.length, detail);
+  const average = (cap, values, detail, unitLabel) => {
+    if (data.state !== "available" || !has(cap)) return unavailable2(cap);
+    if (!values.length) return missing("No observed users.", "PostHog", "no-data");
+    const total = values.reduce((a, b) => a + b, 0);
+    const metric = count(cap, total / values.length, detail);
+    return unitLabel ? { ...metric, basis: `${total} ${unitLabel} \xF7 ${values.length} active users` } : metric;
+  };
   const volume = (cap, kind, start, population = members.filter(
     (m) => selected(m, Math.max(since, start)).some((f) => activeKinds.has(f.kind))
   )) => average(
@@ -2285,7 +2311,8 @@ function calculate(data, cohort, period) {
     population.map(
       (m) => selected(m, Math.max(since, start)).filter((f) => f.kind === kind).length
     ),
-    "Average number of Wingman messages sent per active user in this window (only users active in the window count). The named window is intersected with the global time filter \u2014 e.g. with Time = 7D, the 30D tile also covers 7 days."
+    "Total Wingman messages sent in this window divided by the number of users who did anything in the app in the same window. A user who only opened the app still counts in the denominator. The named window is intersected with the global time filter \u2014 e.g. with Time = 7D, the 30D tile also covers 7 days.",
+    "messages"
   );
   const second = (m, organic = false) => {
     const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation" && f.situation).sort((a, b) => a.at.localeCompare(b.at));
@@ -2302,7 +2329,7 @@ function calculate(data, cohort, period) {
     active: count(
       "activity",
       active.length,
-      "Unique users with a foreground/product activity event; background response events are excluded."
+      "Unique users who did anything in the app in the selected period: signed up, finished onboarding, added a person, memory or event, opened Wingman, or sent a message. A signup with no further activity still counts. Background AI events are excluded."
     ),
     activated: has("activation") && data.state === "available" ? ratio(
       members.filter(
@@ -2361,7 +2388,28 @@ function calculate(data, cohort, period) {
           selected(m).filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
         ).size
       ),
-      "Distinct Wingman session IDs per active user. Never approximated as calendar days."
+      "Total distinct Wingman chats opened divided by the number of active users in the selected period. A user who only opened the app still counts in the denominator. Never approximated as calendar days.",
+      "chats"
+    ),
+    messaged: usersWith2(
+      "wingman",
+      (f) => f.kind === "message",
+      "Users who sent at least one message to Wingman in the selected period."
+    ),
+    memories_added: count(
+      "memory",
+      all.filter((f) => f.kind === "memory").length,
+      "Memories saved in the selected period, counted from the memories table (one per saved memory)."
+    ),
+    memory_users: usersWith2(
+      "memory",
+      (f) => f.kind === "memory",
+      "Users who saved at least one memory in the selected period."
+    ),
+    people_added: count(
+      "people",
+      all.filter((f) => f.kind === "person").length,
+      "People saved in the selected period, counted from the people table (one per saved person)."
     ),
     people_used: count(
       "people-use",
@@ -2393,12 +2441,14 @@ function calculate(data, cohort, period) {
   metrics.people_average = average(
     "people",
     active.map((m) => peak(m, "people")),
-    "Average observed peak people count per active user in the selected period; not current inventory after deletion."
+    "Total people added (highest count each user reached) divided by active users in the selected period; not current inventory after deletion.",
+    "people"
   );
   metrics.memory_average = average(
     "memory",
     active.map((m) => peak(m, "memories")),
-    "Average observed peak memory count per active user in the selected period; not current inventory after deletion."
+    "Total memories added (highest count each user reached) divided by active users in the selected period; not current inventory after deletion.",
+    "memories"
   );
   const mem = active.map((m) => peak(m, "memories")).sort((a, b) => a - b);
   metrics.memory_median = data.state !== "available" || !has("memory") ? unavailable2("memory") : mem.length ? count(
@@ -2417,18 +2467,21 @@ function calculate(data, cohort, period) {
   metrics.complete = count(
     "responses",
     completed.length,
-    "Completed unique requests; retries deduplicated by request ID."
+    'Wingman answers that completed successfully, counted from the AI call log (one per AI request, retries deduplicated). This is a different source from "User messages sent", which counts stored chat messages \u2014 the two are not expected to match exactly.'
   );
   metrics.failed = count(
     "responses",
     failed.length,
-    "Failed requests without a completion in this period. Pending requests are not failures."
+    "AI requests that failed and were never completed in this period. Pending requests are not failures."
   );
-  metrics.success = has("responses") && data.state === "available" ? ratio(
-    completed.length,
-    completed.length + failed.length,
-    "Completed / resolved requests. In-flight requests excluded; late successes reconcile failures."
-  ) : unavailable2("responses");
+  metrics.success = has("responses") && data.state === "available" ? {
+    ...ratio(
+      completed.length,
+      completed.length + failed.length,
+      "Completed answers divided by all resolved AI requests (completed + failed). In-flight requests excluded; a late success reconciles an earlier failure."
+    ),
+    basis: `${completed.length} completed \xF7 ${completed.length + failed.length} resolved`
+  } : unavailable2("responses");
   for (const [key, cap, kind] of [
     ["retries", "retries", "retry"],
     ["fallbacks", "fallbacks", "fallback"]
@@ -2454,7 +2507,7 @@ function calculate(data, cohort, period) {
   metrics.requests = count(
     "wingman",
     requests.length,
-    "Unique user requests in the selected period, excluding automatic retries."
+    "Messages real users actually sent to Wingman in the selected period, counted from stored chat messages (one per message, retries never counted). Reliability tiles count AI log rows instead, so they can differ."
   );
   const usage = all.filter((f) => f.kind === "usage");
   for (const [key, field] of [
@@ -2545,7 +2598,30 @@ function calculate(data, cohort, period) {
         "attribution",
         uf.filter((f) => f.kind === "message" && f.assisted === true).length,
         "Messages explicitly marked assisted."
-      )
+      ),
+      messages: count(
+        "wingman",
+        uf.filter((f) => f.kind === "message").length,
+        "Messages this user sent to Wingman in the selected period."
+      ),
+      sessions: count(
+        "sessions",
+        new Set(
+          uf.filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
+        ).size,
+        "Distinct Wingman chats this user opened in the selected period."
+      ),
+      cost: (() => {
+        const usage2 = uf.filter((f) => f.kind === "usage");
+        return !has("cost") || data.state !== "available" ? unavailable2("cost") : usage2.some((f) => f.cost === void 0) ? missing("No complete billing coverage for this user.", "Backend", "no-data") : {
+          ...count(
+            "cost",
+            usage2.reduce((sum, f) => sum + (f.cost ?? 0), 0),
+            "What the AI provider charged for every call made for this user in the selected period, retries included."
+          ),
+          unit: "USD"
+        };
+      })()
     };
     for (const p of ["today", "7d", "30d"]) {
       const fs = selected(m, Math.max(since, periodStart(p, now3)));
@@ -2793,6 +2869,28 @@ async function GET3(request) {
   );
 }
 
+// app/api/analytics/v2/conversations/route.ts
+async function GET4(request) {
+  if (!(await trackerAccess(request)).canEdit)
+    return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+  const participant = new URL(request.url).searchParams.get("user") ?? "";
+  if (!/^participant-[0-9a-f]{16}$/.test(participant))
+    return Response.json({ error: "Invalid participant" }, { status: 400 });
+  await liveDatasetFromBackend();
+  const userId = backendUserIdFor(participant);
+  if (!userId) return Response.json({ error: "Unknown participant" }, { status: 404 });
+  try {
+    const data = await fetchBackendConversations(userId);
+    const { userId: _drop, ...rest } = data;
+    return Response.json(
+      { participant, ...rest },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
+  } catch {
+    return Response.json({ error: "Conversation source unavailable" }, { status: 503 });
+  }
+}
+
 // server/vercel-handler.ts
 async function handle(request) {
   const url = new URL(request.url);
@@ -2803,6 +2901,7 @@ async function handle(request) {
   if (path === "/api/analytics/v2/access" && method === "GET") return json({ ...await trackerAccess(request), phases: [], releaseGates: [] });
   const handlers = {
     "/api/analytics/v2": { GET: GET3 },
+    "/api/analytics/v2/conversations": { GET: GET4 },
     "/api/tracker": { GET, PATCH },
     "/api/workspace": { GET: GET2, POST },
     "/api/auth/login": { POST: POST2 },

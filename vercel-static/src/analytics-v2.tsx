@@ -1,18 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   ArrowRight,
-  CalendarDays,
+  Check,
+  ChevronRight,
   CircleHelp,
-  Compass,
-  HeartPulse,
-  Layers,
+  MessageCircle,
+  NotebookPen,
   RefreshCw,
-  Repeat2,
-  ShieldCheck,
-  Sparkles,
-  Target,
-  UsersRound,
+  Search,
   Wallet,
 } from 'lucide-react';
 import {
@@ -25,11 +21,13 @@ import {
   type Snapshot,
   type User,
 } from '../../lib/analytics-v2/model';
+import { useLiveData } from './live-data';
+import './analytics-v2.css';
 
 /** Display name is attached server-side for the authorized live users view only. */
 type NamedUser = User & { label?: string };
-import { useLiveData } from './live-data';
-import './analytics-v2.css';
+type Page = 'analytics' | 'users' | 'retention';
+type Card = 'wingman' | 'memories' | 'cost' | null;
 
 const labels: Record<string, string> = {
   all: 'All phases',
@@ -38,31 +36,63 @@ const labels: Record<string, string> = {
   'phase-1b': 'Phase 1B',
   'phase-2': 'Phase 2',
 };
+const periods: [Period, string][] = [
+  ['today', 'Today'],
+  ['7d', 'Last 7 days'],
+  ['30d', 'Last 30 days'],
+  ['all', 'All time'],
+];
 const states: Record<string, string> = {
   'no-data': 'No data yet',
   'not-connected': 'Not connected',
   'not-eligible': 'Window still open',
   'query-error': 'Query error',
 };
-function Value({ metric }: { metric?: Metric }) {
+const ist = (value: string | null | undefined, withTime = true) =>
+  value
+    ? new Date(value).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: 'numeric',
+        month: 'short',
+        ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
+      })
+    : '—';
+const usd = (value: number, digits = 4) =>
+  new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: digits,
+  }).format(value);
+const num = (value: number) =>
+  new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 }).format(value);
+
+function format(metric?: Metric) {
   const value = metric?.value;
+  if (value === null || value === undefined) return '—';
+  if (metric?.unit === 'USD') return usd(value);
+  const suffix =
+    metric?.unit === '%'
+      ? '%'
+      : metric?.unit === 'ms'
+        ? ' ms'
+        : metric?.unit === 'seconds'
+          ? ' s'
+          : '';
+  return `${num(value)}${suffix}`;
+}
+
+function Value({ metric }: { metric?: Metric }) {
   return (
     <div className="v2-value">
-      <strong>
-        {value === null || value === undefined
-          ? '—'
-          : metric?.unit === 'USD'
-            ? new Intl.NumberFormat('en-US', {
-                style: 'currency',
-                currency: 'USD',
-                maximumFractionDigits: 4,
-              }).format(value)
-            : `${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 }).format(value)}${metric?.unit === '%' ? '%' : metric?.unit === 'ms' ? ' ms' : metric?.unit === 'seconds' ? ' s' : ''}`}
-      </strong>
-      {metric?.denominator !== undefined && (
-        <small>
-          {metric.numerator} / {metric.denominator} eligible
-        </small>
+      <strong>{format(metric)}</strong>
+      {metric?.basis ? (
+        <small className="v2-basis">{metric.basis}</small>
+      ) : (
+        metric?.denominator !== undefined && (
+          <small>
+            {metric.numerator} / {metric.denominator} eligible
+          </small>
+        )
       )}
       {metric?.state !== 'available' && (
         <small className="v2-state">
@@ -76,26 +106,16 @@ function Value({ metric }: { metric?: Metric }) {
 function Tile({
   name,
   metric,
-  prominent = false,
   caption,
-  icon: Icon,
 }: {
   name: string;
   metric?: Metric;
-  prominent?: boolean;
   caption?: string;
-  icon?: typeof Activity;
 }) {
   return (
     <article
-      className={`${prominent ? 'v2-tile v2-emphasis' : 'v2-tile'} ${metric?.state === 'available' ? '' : 'v2-pending'}`}
+      className={`v2-tile ${metric?.state === 'available' ? '' : 'v2-pending'}`}
     >
-      {Icon && (
-        <div className="v2-tile-icon">
-          <Icon size={18} aria-hidden="true" />
-          {prominent && <span>PRIMARY SIGNAL</span>}
-        </div>
-      )}
       <div className="v2-label">
         <span>{name}</span>
         <details className="v2-definition">
@@ -107,7 +127,6 @@ function Tile({
       </div>
       <Value metric={metric} />
       {caption && <p className="v2-tile-caption">{caption}</p>}
-      <small className="v2-source">{metric?.source ?? '—'}</small>
     </article>
   );
 }
@@ -115,13 +134,13 @@ function Tiles({
   items,
   metrics,
 }: {
-  items: [string, string][];
+  items: [string, string, string?][];
   metrics: Record<string, Metric>;
 }) {
   return (
     <div className="v2-grid">
-      {items.map(([key, name]) => (
-        <Tile key={key} name={name} metric={metrics[key]} />
+      {items.map(([key, name, caption]) => (
+        <Tile key={key} name={name} metric={metrics[key]} caption={caption} />
       ))}
     </div>
   );
@@ -145,25 +164,65 @@ function Section({
     </section>
   );
 }
-const people: [string, string][] = [
-  ['people_1', '1+ person'],
-  ['people_2', '2+ people'],
-  ['people_3', '3+ people'],
-  ['people_5', '5+ people'],
-];
-const memory: [string, string][] = [
-  ['memory_1', '1+ memory'],
-  ['memory_3', '3+ memories'],
-  ['memory_5', '5+ memories'],
-  ['memory_20', '20+ memories'],
-];
+
+/** Plain-language D1 status for one user, derived from the live-progress retention metric. */
+function returnStatus(metric?: Metric): { label: string; tone: string } {
+  if (!metric || metric.state === 'not-connected') return { label: '—', tone: 'muted' };
+  if (metric.pending) return { label: 'Too early', tone: 'muted' };
+  if ((metric.numerator ?? 0) > 0) return { label: 'Returned', tone: 'good' };
+  if (/1 of 1 windows are still open/.test(metric.detail)) return { label: 'Window open', tone: 'muted' };
+  if (metric.denominator) return { label: 'Did not return', tone: 'warn' };
+  return { label: '—', tone: 'muted' };
+}
+
+function KpiCard({
+  icon: Icon,
+  name,
+  value,
+  sub,
+  caption,
+  active,
+  onClick,
+  children,
+}: {
+  icon: typeof Activity;
+  name: string;
+  value: string;
+  sub?: string;
+  caption: string;
+  active: boolean;
+  onClick: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <button
+      className={`v3-kpi ${active ? 'active' : ''}`}
+      onClick={onClick}
+      aria-pressed={active}
+    >
+      <span className="v3-kpi-head">
+        <Icon size={18} aria-hidden="true" />
+        <span>{name}</span>
+        <ChevronRight size={16} aria-hidden="true" className="v3-kpi-chev" />
+      </span>
+      <strong>{value}</strong>
+      {sub && <small className="v3-kpi-sub">{sub}</small>}
+      <small className="v3-kpi-caption">{caption}</small>
+      {children}
+    </button>
+  );
+}
 
 export function AnalyticsV2({
-  users = false,
+  page = 'analytics',
+  canEdit = false,
   onLogin,
+  onNavigate,
 }: {
-  users?: boolean;
+  page?: Page;
+  canEdit?: boolean;
   onLogin: () => void;
+  onNavigate?: (page: Page) => void;
 }) {
   const [cohort, setCohort] = useState<Cohort>(() => {
     const c = new URLSearchParams(location.search).get('cohort');
@@ -180,151 +239,96 @@ export function AnalyticsV2({
       ? 'test'
       : 'live',
   );
-  const [panel, setPanel] = useState('overview');
+  const [card, setCard] = useState<Card>(null);
   const [retentionType, setRetentionType] = useState<ReturnType>('wingman');
-  const [selected, setSelected] = useState<string | null>(null);
-  const [projection, setProjection] = useState('1000');
+  const [selected, setSelected] = useState<string | null>(
+    () => new URLSearchParams(location.search).get('u'),
+  );
+  const [filter, setFilter] = useState<'all' | 'onboarded' | 'messaged' | 'new'>('all');
+  const [query, setQuery] = useState('');
+  const users = page === 'users';
+  // Per-user rows need the admin session; public visitors see aggregates only.
+  const wantUsers = users || canEdit;
   const params = new URLSearchParams({
     cohort,
     period,
     dataset,
-    ...(users ? { view: 'users' } : {}),
+    ...(wantUsers ? { view: 'users' } : {}),
   });
   const live = useLiveData<Snapshot>(`/api/analytics/v2?${params}`);
   useEffect(() => {
-    history.replaceState(
-      {},
-      '',
-      `${location.pathname}?${new URLSearchParams({ cohort, period, dataset })}`,
-    );
-  }, [cohort, period, dataset]);
+    const next = new URLSearchParams({ cohort, period, dataset });
+    if (selected && users) next.set('u', selected);
+    history.replaceState({}, '', `${location.pathname}?${next}`);
+  }, [cohort, period, dataset, selected, users]);
   const data = live.data,
     m = data?.metrics ?? {};
-  const current = (data?.users as NamedUser[] | undefined)?.find(
-    (u) => u.id === selected,
-  );
-  const valid =
-    /^\d+$/.test(projection) &&
-    Number.isSafeInteger(Number(projection)) &&
-    Number(projection) > 0;
-  const projectionCost =
-    valid && m.cost_active?.state === 'available'
-      ? Number(projection) * m.cost_active.value!
-      : null;
-  return (
-    <section className="control-page v2-page">
-      <header className="control-header">
-        <div>
-          <p className="v2-eyebrow">SPARKEEFY / LAUNCH CONTROL</p>
-          <h1>{users ? 'Users' : 'Launch pulse'}</h1>
-          <p className="v2-subtitle">
-            {users
-              ? 'Investigate the activity behind the numbers.'
-              : 'The signals that matter. The detail when you need it.'}
-          </p>
-        </div>
-        <div className="v2-filters">
-          {users && (
-            <label>
-              Cohort
-              <select
-                aria-label="Cohort"
-                value={cohort}
-                onChange={(e) => setCohort(e.target.value as Cohort)}
-              >
-                {COHORTS.map((c) => (
-                  <option key={c} value={c}>
-                    {labels[c]}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label>
-            Time
-            <select
-              aria-label="Time"
-              value={period}
-              onChange={(e) => setPeriod(e.target.value as Period)}
+  const roster = useMemo(() => (data?.users ?? []) as NamedUser[], [data]);
+  const current = roster.find((u) => u.id === selected);
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return roster
+      .filter((u) =>
+        filter === 'onboarded'
+          ? u.metrics.onboarding?.value === 1
+          : filter === 'messaged'
+            ? (u.metrics.messages?.value ?? 0) > 0
+            : filter === 'new'
+              ? u.metrics.onboarding?.value !== 1
+              : true,
+      )
+      .filter((u) => !q || (u.label ?? u.id).toLowerCase().includes(q))
+      .sort(
+        (a, b) =>
+          (b.lastActive ?? '').localeCompare(a.lastActive ?? '') ||
+          (b.firstOpen ?? '').localeCompare(a.firstOpen ?? ''),
+      );
+  }, [roster, filter, query]);
+
+  const openUser = (id: string) => {
+    setSelected(id);
+    if (!users) onNavigate?.('users');
+  };
+  const periodLabel = periods.find(([p]) => p === period)?.[1] ?? 'All time';
+  const costActive = m.cost_active?.state === 'available' ? m.cost_active.value! : null;
+
+  const header = (
+    <header className="control-header">
+      <div>
+        <p className="v2-eyebrow">SPARKEEFY / LAUNCH CONTROL</p>
+        <h1>{users ? 'Users' : page === 'retention' ? 'Retention' : 'Analytics'}</h1>
+        <p className="v2-subtitle">
+          {data
+            ? `Live from the production database · checked ${ist(data.asOf)} IST · ${data.excluded} internal accounts excluded`
+            : 'Checking the production database…'}
+        </p>
+      </div>
+      <div className="v2-filters">
+        <fieldset className="v3-segment" aria-label="Time">
+          {periods.map(([value, label]) => (
+            <button
+              key={value}
+              aria-pressed={period === value}
+              onClick={() => setPeriod(value)}
             >
-              {[
-                ['today', 'Today'],
-                ['7d', '7D'],
-                ['30d', '30D'],
-                ['all', 'All time'],
-              ].map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </header>
-      {!users && (
-        <>
-          <section className="v2-launch-brief" aria-label="Phase 1 launch plan">
-            <div className="v2-date">
-              <CalendarDays size={20} aria-hidden="true" />
-              <span>
-                PLANNED START<strong>17 Sep 2026</strong>
-                <small>Phase 1 · India time</small>
-              </span>
-            </div>
-            <div className="v2-launch-copy">
-              <b>Does useful help turn into an organic return?</b>
-              <p>
-                1A: wedge discovery → 1B: cold replication → Phase 2. Review
-                each participant’s full 14-day window before deciding.
-              </p>
-            </div>
-            <a
-              className="v2-plan-link"
-              href={`/plan?cohort=${cohort === 'all' ? 'phase-1a' : cohort}&period=${period}&dataset=live`}
-            >
-              View phase gates <ArrowRight size={16} aria-hidden="true" />
-            </a>
-          </section>
-          <nav className="v2-cohort-nav" aria-label="Quick cohort filters">
+              {label}
+            </button>
+          ))}
+        </fieldset>
+        <label>
+          Cohort
+          <select
+            aria-label="Cohort"
+            value={cohort}
+            onChange={(e) => setCohort(e.target.value as Cohort)}
+          >
             {COHORTS.map((c) => (
-              <button
-                key={c}
-                aria-pressed={cohort === c}
-                onClick={() => setCohort(c)}
-              >
-                {c === 'all' ? (
-                  <Layers size={15} aria-hidden="true" />
-                ) : (
-                  <Target size={15} aria-hidden="true" />
-                )}
+              <option key={c} value={c}>
                 {labels[c]}
-              </button>
+              </option>
             ))}
-          </nav>
-        </>
-      )}
-      <div className="v2-data-toolbar">
-        <div className="v2-freshness">
-          <span>
-            <Activity size={14} aria-hidden="true" />{' '}
-            {data
-              ? `Checked ${new Date(data.asOf).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} IST · ${data.excluded} internal/test excluded`
-              : 'Checking sources…'}
-          </span>
-        </div>
-        <div className="v2-preview">
-          <label>
-            Data
-            <select
-              aria-label="Data source"
-              value={dataset}
-              onChange={(e) => setDataset(e.target.value)}
-            >
-              <option value="live">Live sources</option>
-              <option value="test">Synthetic QA dataset</option>
-            </select>
-          </label>
-        </div>
+          </select>
+        </label>
         <button
           className="v2-refresh"
           onClick={live.refresh}
@@ -334,6 +338,232 @@ export function AnalyticsV2({
           <RefreshCw size={15} aria-hidden="true" />
         </button>
       </div>
+    </header>
+  );
+
+  const userTable = (compact: boolean) =>
+    !canEdit && dataset !== 'test' ? (
+      <div className="v3-locked">
+        <div>
+          <b>Per-user detail is private.</b>
+          <p>Sign in with the staff account to see who is behind the numbers.</p>
+        </div>
+        <button className="control-primary" onClick={onLogin}>
+          Admin sign in
+        </button>
+      </div>
+    ) : !roster.length ? (
+      <div className="v2-empty">
+        {data?.state === 'available'
+          ? 'No users in this cohort and period.'
+          : 'User data is not connected.'}
+      </div>
+    ) : (
+      <>
+        <div className="v3-table-tools">
+          <fieldset className="v3-chips" aria-label="Filter users">
+            {(
+              [
+                ['all', `All · ${roster.length}`],
+                ['onboarded', 'Onboarded'],
+                ['messaged', 'Messaged Wingman'],
+                ['new', 'Not onboarded'],
+              ] as const
+            ).map(([key, label]) => (
+              <button key={key} aria-pressed={filter === key} onClick={() => setFilter(key)}>
+                {label}
+              </button>
+            ))}
+          </fieldset>
+          <label className="v3-search">
+            <Search size={14} aria-hidden="true" />
+            <input
+              aria-label="Search users"
+              placeholder="Search by name"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="v3-table-wrap">
+          <table className="v3-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Joined</th>
+                <th>Onboarded</th>
+                <th>People</th>
+                <th>Memories</th>
+                <th>Messages</th>
+                <th>Chats</th>
+                {!compact && <th>AI cost</th>}
+                <th>Last active</th>
+                <th>D1 return</th>
+                <th aria-label="Open" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((u) => {
+                const status = returnStatus(u.retention.wingman.d1);
+                return (
+                  <tr key={u.id} onClick={() => openUser(u.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && openUser(u.id)}>
+                    <td>
+                      <b>{u.label ?? 'Not onboarded'}</b>
+                      <small>{u.id}</small>
+                    </td>
+                    <td>{ist(u.firstOpen, false)}</td>
+                    <td>
+                      {u.metrics.onboarding?.value === 1 ? (
+                        <span className="v3-yes"><Check size={14} aria-hidden="true" /> Yes</span>
+                      ) : (
+                        <span className="v3-no">No</span>
+                      )}
+                    </td>
+                    <td>{format(u.metrics.people)}</td>
+                    <td>{format(u.metrics.memories)}</td>
+                    <td>{format(u.metrics.messages)}</td>
+                    <td>{format(u.metrics.sessions)}</td>
+                    {!compact && <td>{format(u.metrics.cost)}</td>}
+                    <td>{ist(u.lastActive)}</td>
+                    <td>
+                      <span className={`v3-pill ${status.tone}`}>{status.label}</span>
+                    </td>
+                    <td className="v3-open">Open <ArrowRight size={14} aria-hidden="true" /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="v2-caption">
+          People and memories are the highest count each user reached in the selected period. Messages, chats and cost are for the selected period only.
+        </p>
+      </>
+    );
+
+  const drilldown = (which: Card) => {
+    if (!which) return null;
+    if (!canEdit && dataset !== 'test')
+      return (
+        <div className="v3-drill">
+          <div className="v3-locked">
+            <div>
+              <b>Who is behind this number is private.</b>
+              <p>Sign in with the staff account to see the per-user list.</p>
+            </div>
+            <button className="control-primary" onClick={onLogin}>Admin sign in</button>
+          </div>
+        </div>
+      );
+    const list =
+      which === 'wingman'
+        ? roster
+            .filter((u) => (u.metrics.messages?.value ?? 0) > 0)
+            .sort((a, b) => (b.metrics.messages?.value ?? 0) - (a.metrics.messages?.value ?? 0))
+        : which === 'memories'
+          ? roster
+              .filter((u) => (u.metrics.memories?.value ?? 0) > 0)
+              .sort((a, b) => (b.metrics.memories?.value ?? 0) - (a.metrics.memories?.value ?? 0))
+          : roster
+              .filter((u) => (u.metrics.cost?.value ?? 0) > 0)
+              .sort((a, b) => (b.metrics.cost?.value ?? 0) - (a.metrics.cost?.value ?? 0));
+    const title =
+      which === 'wingman'
+        ? `Who used Wingman · ${periodLabel}`
+        : which === 'memories'
+          ? `Who added memories · ${periodLabel}`
+          : `AI cost by user · ${periodLabel}`;
+    return (
+      <div className="v3-drill">
+        <header>
+          <h3>{title}</h3>
+          <button onClick={() => setCard(null)}>Close</button>
+        </header>
+        {!list.length ? (
+          <div className="v2-empty">Nobody yet in this period.</div>
+        ) : (
+          <ul className="v3-drill-list">
+            {list.map((u) => (
+              <li key={u.id}>
+                <button onClick={() => openUser(u.id)}>
+                  <span>
+                    <b>{u.label ?? 'Not onboarded'}</b>
+                    <small>Last active {ist(u.lastActive)}</small>
+                  </span>
+                  {which === 'wingman' && (
+                    <span>
+                      <b>{format(u.metrics.messages)} messages</b>
+                      <small>{format(u.metrics.sessions)} chats · {format(u.metrics.people_used)} people</small>
+                    </span>
+                  )}
+                  {which === 'memories' && (
+                    <span>
+                      <b>{format(u.metrics.memories)} memories</b>
+                      <small>{format(u.metrics.people)} people saved</small>
+                    </span>
+                  )}
+                  {which === 'cost' && (
+                    <span>
+                      <b>{format(u.metrics.cost)}</b>
+                      <small>
+                        {format(u.metrics.messages)} messages
+                        {(u.metrics.messages?.value ?? 0) > 0 && u.metrics.cost?.value !== null && u.metrics.cost?.value !== undefined
+                          ? ` · ${usd(u.metrics.cost.value / (u.metrics.messages?.value ?? 1))} / message`
+                          : ''}
+                      </small>
+                    </span>
+                  )}
+                  <ArrowRight size={16} aria-hidden="true" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  };
+
+  const retentionPanel = (population: 'all' | 'user') => {
+    const source =
+      population === 'user' && current ? current.retention : data?.retention;
+    if (!source) return null;
+    const r = source[retentionType];
+    return (
+      <>
+        <div className="v2-tabs" aria-label="Retention type">
+          {(
+            [
+              ['app', 'Came back to the app'],
+              ['wingman', 'Came back to Wingman'],
+              ['situation', 'Came back with a new situation'],
+            ] as const
+          ).map(([key, name]) => (
+            <button key={key} aria-pressed={retentionType === key} onClick={() => setRetentionType(key)}>
+              {name}
+            </button>
+          ))}
+        </div>
+        <div className="v3-retention-main">
+          {[1, 7].map((day) => (
+            <article key={day} className="v3-retention-card">
+              <span>Day {day}</span>
+              <Value metric={r[`d${day}`]} />
+              <small>{r[`d${day}`]?.detail}</small>
+            </article>
+          ))}
+        </div>
+        <div className="v2-overview v3-retention-rest">
+          {DAYS.filter((d) => d !== 1 && d !== 7).map((day) => (
+            <Tile key={day} name={`Day ${day}`} metric={r[`d${day}`]} />
+          ))}
+        </div>
+      </>
+    );
+  };
+
+  return (
+    <section className="control-page v2-page">
+      {header}
       {dataset === 'test' && (
         <output className="v2-test-banner">
           Synthetic test data · Not real users or launch evidence.
@@ -347,438 +577,281 @@ export function AnalyticsV2({
       {live.denied ? (
         <div className="v2-empty">
           <h2>Private user investigation</h2>
-          <p>Sign in to view pseudonymous product activity.</p>
+          <p>Sign in to view per-user activity.</p>
           <button className="control-primary" onClick={onLogin}>
             Admin sign in
           </button>
         </div>
       ) : live.loading && !data ? (
-        <output className="v2-empty">
-          Loading {users ? 'users' : 'analytics'}…
-        </output>
+        <output className="v2-empty">Loading…</output>
       ) : (
         <>
           {data?.state !== 'available' && (
             <p className="v2-notice">
-              {data?.detail ??
-                'Source unavailable. Retry to check the connection.'}
+              {data?.detail ?? 'Source unavailable. Retry to check the connection.'}
             </p>
           )}
-          {users ? (
+
+          {page === 'analytics' && (
             <>
-              <p className="v2-caption">
-                Pseudonymous activity only · no conversation or profile content
-              </p>
-              {current ? (
-                <UserDetail user={current} onBack={() => setSelected(null)} />
-              ) : (
-                <div className="v2-user-list">
-                  {!data?.users.length ? (
-                    <div className="v2-empty">
-                      {data?.state === 'available'
-                        ? 'No observed users in this cohort.'
-                        : 'User data is not connected.'}
-                    </div>
-                  ) : (
-                    (data.users as NamedUser[]).map((user) => (
-                      <button
-                        className="v2-user-row"
-                        key={user.id}
-                        onClick={() => setSelected(user.id)}
-                      >
-                        <span>
-                          <b>{user.label ?? user.id}</b>
-                          <small>
-                            {user.label ? `${user.id} · ` : ''}
-                            {user.cohorts
-                              .map((c) => labels[c])
-                              .join(' / ')} ·{' '}
-                            {user.acquisition}
-                          </small>
+              <div className="v3-kpis">
+                <KpiCard
+                  icon={MessageCircle}
+                  name="Wingman users"
+                  value={format(m.messaged)}
+                  sub={
+                    m.active?.value !== null && m.active?.value !== undefined
+                      ? `of ${format(m.active)} active users · ${format(m.requests)} messages sent`
+                      : undefined
+                  }
+                  caption="Users who sent at least one message to Wingman. Click to see who."
+                  active={card === 'wingman'}
+                  onClick={() => setCard(card === 'wingman' ? null : 'wingman')}
+                />
+                <KpiCard
+                  icon={NotebookPen}
+                  name="Memories added"
+                  value={format(m.memories_added)}
+                  sub={
+                    m.memory_users?.value !== null && m.memory_users?.value !== undefined
+                      ? `by ${format(m.memory_users)} users · ${format(m.people_added)} people added`
+                      : undefined
+                  }
+                  caption="Memories saved in this period. Click to see who."
+                  active={card === 'memories'}
+                  onClick={() => setCard(card === 'memories' ? null : 'memories')}
+                />
+                <KpiCard
+                  icon={Wallet}
+                  name="AI cost"
+                  value={format(m.cost)}
+                  sub={
+                    m.cost?.state === 'available'
+                      ? `${format(m.cost_request)} per message · ${format(m.cost_active)} per active user`
+                      : m.cost?.detail
+                  }
+                  caption="What we paid the AI provider in this period. Click to see cost by user."
+                  active={card === 'cost'}
+                  onClick={() => setCard(card === 'cost' ? null : 'cost')}
+                >
+                  {costActive !== null && (
+                    <span className="v3-projection">
+                      {[10, 100, 1000].map((n) => (
+                        <span key={n}>
+                          ×{num(n)} users <b>{usd(costActive * n, 2)}</b>
                         </span>
-                        <span>
-                          <Value metric={user.metrics.messages_7d} />
-                          <small>messages · 7D</small>
-                        </span>
-                        <span>
-                          <Value metric={user.metrics.people} />
-                          <small>people</small>
-                        </span>
-                        <span aria-hidden="true">↗</span>
-                      </button>
-                    ))
+                      ))}
+                      <small>same period · same usage mix</small>
+                    </span>
                   )}
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <nav className="v2-panel-nav" aria-label="Analytics sections">
-                {(
-                  [
-                    ['overview', 'Overview', Compass],
-                    ['usage', 'Activation & usage', Sparkles],
-                    ['retention', 'Retention', Repeat2],
-                    ['health', 'Reliability & cost', HeartPulse],
-                  ] as const
-                ).map(([key, label, Icon]) => (
-                  <button
-                    key={key}
-                    aria-pressed={panel === key}
-                    onClick={() => setPanel(key)}
-                  >
-                    <Icon size={17} aria-hidden="true" />
-                    {label}
+                </KpiCard>
+              </div>
+              {drilldown(card)}
+
+              <Section
+                title="Users"
+                note={`${labels[cohort]} · ${periodLabel} · click a row to open the user`}
+              >
+                {userTable(true)}
+              </Section>
+
+              <div className="v3-two">
+                <Section title="Wingman return" note="Live progress · anchored on each user's first open">
+                  {retentionPanel('all')}
+                  <button className="v3-link" onClick={() => onNavigate?.('retention')}>
+                    Full retention view <ArrowRight size={14} aria-hidden="true" />
                   </button>
-                ))}
-              </nav>
-              {panel === 'overview' && (
-                <>
-                  <Section
-                    title="What matters most"
-                    note={`${labels[cohort]} · selected time range`}
-                  >
-                    <div className="v2-overview v2-priority-grid">
-                      <Tile
-                        name="Organic second situation"
-                        metric={m.organic_second}
-                        prominent
-                        icon={Repeat2}
-                        caption="Users who returned with another genuine situation, independently and organically."
-                      />
-                      <Tile
-                        name="Meaningfully activated"
-                        metric={m.activated}
-                        icon={Sparkles}
-                        caption="Did the first real situation lead to useful help?"
-                      />
-                      <Tile
-                        name="Wingman return · D7"
-                        metric={data?.retention.wingman.d7}
-                        icon={CalendarDays}
-                        caption="Check the eligible count and pending windows before reading the rate."
-                      />
-                      <Tile
-                        name="Active users"
-                        metric={m.active}
-                        icon={UsersRound}
-                        caption="Observed product activity in this cohort and period."
-                      />
-                    </div>
-                    <p className="v2-reading-note">
-                      <span /> Violet highlights priority, not a passed gate.
-                      Analytics are signals; the Plan holds verified gate
-                      evidence.
-                    </p>
-                  </Section>
-                  <Section title="Keep an eye on" note="Operational signals">
-                    <div className="v2-grid v2-operating-grid">
-                      <Tile
-                        name="Request success"
-                        metric={m.success}
-                        icon={ShieldCheck}
-                        caption="Completed requests / resolved requests."
-                      />
-                      <Tile
-                        name="Failed responses"
-                        metric={m.failed}
-                        icon={HeartPulse}
-                        caption="Investigate failures in Reliability & cost."
-                      />
-                      <Tile
-                        name="Cost / active user"
-                        metric={m.cost_active}
-                        icon={Wallet}
-                        caption="Measured AI spend for the selected period."
-                      />
-                    </div>
-                  </Section>
-                  <section
-                    className="v2-review-guide"
-                    aria-label="Daily review"
-                  >
-                    <div>
-                      <p className="v2-eyebrow">DAILY REVIEW</p>
-                      <h2>Turn the numbers into a decision.</h2>
-                    </div>
-                    <button onClick={() => setPanel('usage')}>
-                      <Sparkles size={18} aria-hidden="true" />
-                      <span>
-                        <b>1. Check activation</b>
-                        <small>See where first use stops.</small>
-                      </span>
-                      <ArrowRight size={16} aria-hidden="true" />
-                    </button>
-                    <button onClick={() => setPanel('retention')}>
-                      <Repeat2 size={18} aria-hidden="true" />
-                      <span>
-                        <b>2. Check returns</b>
-                        <small>Separate pending windows from results.</small>
-                      </span>
-                      <ArrowRight size={16} aria-hidden="true" />
-                    </button>
-                    <a
-                      href={`/plan?cohort=${cohort === 'all' ? 'phase-1a' : cohort}&period=${period}&dataset=live`}
-                    >
-                      <Target size={18} aria-hidden="true" />
-                      <span>
-                        <b>3. Review phase gates</b>
-                        <small>Resolve blockers and record evidence.</small>
-                      </span>
-                      <ArrowRight size={16} aria-hidden="true" />
-                    </a>
-                  </section>
-                </>
-              )}
-              {panel === 'usage' && (
-                <>
-                  <Section
-                    title="Acquisition & onboarding"
-                    note="Unique users · milestones may overlap"
-                  >
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['first_opens', 'First app opens'],
-                        ['onboarded', 'Onboarding completed'],
-                      ]}
-                    />
-                  </Section>
-                  <Section title="Wingman">
-                    <Tile
-                      name="Second genuine situation"
-                      metric={m.second_situation}
-                      prominent
-                    />
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['wingman_opened', 'Wingman opened'],
-                        ['first_message', 'Sent first message'],
-                        ['first_answer', 'Received first complete answer'],
-                        ['five_messages', 'Sent 5+ messages'],
-                        ['people_used_2', 'Used with 2+ people'],
-                        ['sessions', 'Avg sessions per active user'],
-                        [
-                          'messages_day',
-                          'Avg messages per active user · today',
-                        ],
-                        ['messages_7d', 'Avg messages per active user · 7D'],
-                        ['messages_30d', 'Avg messages per active user · 30D'],
-                      ]}
-                    />
-                  </Section>
-                </>
-              )}
-              {panel === 'retention' && (
-                <>
-                  <Section
-                    title="Retention"
-                    note="Live progress · first-open anchor · rates can change while windows are open"
-                  >
-                    <div className="v2-tabs" aria-label="Retention type">
-                      {(
-                        [
-                          ['app', 'App return'],
-                          ['wingman', 'Wingman return'],
-                          ['situation', 'Genuine situation'],
-                        ] as const
-                      ).map(([key, name]) => (
-                        <button
-                          key={key}
-                          aria-pressed={retentionType === key}
-                          onClick={() => setRetentionType(key)}
-                        >
-                          {name}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="v2-overview">
-                      {DAYS.map((day) => (
-                        <Tile
-                          key={day}
-                          name={`D${day}`}
-                          metric={data?.retention[retentionType][`d${day}`]}
-                        />
-                      ))}
-                    </div>
-                  </Section>
-                </>
-              )}
-              {panel === 'usage' && (
-                <>
-                  <Section title="Memory" note="Created ≠ reused later">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ...memory,
-                        ['memory_average', 'Average observed count / user'],
-                        ['memory_median', 'Median observed count / user'],
-                      ]}
-                    />
-                  </Section>
-                  <Section title="People" note="Created ≠ used with Wingman">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ...people,
-                        ['people_average', 'Average observed count / user'],
-                        ['people_used', 'Unique people used with Wingman'],
-                      ]}
-                    />
-                  </Section>
-                </>
-              )}
-              {panel === 'health' && (
-                <>
-                  <Section title="Response health">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['complete', 'Complete responses'],
-                        ['failed', 'Failed responses'],
-                        ['retries', 'Retries'],
-                        ['fallbacks', 'Fallbacks'],
-                        ['success', 'Request success'],
-                        ['latency_median', 'Median response latency'],
-                        ['latency_p95', 'p95 response latency'],
-                      ]}
-                    />
-                  </Section>
-                  <Section title="AI economics">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['requests', 'Total AI requests'],
-                        ['input_tokens', 'Input tokens'],
-                        ['output_tokens', 'Output tokens'],
-                        ['total_tokens', 'Total tokens'],
-                        ['cost', 'Total AI cost'],
-                        ['cost_request', 'Cost / request'],
-                        ['cost_active', 'Cost / active user'],
-                        ['cost_activation', 'Cost / meaningful activation'],
-                        ['cost_repeater', 'Cost / organic repeater'],
-                      ]}
-                    />
-                    <div className="v2-projection">
-                      <label>
-                        Projected active users
-                        <input
-                          aria-label="Projected active users"
-                          value={projection}
-                          inputMode="numeric"
-                          aria-invalid={!valid}
-                          onChange={(e) => setProjection(e.target.value)}
-                        />
-                      </label>
-                      <span>
-                        <b>
-                          {projectionCost === null
-                            ? '—'
-                            : new Intl.NumberFormat('en-US', {
-                                style: 'currency',
-                                currency: 'USD',
-                              }).format(projectionCost)}
-                        </b>
-                        <small>
-                          {!valid
-                            ? 'Enter a positive whole number.'
-                            : projectionCost === null
-                              ? 'Awaiting measured cost / active user'
-                              : 'Scenario · same period and usage mix, not a forecast'}
-                        </small>
-                      </span>
-                    </div>
-                  </Section>
-                </>
-              )}
+                </Section>
+                <Section title="Reliability" note="From the AI call log · retries deduplicated">
+                  <div className="v3-mini-grid">
+                    <Tile name="Answer success" metric={m.success} caption="Completed ÷ resolved AI requests." />
+                    <Tile name="Answers failed" metric={m.failed} caption="Requests that never completed." />
+                    <Tile name="Typical answer time" metric={m.latency_median} caption="Half of answers were faster." />
+                    <Tile name="Slow answer time (p95)" metric={m.latency_p95} caption="95% of answers were faster." />
+                  </div>
+                </Section>
+              </div>
             </>
           )}
+
+          {page === 'users' &&
+            (current ? (
+              <UserDetail
+                user={current}
+                canEdit={canEdit}
+                synthetic={dataset === 'test'}
+                retention={retentionPanel('user')}
+                onBack={() => setSelected(null)}
+              />
+            ) : (
+              <Section title="Everyone in this cohort" note={`${labels[cohort]} · ${periodLabel}`}>
+                {userTable(false)}
+              </Section>
+            ))}
+
+          {page === 'retention' && (
+            <>
+              <Section
+                title="Do people come back?"
+                note="Each user is measured from their own first open · a window counts as soon as it starts · rates can change while windows are open"
+              >
+                {retentionPanel('all')}
+              </Section>
+              <p className="v2-caption">
+                Day N means the 24-hour window that starts N days after the user&rsquo;s first open. &ldquo;Window open&rdquo; means the user is inside that window right now and may still return. &ldquo;Too early&rdquo; means the window has not started yet. Retention is never shown as 1/1 = 100% without the numerator and denominator beside it.
+              </p>
+            </>
+          )}
+
+          <div className="v2-preview">
+            <label>
+              Data
+              <select
+                aria-label="Data source"
+                value={dataset}
+                onChange={(e) => setDataset(e.target.value)}
+              >
+                <option value="live">Live sources</option>
+                <option value="test">Synthetic QA dataset</option>
+              </select>
+            </label>
+          </div>
         </>
       )}
     </section>
   );
 }
-function UserDetail({ user, onBack }: { user: NamedUser; onBack: () => void }) {
+
+type Conversation = {
+  sessionId: string;
+  startedAt: string;
+  personName: string | null;
+  messages: { id: string; role: string; content: string; at: string }[];
+};
+type Conversations = { participant: string; sessions: Conversation[]; truncated: boolean };
+
+function UserDetail({
+  user,
+  canEdit,
+  synthetic,
+  retention,
+  onBack,
+}: {
+  user: NamedUser;
+  canEdit: boolean;
+  synthetic: boolean;
+  retention: React.ReactNode;
+  onBack: () => void;
+}) {
+  const chats = useLiveData<Conversations>(
+    canEdit && !synthetic ? `/api/analytics/v2/conversations?user=${encodeURIComponent(user.id)}` : null,
+  );
+  const status = returnStatus(user.retention.wingman.d1);
   return (
     <div className="v2-user-detail">
       <button className="v2-back" onClick={onBack}>
         ← All users
       </button>
-      <h2>{user.label ?? user.id}</h2>
-      <p className="v2-caption">
-        {user.label ? `${user.id} · ` : ''}
-        {user.cohorts.map((c) => labels[c]).join(' / ')} · {user.acquisition} ·
-        First open{' '}
-        {user.firstOpen
-          ? new Date(user.firstOpen).toLocaleString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-            })
-          : 'Unknown'}{' '}
-        IST
-      </p>
-      <p className="v2-caption">
-        Last active{' '}
-        {user.lastActive
-          ? new Date(user.lastActive).toLocaleString('en-IN', {
-              timeZone: 'Asia/Kolkata',
-            })
-          : 'Unknown'}{' '}
-        IST
-      </p>
-      <Tiles
-        metrics={user.metrics}
-        items={[
-          ['onboarding', 'Onboarding completed'],
-          ['people', 'People · observed count'],
-          ['memories', 'Memories · observed count'],
-          ['people_used', 'People used with Wingman'],
-          ['second_situation', 'Second genuine situation'],
-          ['assisted', 'Assisted messages'],
-          ['independent', 'Independent messages'],
-        ]}
-      />
-      <Section
-        title="Engagement"
-        note="Named windows intersect the selected time filter"
-      >
+      <div className="v3-user-head">
+        <div>
+          <h2>{user.label ?? 'Not onboarded'}</h2>
+          <p className="v2-caption">
+            {user.id} · {user.cohorts.map((c) => labels[c]).join(' / ')} · joined {ist(user.firstOpen)} IST · last active {ist(user.lastActive)} IST
+          </p>
+        </div>
+        <span className={`v3-pill ${status.tone}`}>D1: {status.label}</span>
+      </div>
+      <div className="v3-user-facts">
+        {(
+          [
+            ['onboarding', 'Onboarded', (v: number) => (v === 1 ? 'Yes' : 'No')],
+            ['people', 'People added'],
+            ['memories', 'Memories added'],
+            ['people_used', 'People used with Wingman'],
+            ['messages', 'Messages sent'],
+            ['sessions', 'Chats opened'],
+            ['cost', 'AI cost'],
+            ['second_situation', 'Second situation', (v: number) => (v === 1 ? 'Yes' : 'Not yet')],
+          ] as [string, string, ((v: number) => string)?][]
+        ).map(([key, name, fmt]) => {
+          const metric = user.metrics[key];
+          const v = metric?.value;
+          return (
+            <article key={key} className="v3-fact">
+              <small>{name}</small>
+              <b>{v === null || v === undefined ? '—' : fmt ? fmt(v) : format(metric)}</b>
+            </article>
+          );
+        })}
+      </div>
+      <Section title="Activity by window" note="Each window is also cut by the time filter above">
         {[
-          ['sessions', 'Wingman sessions'],
-          ['messages', 'Wingman messages'],
-          ['days', 'Active days'],
+          ['messages', 'Messages sent'],
+          ['sessions', 'Chats opened'],
+          ['days', 'Days active'],
         ].map(([key, name]) => (
           <div className="v2-window-row" key={key}>
             <h3>{name}</h3>
             {['today', '7d', '30d'].map((p) => (
               <div key={p}>
-                <small>{p === 'today' ? 'Today' : p.toUpperCase()}</small>
+                <small>{p === 'today' ? 'Today' : p === '7d' ? 'Last 7 days' : 'Last 30 days'}</small>
                 <Value metric={user.metrics[`${key}_${p}`]} />
               </div>
             ))}
           </div>
         ))}
       </Section>
-      <Section title="Wingman retention">
-        <div className="v2-overview">
-          {DAYS.map((day) => (
-            <Tile
-              key={day}
-              name={`D${day}`}
-              metric={user.retention.wingman[`d${day}`]}
-            />
-          ))}
-        </div>
-      </Section>
-      <Section title="Return attribution">
+      <Section title="Did they come back?">{retention}</Section>
+      <Section title="Return attribution" note="Messages after the first 24 hours · attribution, not causation">
         <Tiles
           metrics={user.metrics}
           items={[
-            ['return_organic', 'Organic'],
-            ['return_reminder', 'Reminder-assisted'],
+            ['return_organic', 'On their own'],
+            ['return_reminder', 'After a reminder'],
             ['return_founder', 'Founder-prompted'],
-            ['return_unknown', 'Unknown attribution'],
+            ['return_unknown', 'Unknown'],
           ]}
         />
+      </Section>
+      <Section
+        title="Wingman conversations"
+        note={
+          canEdit && !synthetic
+            ? 'What they typed and what Wingman answered · staff only · never leaves this screen'
+            : 'Staff sign-in required'
+        }
+      >
+        {!canEdit || synthetic ? (
+          <div className="v2-empty">Conversation text is only shown to a signed-in staff account on live data.</div>
+        ) : chats.loading && !chats.data ? (
+          <output className="v2-empty">Loading conversations…</output>
+        ) : chats.error && !chats.data ? (
+          <p className="v2-notice">{chats.error}</p>
+        ) : !chats.data?.sessions.length ? (
+          <div className="v2-empty">No Wingman conversations yet.</div>
+        ) : (
+          <div className="v3-chats">
+            {chats.data.truncated && (
+              <p className="v2-notice">Showing the most recent messages only.</p>
+            )}
+            {chats.data.sessions.map((s) => (
+              <details key={s.sessionId} className="v3-chat" open={s === chats.data!.sessions[0]}>
+                <summary>
+                  <b>{s.personName ? `About ${s.personName}` : 'General chat'}</b>
+                  <small>{ist(s.startedAt)} IST · {s.messages.length} messages</small>
+                </summary>
+                <ol>
+                  {s.messages.map((msg) => (
+                    <li key={msg.id} className={msg.role === 'user' ? 'me' : 'wingman'}>
+                      <small>{msg.role === 'user' ? 'User' : 'Wingman'} · {ist(msg.at)}</small>
+                      <p>{msg.content}</p>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            ))}
+          </div>
+        )}
       </Section>
     </div>
   );
