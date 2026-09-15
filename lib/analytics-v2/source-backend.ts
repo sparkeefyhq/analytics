@@ -129,6 +129,27 @@ let names = new Map<string, string>();
 export function backendDisplayNames(): ReadonlyMap<string, string> {
   return names;
 }
+/**
+ * Opaque participant id → backend user id, for the admin-gated conversation
+ * reader only. Never exposed in any DTO; refreshed with the cached dataset.
+ */
+let backendIds = new Map<string, string>();
+export function backendUserIdFor(participant: string): string | undefined {
+  return backendIds.get(participant);
+}
+
+export async function fetchBackendConversations(userId: string): Promise<unknown> {
+  const config = backendConfig();
+  if (!config) throw Error('Backend admin URL/key not configured');
+  const response = await fetch(
+    `${config.baseUrl}/api/admin/analytics/v2/conversations?user=${encodeURIComponent(userId)}`,
+    { headers: { 'x-admin-api-key': config.adminKey }, signal: AbortSignal.timeout(10000) },
+  );
+  if (!response.ok) throw Error(`Backend responded ${response.status}`);
+  const body = (await response.json()) as { data?: unknown };
+  if (!body.data) throw Error('Unexpected backend response shape');
+  return body.data;
+}
 
 let cached: { at: number; data: Dataset } | undefined;
 let pending: Promise<Dataset> | undefined;
@@ -181,11 +202,14 @@ async function load(): Promise<Dataset> {
     ).toISOString();
     const allowed = realMembers.filter((m) => !excluded.has(m.id));
     const nextNames = new Map<string, string>();
+    const nextIds = new Map<string, string>();
     for (const m of realMembers) {
       const name = typeof m.name === 'string' ? m.name.trim() : '';
       if (name) nextNames.set(opaque(m.id), name);
+      nextIds.set(opaque(m.id), m.id);
     }
     names = nextNames;
+    backendIds = nextIds;
     base.members = realMembers.map((m) => ({
       id: opaque(m.id),
       cohort: cohortFor(Date.parse(m.firstOpen)),
@@ -273,6 +297,7 @@ async function load(): Promise<Dataset> {
     };
   } catch {
     names = new Map();
+    backendIds = new Map();
     return {
       ...base,
       state: 'query-error',

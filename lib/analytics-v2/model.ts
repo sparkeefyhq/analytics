@@ -486,6 +486,26 @@ export function calculate(
       'Total distinct Wingman chats opened divided by the number of active users in the selected period. A user who only opened the app still counts in the denominator. Never approximated as calendar days.',
       'chats',
     ),
+    messaged: usersWith(
+      'wingman',
+      (f) => f.kind === 'message',
+      'Users who sent at least one message to Wingman in the selected period.',
+    ),
+    memories_added: count(
+      'memory',
+      all.filter((f) => f.kind === 'memory').length,
+      'Memories saved in the selected period, counted from the memories table (one per saved memory).',
+    ),
+    memory_users: usersWith(
+      'memory',
+      (f) => f.kind === 'memory',
+      'Users who saved at least one memory in the selected period.',
+    ),
+    people_added: count(
+      'people',
+      all.filter((f) => f.kind === 'person').length,
+      'People saved in the selected period, counted from the people table (one per saved person).',
+    ),
     people_used: count(
       'people-use',
       new Set(
@@ -725,6 +745,36 @@ export function calculate(
         uf.filter((f) => f.kind === 'message' && f.assisted === true).length,
         'Messages explicitly marked assisted.',
       ),
+      messages: count(
+        'wingman',
+        uf.filter((f) => f.kind === 'message').length,
+        'Messages this user sent to Wingman in the selected period.',
+      ),
+      sessions: count(
+        'sessions',
+        new Set(
+          uf
+            .filter((f) => f.kind === 'message' || f.kind === 'wingman')
+            .map((f) => f.session)
+            .filter(Boolean),
+        ).size,
+        'Distinct Wingman chats this user opened in the selected period.',
+      ),
+      cost: (() => {
+        const usage = uf.filter((f) => f.kind === 'usage');
+        return !has('cost') || data.state !== 'available'
+          ? unavailable('cost')
+          : usage.some((f) => f.cost === undefined)
+            ? missing('No complete billing coverage for this user.', 'Backend', 'no-data')
+            : {
+                ...count(
+                  'cost',
+                  usage.reduce((sum, f) => sum + (f.cost ?? 0), 0),
+                  'What the AI provider charged for every call made for this user in the selected period, retries included.',
+                ),
+                unit: 'USD',
+              };
+      })(),
     };
     for (const p of ['today', '7d', '30d'] as const) {
       const fs = selected(m, Math.max(since, periodStart(p, now)));

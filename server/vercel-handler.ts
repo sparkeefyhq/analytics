@@ -3,6 +3,7 @@ import * as workspace from '../app/api/workspace/route';
 import * as login from '../app/api/auth/login/route';
 import * as logout from '../app/api/auth/logout/route';
 import * as analyticsV2 from '../app/api/analytics/v2/route';
+import * as analyticsV2Conversations from '../app/api/analytics/v2/conversations/route';
 import { trackerAccess } from '../lib/auth';
 import { withWriteTransaction } from '../lib/vercel-database';
 
@@ -16,6 +17,7 @@ export async function handle(request:Request):Promise<Response>{
   if(path==='/api/analytics/v2/access'&&method==='GET')return json({...await trackerAccess(request),phases:[],releaseGates:[]});
   const handlers:Record<string,Record<string,(request:Request)=>Promise<Response>>>={
     '/api/analytics/v2':{GET:analyticsV2.GET},
+    '/api/analytics/v2/conversations':{GET:analyticsV2Conversations.GET},
     '/api/tracker':{GET:tracker.GET,PATCH:tracker.PATCH},
     '/api/workspace':{GET:workspace.GET,POST:workspace.POST},
     '/api/auth/login':{POST:login.POST},'/api/auth/logout':{POST:logout.POST},

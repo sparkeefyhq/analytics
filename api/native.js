@@ -259,6 +259,22 @@ var names = /* @__PURE__ */ new Map();
 function backendDisplayNames() {
   return names;
 }
+var backendIds = /* @__PURE__ */ new Map();
+function backendUserIdFor(participant) {
+  return backendIds.get(participant);
+}
+async function fetchBackendConversations(userId) {
+  const config = backendConfig();
+  if (!config) throw Error("Backend admin URL/key not configured");
+  const response = await fetch(
+    `${config.baseUrl}/api/admin/analytics/v2/conversations?user=${encodeURIComponent(userId)}`,
+    { headers: { "x-admin-api-key": config.adminKey }, signal: AbortSignal.timeout(1e4) }
+  );
+  if (!response.ok) throw Error(`Backend responded ${response.status}`);
+  const body = await response.json();
+  if (!body.data) throw Error("Unexpected backend response shape");
+  return body.data;
+}
 var cached;
 var pending;
 async function liveDatasetFromBackend() {
@@ -304,11 +320,14 @@ async function load() {
     ).toISOString();
     const allowed2 = realMembers.filter((m) => !excluded.has(m.id));
     const nextNames = /* @__PURE__ */ new Map();
+    const nextIds = /* @__PURE__ */ new Map();
     for (const m of realMembers) {
       const name = typeof m.name === "string" ? m.name.trim() : "";
       if (name) nextNames.set(opaque(m.id), name);
+      nextIds.set(opaque(m.id), m.id);
     }
     names = nextNames;
+    backendIds = nextIds;
     base.members = realMembers.map((m) => ({
       id: opaque(m.id),
       cohort: cohortFor(Date.parse(m.firstOpen)),
@@ -385,6 +404,7 @@ async function load() {
     };
   } catch {
     names = /* @__PURE__ */ new Map();
+    backendIds = /* @__PURE__ */ new Map();
     return {
       ...base,
       state: "query-error",
@@ -2371,6 +2391,26 @@ function calculate(data, cohort, period) {
       "Total distinct Wingman chats opened divided by the number of active users in the selected period. A user who only opened the app still counts in the denominator. Never approximated as calendar days.",
       "chats"
     ),
+    messaged: usersWith2(
+      "wingman",
+      (f) => f.kind === "message",
+      "Users who sent at least one message to Wingman in the selected period."
+    ),
+    memories_added: count(
+      "memory",
+      all.filter((f) => f.kind === "memory").length,
+      "Memories saved in the selected period, counted from the memories table (one per saved memory)."
+    ),
+    memory_users: usersWith2(
+      "memory",
+      (f) => f.kind === "memory",
+      "Users who saved at least one memory in the selected period."
+    ),
+    people_added: count(
+      "people",
+      all.filter((f) => f.kind === "person").length,
+      "People saved in the selected period, counted from the people table (one per saved person)."
+    ),
     people_used: count(
       "people-use",
       new Set(
@@ -2558,7 +2598,30 @@ function calculate(data, cohort, period) {
         "attribution",
         uf.filter((f) => f.kind === "message" && f.assisted === true).length,
         "Messages explicitly marked assisted."
-      )
+      ),
+      messages: count(
+        "wingman",
+        uf.filter((f) => f.kind === "message").length,
+        "Messages this user sent to Wingman in the selected period."
+      ),
+      sessions: count(
+        "sessions",
+        new Set(
+          uf.filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
+        ).size,
+        "Distinct Wingman chats this user opened in the selected period."
+      ),
+      cost: (() => {
+        const usage2 = uf.filter((f) => f.kind === "usage");
+        return !has("cost") || data.state !== "available" ? unavailable2("cost") : usage2.some((f) => f.cost === void 0) ? missing("No complete billing coverage for this user.", "Backend", "no-data") : {
+          ...count(
+            "cost",
+            usage2.reduce((sum, f) => sum + (f.cost ?? 0), 0),
+            "What the AI provider charged for every call made for this user in the selected period, retries included."
+          ),
+          unit: "USD"
+        };
+      })()
     };
     for (const p of ["today", "7d", "30d"]) {
       const fs = selected(m, Math.max(since, periodStart(p, now3)));
@@ -2806,6 +2869,28 @@ async function GET3(request) {
   );
 }
 
+// app/api/analytics/v2/conversations/route.ts
+async function GET4(request) {
+  if (!(await trackerAccess(request)).canEdit)
+    return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+  const participant = new URL(request.url).searchParams.get("user") ?? "";
+  if (!/^participant-[0-9a-f]{16}$/.test(participant))
+    return Response.json({ error: "Invalid participant" }, { status: 400 });
+  await liveDatasetFromBackend();
+  const userId = backendUserIdFor(participant);
+  if (!userId) return Response.json({ error: "Unknown participant" }, { status: 404 });
+  try {
+    const data = await fetchBackendConversations(userId);
+    const { userId: _drop, ...rest } = data;
+    return Response.json(
+      { participant, ...rest },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
+  } catch {
+    return Response.json({ error: "Conversation source unavailable" }, { status: 503 });
+  }
+}
+
 // server/vercel-handler.ts
 async function handle(request) {
   const url = new URL(request.url);
@@ -2816,6 +2901,7 @@ async function handle(request) {
   if (path === "/api/analytics/v2/access" && method === "GET") return json({ ...await trackerAccess(request), phases: [], releaseGates: [] });
   const handlers = {
     "/api/analytics/v2": { GET: GET3 },
+    "/api/analytics/v2/conversations": { GET: GET4 },
     "/api/tracker": { GET, PATCH },
     "/api/workspace": { GET: GET2, POST },
     "/api/auth/login": { POST: POST2 },
