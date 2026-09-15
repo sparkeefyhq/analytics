@@ -796,15 +796,6 @@
 .v3-retention-rest {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
-.v3-more {
-  margin: 8px 0 0;
-}
-.v3-more svg {
-  transition: transform 0.15s;
-}
-.v3-more svg.open {
-  transform: rotate(90deg);
-}
 .v3-user-head {
   display: flex;
   justify-content: space-between;

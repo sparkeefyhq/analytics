@@ -246,7 +246,6 @@ export function AnalyticsV2({
   );
   const [filter, setFilter] = useState<'all' | 'onboarded' | 'messaged' | 'new'>('all');
   const [query, setQuery] = useState('');
-  const [more, setMore] = useState(false);
   const users = page === 'users';
   // Per-user rows need the admin session; public visitors see aggregates only.
   const wantUsers = users || canEdit;
@@ -672,73 +671,6 @@ export function AnalyticsV2({
                   </div>
                 </Section>
               </div>
-
-              <button className="v3-more" onClick={() => setMore(!more)} aria-expanded={more}>
-                {more ? 'Hide' : 'Show'} every metric
-                <ChevronRight size={16} aria-hidden="true" className={more ? 'open' : ''} />
-              </button>
-              {more && (
-                <>
-                  <Section title="Acquisition & activation" note="Unique users · milestones may overlap">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['first_opens', 'Signed up', 'Accounts created in this period.'],
-                        ['onboarded', 'Onboarding completed', 'Finished the onboarding flow.'],
-                        ['wingman_opened', 'Opened Wingman', 'Opened at least one Wingman chat.'],
-                        ['first_message', 'Sent first message', 'First-ever message fell in this period.'],
-                        ['first_answer', 'Got first answer', 'First-ever complete answer fell in this period.'],
-                        ['five_messages', 'Sent 5+ messages', 'Sent at least five messages.'],
-                        ['activated', 'Meaningfully activated', 'Onboarded, got an answer, and came back on a later day.'],
-                        ['second_situation', 'Second genuine situation', 'Started a second real conversation.'],
-                        ['organic_second', 'Organic second situation', 'Second conversation not prompted by a reminder.'],
-                        ['people_used', 'People used with Wingman', 'Distinct user + saved-person pairs that had a chat.'],
-                        ['people_used_2', 'Used with 2+ people', 'Users who chatted about two or more saved people.'],
-                        ['sessions', 'Chats per active user', 'Separate Wingman chats a typical active user opened.'],
-                        ['messages_7d', 'Messages per active user · 7D', 'Messages a typical active user sent in the last 7 days.'],
-                        ['messages_30d', 'Messages per active user · 30D', 'Messages a typical active user sent in the last 30 days.'],
-                      ]}
-                    />
-                  </Section>
-                  <Section title="People & memories" note="Users who saved at least N · created ≠ used">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['people_1', '1+ person'],
-                        ['people_2', '2+ people'],
-                        ['people_3', '3+ people'],
-                        ['people_5', '5+ people'],
-                        ['memory_1', '1+ memory'],
-                        ['memory_3', '3+ memories'],
-                        ['memory_5', '5+ memories'],
-                        ['memory_20', '20+ memories'],
-                        ['people_average', 'People per active user', 'Typical number of people an active user has saved.'],
-                        ['memory_average', 'Memories per active user', 'Typical number of memories an active user has saved.'],
-                        ['memory_median', 'Median memories per active user', 'Half of active users have saved this many or fewer.'],
-                        ['memory_reused', 'Memory reused later', 'Needs mobile instrumentation; not connected yet.'],
-                      ]}
-                    />
-                  </Section>
-                  <Section title="AI economics" note="Real OpenRouter pricing · every AI call priced, including retries">
-                    <Tiles
-                      metrics={m}
-                      items={[
-                        ['requests', 'User messages sent', 'Messages real users sent to Wingman.'],
-                        ['complete', 'Answers completed', 'AI requests that returned a usable answer.'],
-                        ['retries', 'Retries', 'Times Wingman retried the AI provider.'],
-                        ['fallbacks', 'Fallbacks', 'Times the backup model was used.'],
-                        ['input_tokens', 'Input tokens', 'Prompts, context, memory, history sent to the AI.'],
-                        ['output_tokens', 'Output tokens', 'Text the AI wrote back.'],
-                        ['total_tokens', 'Total tokens', 'Input + output.'],
-                        ['cost_request', 'Cost / message', 'Total AI cost ÷ user messages sent.'],
-                        ['cost_active', 'Cost / active user', 'Total AI cost ÷ active users.'],
-                        ['cost_activation', 'Cost / meaningful activation', 'Empty until someone activates.'],
-                        ['cost_repeater', 'Cost / organic repeater', 'Empty until someone returns organically.'],
-                      ]}
-                    />
-                  </Section>
-                </>
-              )}
             </>
           )}
 
