@@ -2277,7 +2277,13 @@ function calculate(data, cohort, period) {
       )
     ])
   );
-  const average = (cap, values, detail) => data.state !== "available" || !has(cap) ? unavailable2(cap) : !values.length ? missing("No observed users.", "PostHog", "no-data") : count(cap, values.reduce((a, b) => a + b, 0) / values.length, detail);
+  const average = (cap, values, detail, unitLabel) => {
+    if (data.state !== "available" || !has(cap)) return unavailable2(cap);
+    if (!values.length) return missing("No observed users.", "PostHog", "no-data");
+    const total = values.reduce((a, b) => a + b, 0);
+    const metric = count(cap, total / values.length, detail);
+    return unitLabel ? { ...metric, basis: `${total} ${unitLabel} \xF7 ${values.length} active users` } : metric;
+  };
   const volume = (cap, kind, start, population = members.filter(
     (m) => selected(m, Math.max(since, start)).some((f) => activeKinds.has(f.kind))
   )) => average(
@@ -2285,7 +2291,8 @@ function calculate(data, cohort, period) {
     population.map(
       (m) => selected(m, Math.max(since, start)).filter((f) => f.kind === kind).length
     ),
-    "Average number of Wingman messages sent per active user in this window (only users active in the window count). The named window is intersected with the global time filter \u2014 e.g. with Time = 7D, the 30D tile also covers 7 days."
+    "Total Wingman messages sent in this window divided by the number of users who did anything in the app in the same window. A user who only opened the app still counts in the denominator. The named window is intersected with the global time filter \u2014 e.g. with Time = 7D, the 30D tile also covers 7 days.",
+    "messages"
   );
   const second = (m, organic = false) => {
     const situations = (facts.get(m.id) ?? []).filter((f) => f.kind === "situation" && f.situation).sort((a, b) => a.at.localeCompare(b.at));
@@ -2302,7 +2309,7 @@ function calculate(data, cohort, period) {
     active: count(
       "activity",
       active.length,
-      "Unique users with a foreground/product activity event; background response events are excluded."
+      "Unique users who did anything in the app in the selected period: signed up, finished onboarding, added a person, memory or event, opened Wingman, or sent a message. A signup with no further activity still counts. Background AI events are excluded."
     ),
     activated: has("activation") && data.state === "available" ? ratio(
       members.filter(
@@ -2361,7 +2368,8 @@ function calculate(data, cohort, period) {
           selected(m).filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => f.session).filter(Boolean)
         ).size
       ),
-      "Distinct Wingman session IDs per active user. Never approximated as calendar days."
+      "Total distinct Wingman chats opened divided by the number of active users in the selected period. A user who only opened the app still counts in the denominator. Never approximated as calendar days.",
+      "chats"
     ),
     people_used: count(
       "people-use",
@@ -2393,12 +2401,14 @@ function calculate(data, cohort, period) {
   metrics.people_average = average(
     "people",
     active.map((m) => peak(m, "people")),
-    "Average observed peak people count per active user in the selected period; not current inventory after deletion."
+    "Total people added (highest count each user reached) divided by active users in the selected period; not current inventory after deletion.",
+    "people"
   );
   metrics.memory_average = average(
     "memory",
     active.map((m) => peak(m, "memories")),
-    "Average observed peak memory count per active user in the selected period; not current inventory after deletion."
+    "Total memories added (highest count each user reached) divided by active users in the selected period; not current inventory after deletion.",
+    "memories"
   );
   const mem = active.map((m) => peak(m, "memories")).sort((a, b) => a - b);
   metrics.memory_median = data.state !== "available" || !has("memory") ? unavailable2("memory") : mem.length ? count(
@@ -2417,18 +2427,21 @@ function calculate(data, cohort, period) {
   metrics.complete = count(
     "responses",
     completed.length,
-    "Completed unique requests; retries deduplicated by request ID."
+    'Wingman answers that completed successfully, counted from the AI call log (one per AI request, retries deduplicated). This is a different source from "User messages sent", which counts stored chat messages \u2014 the two are not expected to match exactly.'
   );
   metrics.failed = count(
     "responses",
     failed.length,
-    "Failed requests without a completion in this period. Pending requests are not failures."
+    "AI requests that failed and were never completed in this period. Pending requests are not failures."
   );
-  metrics.success = has("responses") && data.state === "available" ? ratio(
-    completed.length,
-    completed.length + failed.length,
-    "Completed / resolved requests. In-flight requests excluded; late successes reconcile failures."
-  ) : unavailable2("responses");
+  metrics.success = has("responses") && data.state === "available" ? {
+    ...ratio(
+      completed.length,
+      completed.length + failed.length,
+      "Completed answers divided by all resolved AI requests (completed + failed). In-flight requests excluded; a late success reconciles an earlier failure."
+    ),
+    basis: `${completed.length} completed \xF7 ${completed.length + failed.length} resolved`
+  } : unavailable2("responses");
   for (const [key, cap, kind] of [
     ["retries", "retries", "retry"],
     ["fallbacks", "fallbacks", "fallback"]
@@ -2454,7 +2467,7 @@ function calculate(data, cohort, period) {
   metrics.requests = count(
     "wingman",
     requests.length,
-    "Unique user requests in the selected period, excluding automatic retries."
+    "Messages real users actually sent to Wingman in the selected period, counted from stored chat messages (one per message, retries never counted). Reliability tiles count AI log rows instead, so they can differ."
   );
   const usage = all.filter((f) => f.kind === "usage");
   for (const [key, field] of [

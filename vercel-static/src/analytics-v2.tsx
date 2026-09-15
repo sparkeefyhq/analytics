@@ -59,10 +59,14 @@ function Value({ metric }: { metric?: Metric }) {
               }).format(value)
             : `${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 }).format(value)}${metric?.unit === '%' ? '%' : metric?.unit === 'ms' ? ' ms' : metric?.unit === 'seconds' ? ' s' : ''}`}
       </strong>
-      {metric?.denominator !== undefined && (
-        <small>
-          {metric.numerator} / {metric.denominator} eligible
-        </small>
+      {metric?.basis ? (
+        <small className="v2-basis">{metric.basis}</small>
+      ) : (
+        metric?.denominator !== undefined && (
+          <small>
+            {metric.numerator} / {metric.denominator} eligible
+          </small>
+        )
       )}
       {metric?.state !== 'available' && (
         <small className="v2-state">
@@ -115,13 +119,13 @@ function Tiles({
   items,
   metrics,
 }: {
-  items: [string, string][];
+  items: [string, string, string?][];
   metrics: Record<string, Metric>;
 }) {
   return (
     <div className="v2-grid">
-      {items.map(([key, name]) => (
-        <Tile key={key} name={name} metric={metrics[key]} />
+      {items.map(([key, name, caption]) => (
+        <Tile key={key} name={name} metric={metrics[key]} caption={caption} />
       ))}
     </div>
   );
@@ -462,7 +466,7 @@ export function AnalyticsV2({
                         name="Active users"
                         metric={m.active}
                         icon={UsersRound}
-                        caption="Observed product activity in this cohort and period."
+                        caption="Did anything in the app in this period — a signup that never went further still counts."
                       />
                     </div>
                     <p className="v2-reading-note">
@@ -558,13 +562,31 @@ export function AnalyticsV2({
                         ['first_answer', 'Received first complete answer'],
                         ['five_messages', 'Sent 5+ messages'],
                         ['people_used_2', 'Used with 2+ people'],
-                        ['sessions', 'Avg sessions per active user'],
+                        [
+                          'requests',
+                          'User messages sent',
+                          'Every message a real user sent to Wingman.',
+                        ],
+                        [
+                          'sessions',
+                          'Chats per active user',
+                          'How many separate Wingman chats a typical active user opened.',
+                        ],
                         [
                           'messages_day',
-                          'Avg messages per active user · today',
+                          'Messages per active user · today',
+                          'How many messages a typical active user sent today.',
                         ],
-                        ['messages_7d', 'Avg messages per active user · 7D'],
-                        ['messages_30d', 'Avg messages per active user · 30D'],
+                        [
+                          'messages_7d',
+                          'Messages per active user · 7D',
+                          'How many messages a typical active user sent in the last 7 days.',
+                        ],
+                        [
+                          'messages_30d',
+                          'Messages per active user · 30D',
+                          'How many messages a typical active user sent in the last 30 days.',
+                        ],
                       ]}
                     />
                   </Section>
@@ -607,23 +629,45 @@ export function AnalyticsV2({
               )}
               {panel === 'usage' && (
                 <>
-                  <Section title="Memory" note="Created ≠ reused later">
+                  <Section
+                    title="Memory"
+                    note="Users who saved at least N memories · created ≠ reused later"
+                  >
                     <Tiles
                       metrics={m}
                       items={[
                         ...memory,
-                        ['memory_average', 'Average observed count / user'],
-                        ['memory_median', 'Median observed count / user'],
+                        [
+                          'memory_average',
+                          'Memories per active user',
+                          'Typical number of memories an active user has saved.',
+                        ],
+                        [
+                          'memory_median',
+                          'Median memories per active user',
+                          'Half of active users have saved this many or fewer.',
+                        ],
                       ]}
                     />
                   </Section>
-                  <Section title="People" note="Created ≠ used with Wingman">
+                  <Section
+                    title="People"
+                    note="Users who saved at least N people · created ≠ used with Wingman"
+                  >
                     <Tiles
                       metrics={m}
                       items={[
                         ...people,
-                        ['people_average', 'Average observed count / user'],
-                        ['people_used', 'Unique people used with Wingman'],
+                        [
+                          'people_average',
+                          'People per active user',
+                          'Typical number of people an active user has saved.',
+                        ],
+                        [
+                          'people_used',
+                          'People actually used with Wingman',
+                          'Distinct user + saved-person pairs that had a real chat.',
+                        ],
                       ]}
                     />
                   </Section>
@@ -631,33 +675,99 @@ export function AnalyticsV2({
               )}
               {panel === 'health' && (
                 <>
-                  <Section title="Response health">
+                  <Section
+                    title="Response health"
+                    note="Counted from the AI call log · one row per AI request · retries deduplicated"
+                  >
                     <Tiles
                       metrics={m}
                       items={[
-                        ['complete', 'Complete responses'],
-                        ['failed', 'Failed responses'],
-                        ['retries', 'Retries'],
-                        ['fallbacks', 'Fallbacks'],
-                        ['success', 'Request success'],
-                        ['latency_median', 'Median response latency'],
-                        ['latency_p95', 'p95 response latency'],
+                        [
+                          'complete',
+                          'Answers completed',
+                          'AI requests that returned a usable Wingman answer.',
+                        ],
+                        [
+                          'failed',
+                          'Answers failed',
+                          'AI requests that never completed. Zero means every request got an answer.',
+                        ],
+                        [
+                          'retries',
+                          'Retries',
+                          'Times Wingman had to retry the AI provider. Not counted as extra messages.',
+                        ],
+                        [
+                          'fallbacks',
+                          'Fallbacks',
+                          'Times the backup AI model was used instead of the main one.',
+                        ],
+                        [
+                          'success',
+                          'Answer success rate',
+                          'Share of resolved AI requests that completed.',
+                        ],
+                        [
+                          'latency_median',
+                          'Typical answer time (median)',
+                          'Half of answers arrived faster than this.',
+                        ],
+                        [
+                          'latency_p95',
+                          'Slow answer time (p95)',
+                          '95% of answers arrived faster than this — the slow tail.',
+                        ],
                       ]}
                     />
                   </Section>
-                  <Section title="AI economics">
+                  <Section
+                    title="AI economics"
+                    note="Real OpenRouter pricing for the configured model · every AI call priced, including retries"
+                  >
                     <Tiles
                       metrics={m}
                       items={[
-                        ['requests', 'Total AI requests'],
-                        ['input_tokens', 'Input tokens'],
-                        ['output_tokens', 'Output tokens'],
-                        ['total_tokens', 'Total tokens'],
-                        ['cost', 'Total AI cost'],
-                        ['cost_request', 'Cost / request'],
-                        ['cost_active', 'Cost / active user'],
-                        ['cost_activation', 'Cost / meaningful activation'],
-                        ['cost_repeater', 'Cost / organic repeater'],
+                        [
+                          'requests',
+                          'User messages sent',
+                          'Messages real users sent to Wingman in this period.',
+                        ],
+                        [
+                          'input_tokens',
+                          'Input tokens',
+                          'Text sent to the AI: prompts, context, memory, conversation history.',
+                        ],
+                        [
+                          'output_tokens',
+                          'Output tokens',
+                          'Text the AI wrote back.',
+                        ],
+                        ['total_tokens', 'Total tokens', 'Input + output.'],
+                        [
+                          'cost',
+                          'Total AI cost',
+                          'What we paid the AI provider for this period.',
+                        ],
+                        [
+                          'cost_request',
+                          'Cost / message',
+                          'Total AI cost ÷ user messages sent.',
+                        ],
+                        [
+                          'cost_active',
+                          'Cost / active user',
+                          'Total AI cost ÷ active users in this period.',
+                        ],
+                        [
+                          'cost_activation',
+                          'Cost / meaningful activation',
+                          'Total AI cost ÷ users who meaningfully activated. Empty until someone activates.',
+                        ],
+                        [
+                          'cost_repeater',
+                          'Cost / organic repeater',
+                          'Total AI cost ÷ users with an organic second situation. Empty until someone returns.',
+                        ],
                       ]}
                     />
                     <div className="v2-projection">
@@ -729,13 +839,41 @@ function UserDetail({ user, onBack }: { user: NamedUser; onBack: () => void }) {
       <Tiles
         metrics={user.metrics}
         items={[
-          ['onboarding', 'Onboarding completed'],
-          ['people', 'People · observed count'],
-          ['memories', 'Memories · observed count'],
-          ['people_used', 'People used with Wingman'],
-          ['second_situation', 'Second genuine situation'],
-          ['assisted', 'Assisted messages'],
-          ['independent', 'Independent messages'],
+          [
+            'onboarding',
+            'Onboarding completed',
+            '1 = finished onboarding, 0 = signed up but never finished.',
+          ],
+          [
+            'people',
+            'People added',
+            'Highest number of saved people this user reached in the selected period.',
+          ],
+          [
+            'memories',
+            'Memories added',
+            'Highest number of saved memories this user reached in the selected period.',
+          ],
+          [
+            'people_used',
+            'People used with Wingman',
+            'Distinct saved people this user actually chatted about.',
+          ],
+          [
+            'second_situation',
+            'Second genuine situation',
+            '1 = came back with a second real conversation in the selected period.',
+          ],
+          [
+            'independent',
+            'Messages sent on their own',
+            'Messages not preceded by a reminder in the previous 30 minutes.',
+          ],
+          [
+            'assisted',
+            'Messages after a reminder',
+            'Messages sent within 30 minutes of reading a reminder notification.',
+          ],
         ]}
       />
       <Section
@@ -743,9 +881,9 @@ function UserDetail({ user, onBack }: { user: NamedUser; onBack: () => void }) {
         note="Named windows intersect the selected time filter"
       >
         {[
-          ['sessions', 'Wingman sessions'],
-          ['messages', 'Wingman messages'],
-          ['days', 'Active days'],
+          ['sessions', 'Wingman chats opened'],
+          ['messages', 'Messages sent'],
+          ['days', 'Days active'],
         ].map(([key, name]) => (
           <div className="v2-window-row" key={key}>
             <h3>{name}</h3>
