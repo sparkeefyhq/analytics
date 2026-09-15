@@ -147,6 +147,9 @@ test('frequencies deduplicate requests, use distinct sessions, and distinguish t
   assert.equal(r.metrics.messages_30d.value, 3);
   assert.equal(r.metrics.sessions.value, 3);
   assert.equal(r.users[0].metrics.messages_7d.value, 2);
+  // Averages carry their arithmetic so the UI never shows a bare "2.5".
+  assert.equal(r.metrics.messages_7d.basis, '2 messages ÷ 1 active users');
+  assert.equal(r.metrics.sessions.basis, '3 chats ÷ 1 active users');
 });
 test('actual zero, no cohort, disconnected, pending, and query error remain distinct', () => {
   const d = base();
