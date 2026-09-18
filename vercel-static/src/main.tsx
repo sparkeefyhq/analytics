@@ -4374,8 +4374,8 @@ function LegacyApp() {
 function App() {
   const [tracker, setTracker] = useState<Tracker | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
-  const [view, setView] = useState<"analytics" | "plan" | "users" | "retention">(() =>
-    location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : location.pathname === "/retention" ? "retention" : "analytics",
+  const [view, setView] = useState<"analytics" | "plan" | "users" | "retention" | "notify">(() =>
+    location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : location.pathname === "/retention" ? "retention" : location.pathname === "/notify" ? "notify" : "analytics",
   );
   const [error, setError] = useState("");
 
@@ -4403,12 +4403,12 @@ function App() {
     // moved into the two Control surfaces.
     if (["/launch", "/sarthak", "/suggestions", "/"].includes(location.pathname))
       history.replaceState({}, "", "/analytics");
-    const onPopState = () => setView(location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : location.pathname === "/retention" ? "retention" : "analytics");
+    const onPopState = () => setView(location.pathname === "/users" ? "users" : location.pathname === "/plan" ? "plan" : location.pathname === "/retention" ? "retention" : location.pathname === "/notify" ? "notify" : "analytics");
     addEventListener("popstate", onPopState);
     return () => removeEventListener("popstate", onPopState);
   }, []);
   useEffect(() => { void load(); }, [view]);
-  const navigate = (next: "analytics" | "plan" | "users" | "retention") => {
+  const navigate = (next: "analytics" | "plan" | "users" | "retention" | "notify") => {
     history.pushState({}, "", `/${next}${location.search}`);
     setView(next);
   };

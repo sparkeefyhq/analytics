@@ -4,6 +4,7 @@ import * as login from '../app/api/auth/login/route';
 import * as logout from '../app/api/auth/logout/route';
 import * as analyticsV2 from '../app/api/analytics/v2/route';
 import * as analyticsV2Conversations from '../app/api/analytics/v2/conversations/route';
+import * as adminBroadcast from '../app/api/admin/broadcast/route';
 import { trackerAccess } from '../lib/auth';
 import { withWriteTransaction } from '../lib/vercel-database';
 
@@ -20,6 +21,7 @@ export async function handle(request:Request):Promise<Response>{
     '/api/analytics/v2/conversations':{GET:analyticsV2Conversations.GET},
     '/api/tracker':{GET:tracker.GET,PATCH:tracker.PATCH},
     '/api/workspace':{GET:workspace.GET,POST:workspace.POST},
+    '/api/admin/broadcast':{GET:adminBroadcast.GET,POST:adminBroadcast.POST},
     '/api/auth/login':{POST:login.POST},'/api/auth/logout':{POST:logout.POST},
   };
   const route=handlers[path];if(!route)return json({error:'Not found'},404);

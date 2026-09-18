@@ -1,14 +1,15 @@
 /* eslint-disable next/no-img-element -- This is the Vite client; its local logo is not served by Next Image. */
 import { useEffect, useMemo, useState } from "react";
-import { ChartNoAxesCombined, ListChecks, Repeat2, UsersRound, Target, TriangleAlert, CalendarDays } from "lucide-react";
+import { ChartNoAxesCombined, ListChecks, Repeat2, UsersRound, Target, TriangleAlert, CalendarDays, Megaphone } from "lucide-react";
 import { countdown } from "./control-state";
 import "./control.css";
 import "./control-polish.css";
 import { Phase0Tracking } from "./phase0";
 import type { Phase0Snapshot } from "./phase0-data";
 import { AnalyticsV2 } from "./analytics-v2";
+import { Broadcast } from "./broadcast";
 import { useLiveData } from "./live-data";
-export type ControlView = "analytics" | "plan" | "users" | "retention";
+export type ControlView = "analytics" | "plan" | "users" | "retention" | "notify";
 
 type Metric = {
   id: string; name: string; target: number; actual: number | null; unit: string;
@@ -59,6 +60,7 @@ function ControlSidebar({ view, setView, email, onLogout, onLogin }: { view: Con
       <button aria-current={view === "analytics" ? "page" : undefined} className={view === "analytics" ? "control-nav active" : "control-nav"} onClick={() => setView("analytics")}><ChartNoAxesCombined size={18} aria-hidden="true" />Analytics</button>
       <button aria-current={view === "users" ? "page" : undefined} className={view === "users" ? "control-nav active" : "control-nav"} onClick={() => setView("users")}><UsersRound size={18} aria-hidden="true" />Users</button>
       <button aria-current={view === "retention" ? "page" : undefined} className={view === "retention" ? "control-nav active" : "control-nav"} onClick={() => setView("retention")}><Repeat2 size={18} aria-hidden="true" />Retention</button>
+      {email && <button aria-current={view === "notify" ? "page" : undefined} className={view === "notify" ? "control-nav active" : "control-nav"} onClick={() => setView("notify")}><Megaphone size={18} aria-hidden="true" />Notify</button>}
     </nav>
     <div className="control-sidebar-foot"><span className="status-dot" />{email ? "Admin workspace" : "Public dashboard"}<small>{email || "View-only"}</small>{email ? <button onClick={onLogout}>Sign out</button> : <button onClick={onLogin}>Admin sign in</button>}</div>
   </aside>;
@@ -172,5 +174,5 @@ export function ControlApp({ tracker, save, view, setView, onLogout, onLogin }: 
   const live = useLiveData<ControlTracker>(view === "plan" ? "/api/tracker" : null);
   // Analytics-only overlay: background reads never replace optimistic edits or gate evidence.
   const displayed = {...tracker, analytics: live.data ? live.data.analytics : tracker.analytics};
-  return <main className="control-shell"><ControlSidebar view={view} setView={setView} email={tracker.viewerEmail} onLogout={onLogout} onLogin={onLogin} /><div className="control-main">{view === "plan" && <output className="live-refresh"><span>Phase evidence · {live.error || "Checks every 30s"}</span><button onClick={live.refresh}>Refresh</button></output>}{view !== "plan" ? <AnalyticsV2 key={`${view}-${tracker.viewerEmail || 'public'}`} page={view} canEdit={tracker.canEdit} onLogin={onLogin} onNavigate={setView}/> : <PlanPage tracker={displayed} save={save} onLogin={onLogin} />}</div></main>;
+  return <main className="control-shell"><ControlSidebar view={view} setView={setView} email={tracker.viewerEmail} onLogout={onLogout} onLogin={onLogin} /><div className="control-main">{view === "plan" && <output className="live-refresh"><span>Phase evidence · {live.error || "Checks every 30s"}</span><button onClick={live.refresh}>Refresh</button></output>}{view === "plan" ? <PlanPage tracker={displayed} save={save} onLogin={onLogin} /> : view === "notify" ? <Broadcast canEdit={tracker.canEdit} onLogin={onLogin} /> : <AnalyticsV2 key={`${view}-${tracker.viewerEmail || 'public'}`} page={view} canEdit={tracker.canEdit} onLogin={onLogin} onNavigate={setView}/>}</div></main>;
 }
