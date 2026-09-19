@@ -29,7 +29,12 @@ const ACTIVE_KINDS = new Set([
 type Facts = Map<string, Fact[]>;
 
 function group(data: Dataset): { members: Member[]; facts: Facts } {
-  const members = data.members.filter((m) => !m.internal && !m.test);
+  // This snapshot is labeled `cohort: 'phase-0'` below and feeds the Plan
+  // tab's Phase 0 launch-gate decision — it must never blend in a later
+  // phase's members, or a Phase 1 signup silently inflates a Phase 0 gate.
+  const members = data.members.filter(
+    (m) => !m.internal && !m.test && m.cohort === 'phase-0',
+  );
   const facts: Facts = new Map(members.map((m) => [m.id, []]));
   for (const f of data.facts) {
     const list = facts.get(f.user);

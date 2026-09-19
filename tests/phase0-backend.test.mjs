@@ -111,6 +111,25 @@ test('a disconnected or errored source never yields a count', () => {
   assert.equal(gated.metrics.person_1.status, 'unavailable');
 });
 
+test('a later-phase member never counts toward the Phase 0 snapshot', () => {
+  const t0 = now - 2 * DAY;
+  const phase1a = { ...member('u2', t0), cohort: 'phase-1a' };
+  const d = dataset(
+    [member('u1', t0), phase1a],
+    [
+      fact('u1', t0, 'first_open'), fact('u1', t0, 'message', { request: 'r1' }),
+      fact('u2', t0, 'first_open'), fact('u2', t0, 'message', { request: 'r2' }),
+      fact('u2', now - 3600e3, 'message', { request: 'r3' }),
+    ],
+  );
+  const s = phase0SnapshotFromDataset(d, new Map(), now);
+  assert.equal(s.metrics.first_open.count, 1);
+  assert.equal(s.metrics.total_messages_sent.count, 1);
+  // u2's message an hour ago would make "today" active if it leaked in.
+  assert.equal(s.activeUsers.today.count, 0);
+  assert.equal(s.activeUsers.all.count, 1);
+});
+
 test('active-user periods use Asia/Kolkata boundaries', () => {
   assert.equal(iso(istDayStart(now)), '2026-09-17T18:30:00.000Z');
   // 2026-09-18 is a Friday; Monday 00:00 IST was 2026-09-13T18:30Z.
