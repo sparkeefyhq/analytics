@@ -66,10 +66,30 @@ const usd = (value: number, digits = 4) =>
 const num = (value: number) =>
   new Intl.NumberFormat('en-IN', { maximumFractionDigits: 1 }).format(value);
 
+/**
+ * Below this many eligible users, a computed rate (e.g. "11.1%" on a
+ * denominator of 9) reads as more precise than the sample supports. Lead
+ * with the raw fraction instead until Phase 1 brings real volume.
+ */
+const LOW_SAMPLE_THRESHOLD = 20;
+function isLowSampleRate(metric?: Metric): metric is Metric & {
+  numerator: number;
+  denominator: number;
+} {
+  return (
+    metric?.unit === '%' &&
+    metric.numerator !== undefined &&
+    metric.denominator !== undefined &&
+    metric.denominator > 0 &&
+    metric.denominator < LOW_SAMPLE_THRESHOLD
+  );
+}
+
 function format(metric?: Metric) {
   const value = metric?.value;
   if (value === null || value === undefined) return '—';
   if (metric?.unit === 'USD') return usd(value);
+  if (isLowSampleRate(metric)) return `${metric.numerator} / ${metric.denominator}`;
   const suffix =
     metric?.unit === '%'
       ? '%'
@@ -87,6 +107,8 @@ function Value({ metric }: { metric?: Metric }) {
       <strong>{format(metric)}</strong>
       {metric?.basis ? (
         <small className="v2-basis">{metric.basis}</small>
+      ) : isLowSampleRate(metric) ? (
+        <small className="v2-basis">Small sample — rate not yet reliable</small>
       ) : (
         metric?.denominator !== undefined && (
           <small>
@@ -534,7 +556,7 @@ export function AnalyticsV2({
           {(
             [
               ['app', 'Came back to the app'],
-              ['wingman', 'Came back to Wingman'],
+              ['wingman', 'Sent Wingman a message'],
               ['situation', 'Came back with a new situation'],
             ] as const
           ).map(([key, name]) => (
