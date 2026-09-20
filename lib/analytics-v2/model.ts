@@ -124,6 +124,8 @@ export type Snapshot = {
   retention: Record<ReturnType, Record<string, Metric>>;
   users: User[];
   excluded: number;
+  /** Real (non-internal/test) member count per phase, independent of the selected cohort filter. */
+  cohortCounts: Record<Exclude<Cohort, 'all'>, number>;
 };
 
 export const missing = (
@@ -870,5 +872,20 @@ export function calculate(
     retention: restampRetention(retentionFor()),
     users,
     excluded: data.members.filter((m) => m.internal || m.test).length,
+    cohortCounts: (() => {
+      const counts: Record<Exclude<Cohort, 'all'>, number> = {
+        'phase-0': 0,
+        'phase-1a': 0,
+        'phase-1b': 0,
+        'phase-2': 0,
+      };
+      const seen = new Set<string>();
+      for (const m of data.members) {
+        if (m.internal || m.test || seen.has(m.id)) continue;
+        seen.add(m.id);
+        counts[m.cohort]++;
+      }
+      return counts;
+    })(),
   };
 }

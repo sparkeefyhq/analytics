@@ -45,7 +45,7 @@ const periods: [Period, string][] = [
 const states: Record<string, string> = {
   'no-data': 'No data yet',
   'not-connected': 'Not connected',
-  'not-eligible': 'Window still open',
+  'not-eligible': 'Too early — no one has reached this window yet',
   'query-error': 'Query error',
 };
 const ist = (value: string | null | undefined, withTime = true) =>
@@ -324,6 +324,13 @@ export function AnalyticsV2({
             ? `Live from the production database · checked ${ist(data.asOf)} IST · ${data.excluded} internal accounts excluded`
             : 'Checking the production database…'}
         </p>
+        {data && cohort === 'all' && (
+          <p className="v2-subtitle">
+            {(['phase-0', 'phase-1a', 'phase-1b', 'phase-2'] as const)
+              .map((c) => `${labels[c]}: ${data.cohortCounts[c]}`)
+              .join(' · ')}
+          </p>
+        )}
       </div>
       <div className="v2-filters">
         <fieldset className="v3-segment" aria-label="Time">

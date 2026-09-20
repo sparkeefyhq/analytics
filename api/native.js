@@ -428,7 +428,9 @@ var ACTIVE_KINDS = /* @__PURE__ */ new Set([
   "calendar"
 ]);
 function group(data) {
-  const members = data.members.filter((m) => !m.internal && !m.test);
+  const members = data.members.filter(
+    (m) => !m.internal && !m.test && m.cohort === "phase-0"
+  );
   const facts = new Map(members.map((m) => [m.id, []]));
   for (const f of data.facts) {
     const list = facts.get(f.user);
@@ -2698,7 +2700,22 @@ function calculate(data, cohort, period) {
     metrics: restamp(metrics),
     retention: restampRetention(retentionFor()),
     users,
-    excluded: data.members.filter((m) => m.internal || m.test).length
+    excluded: data.members.filter((m) => m.internal || m.test).length,
+    cohortCounts: (() => {
+      const counts = {
+        "phase-0": 0,
+        "phase-1a": 0,
+        "phase-1b": 0,
+        "phase-2": 0
+      };
+      const seen = /* @__PURE__ */ new Set();
+      for (const m of data.members) {
+        if (m.internal || m.test || seen.has(m.id)) continue;
+        seen.add(m.id);
+        counts[m.cohort]++;
+      }
+      return counts;
+    })()
   };
 }
 

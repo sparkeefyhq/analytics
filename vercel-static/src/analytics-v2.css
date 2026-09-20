@@ -649,6 +649,8 @@
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  border: 0;
+  padding: 0;
 }
 .v3-chips button {
   border: 1px solid #303134;
@@ -756,6 +758,7 @@
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
   gap: 20px;
+  align-items: start;
 }
 .v3-two .v2-section {
   margin: 24px 0;
