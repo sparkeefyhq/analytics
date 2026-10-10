@@ -33,13 +33,16 @@ export function fixture(now = Date.now()): Dataset {
       'attribution',
     ],
   };
-  const ages = [45, 34, 20, 10, 5, 2.5, 0.5];
+  // ages[7..9] extend coverage: a phase-2 participant, a fresh zero-milestone
+  // participant, and an older phase-1b participant — widens Phase 1 QA beyond
+  // the original 7-person set without disturbing existing indices/assertions.
+  const ages = [45, 34, 20, 10, 5, 2.5, 0.5, 60, 0.2, 15];
   for (let i = 0; i < ages.length; i++) {
     const id = `participant-${String(i + 1).padStart(3, '0')}`,
       first = now - ages[i] * DAY;
     data.members.push({
       id,
-      cohort: i < 4 ? 'phase-0' : i < 6 ? 'phase-1a' : 'phase-1b',
+      cohort: i < 4 ? 'phase-0' : i < 6 ? 'phase-1a' : i === 7 ? 'phase-2' : 'phase-1b',
       from: iso(first),
       firstOpen: iso(first),
       internal: false,
@@ -58,9 +61,12 @@ export function fixture(now = Date.now()): Dataset {
         });
     };
     add(0, 'first_open');
-    add(0.01, 'onboarding');
-    add(0.03, 'person', { people: [5, 3, 2, 1, 5, 2, 1][i] });
-    add(0.04, 'memory', { memories: [20, 5, 3, 1, 5, 1, 0][i] });
+    // participant-008 (index 7) intentionally never completes onboarding or
+    // adds a person/memory — exercises the "real zero, not fabricated" path
+    // for a brand-new, still-eligible user.
+    if (i !== 7) add(0.01, 'onboarding');
+    add(0.03, 'person', { people: [5, 3, 2, 1, 5, 2, 1, 0, 8, 3][i] });
+    add(0.04, 'memory', { memories: [20, 5, 3, 1, 5, 1, 0, 0, 15, 4][i] });
     if (i % 2 === 0) add(0.05, 'activated');
     for (const day of [0, 1, 3, 7, 15, 30]) {
       if (day && i % 3 === 1) continue;
@@ -100,6 +106,13 @@ export function fixture(now = Date.now()): Dataset {
         attribution: i === 2 ? 'founder' : 'organic',
       });
       if (day > 0) add(day + 0.13, 'memory_reused');
+      // participant-009 (index 8) on day 0 exercises the retry/fallback
+      // paths — previously always zero in synthetic data, so QA couldn't
+      // see what a non-zero Retries/Fallbacks tile actually looks like.
+      if (i === 8 && day === 0) {
+        add(day + 0.14, 'retry', { request: `retry-${i}-${day}` });
+        add(day + 0.15, 'fallback', { request: `fallback-${i}-${day}` });
+      }
     }
     // Recent product activity makes today/7D/30D filters visibly different.
     add(ages[i] - 0.1, 'app');
