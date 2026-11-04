@@ -211,17 +211,28 @@ async function pool(tasks, limit) {
   );
   return out;
 }
-async function loadDataset(cfg) {
-  const start = /^\d{4}-\d{2}-\d{2}$/.test(cfg.dataStart) ? cfg.dataStart : "2026-09-11";
+var HISTORY_MS = 15 * 6e4;
+var RECENT_MS = 6e4;
+var BACKOFF_MS = 5 * 6e4;
+var OVERLAP_MS = 2 * 6e4;
+var state = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
+var inflight = null;
+var hourOf = (ts) => new Date(Math.floor(Date.parse(ts) / 36e5) * 36e5).toISOString();
+function baseFilter(cfg, start) {
   const excluded = [...cfg.excludedIds].filter((id) => UUID.test(id));
-  const base = [
-    `timestamp >= toDateTime('${start} 00:00:00')`,
+  return [
+    `timestamp >= toDateTime('${start}')`,
     "length(distinct_id) = 36",
     `ifNull(toString(properties.traffic_class), '') != 'system'`,
     excluded.length ? `distinct_id NOT IN (${excluded.map((id) => `'${id}'`).join(",")})` : "true"
   ].join(" AND ");
-  const str = (expr) => `ifNull(toString(${expr}), '')`;
-  const backendPromise = fetchBackend(cfg);
+}
+var str = (expr) => `ifNull(toString(${expr}), '')`;
+var FIRST_TRY = `multiIf(toString(properties.first_try) IN ('true', '1'), 1., toString(properties.first_try) IN ('false', '0'), 0., toFloatOrNull(''))`;
+var USED = `multiIf(toString(properties.used) IN ('true', '1'), 1., toString(properties.used) IN ('false', '0'), 0., toFloatOrNull(''))`;
+var SCREEN = `coalesce(toString(properties.screen), toString(properties.permission), event)`;
+async function queryHistory(cfg, start) {
+  const base = baseFilter(cfg, `${start} 00:00:00`);
   const [overlay, activity, sessions, screens] = await pool(
     [
       () => hogql(
@@ -246,9 +257,7 @@ async function loadDataset(cfg) {
       () => hogql(
         cfg,
         `SELECT distinct_id AS id, timestamp AS ts, ${str("properties.traffic_class")} AS tc, ${str("properties.panel_id")} AS panel,
-                  toFloatOrNull(toString(properties.taps)) AS taps,
-                  multiIf(toString(properties.first_try) IN ('true', '1'), 1, toString(properties.first_try) IN ('false', '0'), 0, NULL) AS firstTry,
-                  multiIf(toString(properties.used) IN ('true', '1'), 1, toString(properties.used) IN ('false', '0'), 0, NULL) AS used,
+                  toFloatOrNull(toString(properties.taps)) AS taps, ${FIRST_TRY} AS firstTry, ${USED} AS used,
                   ${str("properties.app")} AS app
            FROM events
            WHERE event = 'overlay_session' AND ${base}
@@ -256,8 +265,7 @@ async function loadDataset(cfg) {
       ),
       () => hogql(
         cfg,
-        `SELECT distinct_id AS id,
-                  argMax(coalesce(toString(properties.screen), toString(properties.permission), event), timestamp) AS screen
+        `SELECT distinct_id AS id, argMax(${SCREEN}, timestamp) AS screen
            FROM events
            WHERE event IN ('onboarding_step', 'onboarding_permission') AND ${base}
            GROUP BY id LIMIT 100000`
@@ -265,7 +273,104 @@ async function loadDataset(cfg) {
     ],
     3
   );
-  const backend = await backendPromise;
+  return { overlay, activity, sessions, screens };
+}
+async function queryRecent(cfg, since) {
+  const at = new Date(since).toISOString().slice(0, 19).replace("T", " ");
+  const base = baseFilter(cfg, at);
+  const rows = await hogql(
+    cfg,
+    `SELECT 'o' AS k, distinct_id AS id, timestamp AS ts, ${str("properties.traffic_class")} AS tc,
+            ${str("properties.action")} AS action, ${str("properties.status")} AS status, ${str("properties.app")} AS app,
+            toFloatOrNull(toString(properties.latency_ms)) AS latency, toFloatOrNull(toString(properties.cost_usd)) AS cost,
+            ${str("properties.panel_id")} AS panel, toFloatOrNull('') AS taps, toFloatOrNull('') AS firstTry, toFloatOrNull('') AS used, '' AS extra
+     FROM events WHERE event = 'overlay_used' AND ${base}
+     UNION ALL
+     SELECT 's', distinct_id, timestamp, ${str("properties.traffic_class")}, '', '', ${str("properties.app")},
+            toFloatOrNull(''), toFloatOrNull(''), ${str("properties.panel_id")},
+            toFloatOrNull(toString(properties.taps)), ${FIRST_TRY}, ${USED}, ''
+     FROM events WHERE event = 'overlay_session' AND ${base}
+     UNION ALL
+     SELECT 'a', distinct_id, timestamp, ${str("properties.traffic_class")}, '', '', '',
+            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ${str("properties.app_version")}
+     FROM events WHERE event IN (${APP_EVENTS.map((e) => `'${e}'`).join(",")}) AND ${base}
+     UNION ALL
+     SELECT 'b', distinct_id, timestamp, ${str("properties.traffic_class")}, '', '', '',
+            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ifNull(${SCREEN}, '')
+     FROM events WHERE event IN ('onboarding_step', 'onboarding_permission') AND ${base}
+     LIMIT 200000`
+  );
+  const raw = { overlay: [], activity: [], sessions: [], screens: [] };
+  for (const r of rows) {
+    if (r.k === "o") raw.overlay.push({ id: r.id, ts: r.ts, tc: r.tc, action: r.action, status: r.status, app: r.app, latency: r.latency, cost: r.cost, panel: r.panel });
+    else if (r.k === "s") raw.sessions.push({ id: r.id, ts: r.ts, tc: r.tc, panel: r.panel, taps: r.taps, firstTry: r.firstTry, used: r.used, app: r.app });
+    else if (r.k === "a") raw.activity.push({ id: r.id, hour: hourOf(r.ts), tc: r.tc, n: 1, version: r.extra });
+    else if (r.k === "b") raw.screens.push({ id: r.id, screen: r.extra, ts: r.ts });
+  }
+  raw.screens.sort((x, y) => Date.parse(x.ts ?? "") - Date.parse(y.ts ?? ""));
+  return raw;
+}
+function merge(history, recent) {
+  if (!recent) return history.raw;
+  const before = (ts) => Date.parse(ts) < history.since;
+  const screens = new Map(history.raw.screens.map((s) => [s.id, s]));
+  for (const s of recent.screens) screens.set(s.id, s);
+  return {
+    overlay: [...history.raw.overlay.filter((r) => before(r.ts)), ...recent.overlay],
+    sessions: [...history.raw.sessions.filter((r) => before(r.ts)), ...recent.sessions],
+    // Hour buckets may overlap at the seam; activity is used for presence, so a repeat is harmless.
+    activity: [...history.raw.activity, ...recent.activity],
+    screens: [...screens.values()]
+  };
+}
+async function getDataset(cfg) {
+  if (!inflight) inflight = refresh(cfg).finally(() => inflight = null);
+  return inflight;
+}
+var lastBuilt = null;
+async function refresh(cfg) {
+  const now = Date.now();
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(cfg.dataStart) ? cfg.dataStart : "2026-09-11";
+  const posthogAllowed = now >= state.backoffUntil;
+  let changed = false;
+  if (!state.backend || now - state.backend.at >= RECENT_MS) {
+    try {
+      state.backend = { at: now, data: await fetchBackend(cfg) };
+      changed = true;
+    } catch (error) {
+      if (!state.backend) throw error;
+      console.error("backend refresh failed", error);
+    }
+  }
+  if (posthogAllowed) {
+    try {
+      if (!state.history || now - state.history.at >= HISTORY_MS) {
+        const raw2 = await queryHistory(cfg, start);
+        state.history = { at: Date.now(), since: now - OVERLAP_MS, raw: raw2 };
+        state.recent = { at: Date.now(), raw: { overlay: [], activity: [], sessions: [], screens: [] } };
+        changed = true;
+      } else if (!state.recent || now - state.recent.at >= RECENT_MS) {
+        state.recent = { at: Date.now(), raw: await queryRecent(cfg, state.history.since) };
+        changed = true;
+      }
+      state.lastError = null;
+    } catch (error) {
+      state.lastError = error instanceof Error ? error.message : String(error);
+      state.backoffUntil = now + BACKOFF_MS;
+      console.error("posthog refresh failed; backing off", error);
+      if (!state.history) throw error;
+    }
+  }
+  if (!state.history || !state.backend) throw new Error(state.lastError ?? "No data yet");
+  if (!changed && lastBuilt) return lastBuilt.data;
+  const raw = merge(state.history, state.recent?.raw ?? null);
+  const posthogAt = Math.max(state.history.at, state.recent?.at ?? 0);
+  const data = assemble(cfg, start, state.backend.data, raw, new Date(Math.min(posthogAt, state.backend.at)).toISOString(), state.lastError);
+  lastBuilt = { at: now, data };
+  return data;
+}
+function assemble(cfg, start, backend, raw, freshAt, sourceError) {
+  const { overlay, activity, sessions, screens } = raw;
   const members = backend.members;
   const flaggedTest = /* @__PURE__ */ new Set();
   const flaggedInternal = /* @__PURE__ */ new Set();
@@ -284,7 +389,8 @@ async function loadDataset(cfg) {
   const keep = (rows) => rows.map((r) => ({ ...r, id: r.id.toLowerCase() })).filter((r) => known.has(r.id));
   const iso = (value) => new Date(value.includes("T") || value.includes("Z") ? value : `${value.replace(" ", "T")}Z`).toISOString();
   return {
-    generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    generatedAt: freshAt,
+    sourceError,
     dataStart: start,
     people,
     activity: [
@@ -653,6 +759,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const r = (x) => x.pct;
   return {
     generatedAt: data.generatedAt,
+    servedAt: new Date(now).toISOString(),
+    stale: data.sourceError !== null,
     filters,
     rangeLabel: label,
     versions: allVersions,
@@ -726,26 +834,6 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
 
 // server/handler.ts
 var json = (body, status = 200, headers = {}) => Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
-var CACHE_MS = 6e4;
-var cached = null;
-var inflight = null;
-async function dataset() {
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.data;
-  if (!inflight) {
-    inflight = loadDataset(config()).then((data) => {
-      cached = { at: Date.now(), data };
-      return data;
-    }).finally(() => {
-      inflight = null;
-    });
-  }
-  try {
-    return await inflight;
-  } catch (error) {
-    if (cached) return cached.data;
-    throw error;
-  }
-}
 function pick(value, allowed2, fallback) {
   return value && allowed2.includes(value) ? value : fallback;
 }
@@ -782,7 +870,7 @@ async function handle(request) {
       version: /^(all|\d+(\.\d+){0,3})$/.test(url.searchParams.get("version") ?? "") ? url.searchParams.get("version") : "all"
     };
     try {
-      const data = await dataset();
+      const data = await getDataset(config());
       const body = computeSnapshot(data, filters, config());
       const sync = pendingSync();
       if (sync) await Promise.race([sync, new Promise((r) => setTimeout(r, 8e3))]);

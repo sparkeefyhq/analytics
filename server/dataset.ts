@@ -76,21 +76,54 @@ async function pool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]>
 type ActivityRow = { id: string; hour: string; tc: string; n: number; version: string };
 type OverlayRow = { id: string; ts: string; tc: string; action: string; status: string; app: string; latency: number | null; cost: number | null; panel: string };
 type SessionRow = { id: string; ts: string; tc: string; panel: string; taps: number | null; firstTry: number | null; used: number | null; app: string };
-type ScreenRow = { id: string; screen: string };
+type ScreenRow = { id: string; screen: string; ts?: string };
+interface Raw {
+  overlay: OverlayRow[];
+  activity: ActivityRow[];
+  sessions: SessionRow[];
+  screens: ScreenRow[];
+}
 
-export async function loadDataset(cfg: Config): Promise<Dataset> {
-  const start = /^\d{4}-\d{2}-\d{2}$/.test(cfg.dataStart) ? cfg.dataStart : '2026-09-11';
+/**
+ * Freshness on PostHog's free plan (about 120 queries an hour):
+ *  - history (4 queries) is re-read every HISTORY_MS,
+ *  - the minutes since then come from ONE small combined query, at most every RECENT_MS,
+ *  - the backend (accounts, chat replies, in-app cost) is re-read every RECENT_MS.
+ * On a PostHog error or throttle, the last good rows are kept and PostHog is left alone for BACKOFF_MS.
+ */
+const HISTORY_MS = 15 * 60_000;
+const RECENT_MS = 60_000;
+const BACKOFF_MS = 5 * 60_000;
+const OVERLAP_MS = 2 * 60_000;
+
+const state: {
+  history: { at: number; since: number; raw: Raw } | null;
+  recent: { at: number; raw: Raw } | null;
+  backend: { at: number; data: Awaited<ReturnType<typeof fetchBackend>> } | null;
+  backoffUntil: number;
+  lastError: string | null;
+} = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
+let inflight: Promise<Dataset> | null = null;
+
+const hourOf = (ts: string) => new Date(Math.floor(Date.parse(ts) / 3_600_000) * 3_600_000).toISOString();
+
+function baseFilter(cfg: Config, start: string) {
   const excluded = [...cfg.excludedIds].filter((id) => UUID.test(id));
-  // Test traffic is kept in the rows (tc column) so its ids can be dropped everywhere, then removed below.
-  const base = [
-    `timestamp >= toDateTime('${start} 00:00:00')`,
+  // Test traffic is kept in the rows (tc column) so its ids can be dropped everywhere; system traffic is never read.
+  return [
+    `timestamp >= toDateTime('${start}')`,
     'length(distinct_id) = 36',
     `ifNull(toString(properties.traffic_class), '') != 'system'`,
     excluded.length ? `distinct_id NOT IN (${excluded.map((id) => `'${id}'`).join(',')})` : 'true',
   ].join(' AND ');
-  const str = (expr: string) => `ifNull(toString(${expr}), '')`;
+}
+const str = (expr: string) => `ifNull(toString(${expr}), '')`;
+const FIRST_TRY = `multiIf(toString(properties.first_try) IN ('true', '1'), 1., toString(properties.first_try) IN ('false', '0'), 0., toFloatOrNull(''))`;
+const USED = `multiIf(toString(properties.used) IN ('true', '1'), 1., toString(properties.used) IN ('false', '0'), 0., toFloatOrNull(''))`;
+const SCREEN = `coalesce(toString(properties.screen), toString(properties.permission), event)`;
 
-  const backendPromise = fetchBackend(cfg);
+async function queryHistory(cfg: Config, start: string): Promise<Raw> {
+  const base = baseFilter(cfg, `${start} 00:00:00`);
   const [overlay, activity, sessions, screens] = (await pool<unknown[]>(
     [
       () =>
@@ -118,9 +151,7 @@ export async function loadDataset(cfg: Config): Promise<Dataset> {
         hogql<SessionRow>(
           cfg,
           `SELECT distinct_id AS id, timestamp AS ts, ${str('properties.traffic_class')} AS tc, ${str('properties.panel_id')} AS panel,
-                  toFloatOrNull(toString(properties.taps)) AS taps,
-                  multiIf(toString(properties.first_try) IN ('true', '1'), 1, toString(properties.first_try) IN ('false', '0'), 0, NULL) AS firstTry,
-                  multiIf(toString(properties.used) IN ('true', '1'), 1, toString(properties.used) IN ('false', '0'), 0, NULL) AS used,
+                  toFloatOrNull(toString(properties.taps)) AS taps, ${FIRST_TRY} AS firstTry, ${USED} AS used,
                   ${str('properties.app')} AS app
            FROM events
            WHERE event = 'overlay_session' AND ${base}
@@ -129,8 +160,7 @@ export async function loadDataset(cfg: Config): Promise<Dataset> {
       () =>
         hogql<ScreenRow>(
           cfg,
-          `SELECT distinct_id AS id,
-                  argMax(coalesce(toString(properties.screen), toString(properties.permission), event), timestamp) AS screen
+          `SELECT distinct_id AS id, argMax(${SCREEN}, timestamp) AS screen
            FROM events
            WHERE event IN ('onboarding_step', 'onboarding_permission') AND ${base}
            GROUP BY id LIMIT 100000`,
@@ -138,7 +168,126 @@ export async function loadDataset(cfg: Config): Promise<Dataset> {
     ],
     3,
   )) as [OverlayRow[], ActivityRow[], SessionRow[], ScreenRow[]];
-  const backend = await backendPromise;
+  return { overlay, activity, sessions, screens };
+}
+
+/** Everything since `since`, in one query. */
+async function queryRecent(cfg: Config, since: number): Promise<Raw> {
+  const at = new Date(since).toISOString().slice(0, 19).replace('T', ' ');
+  const base = baseFilter(cfg, at);
+  type Row = {
+    k: string; id: string; ts: string; tc: string; action: string; status: string; app: string;
+    latency: number | null; cost: number | null; panel: string; taps: number | null; firstTry: number | null; used: number | null; extra: string;
+  };
+  const rows = await hogql<Row>(
+    cfg,
+    `SELECT 'o' AS k, distinct_id AS id, timestamp AS ts, ${str('properties.traffic_class')} AS tc,
+            ${str('properties.action')} AS action, ${str('properties.status')} AS status, ${str('properties.app')} AS app,
+            toFloatOrNull(toString(properties.latency_ms)) AS latency, toFloatOrNull(toString(properties.cost_usd)) AS cost,
+            ${str('properties.panel_id')} AS panel, toFloatOrNull('') AS taps, toFloatOrNull('') AS firstTry, toFloatOrNull('') AS used, '' AS extra
+     FROM events WHERE event = 'overlay_used' AND ${base}
+     UNION ALL
+     SELECT 's', distinct_id, timestamp, ${str('properties.traffic_class')}, '', '', ${str('properties.app')},
+            toFloatOrNull(''), toFloatOrNull(''), ${str('properties.panel_id')},
+            toFloatOrNull(toString(properties.taps)), ${FIRST_TRY}, ${USED}, ''
+     FROM events WHERE event = 'overlay_session' AND ${base}
+     UNION ALL
+     SELECT 'a', distinct_id, timestamp, ${str('properties.traffic_class')}, '', '', '',
+            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ${str('properties.app_version')}
+     FROM events WHERE event IN (${APP_EVENTS.map((e) => `'${e}'`).join(',')}) AND ${base}
+     UNION ALL
+     SELECT 'b', distinct_id, timestamp, ${str('properties.traffic_class')}, '', '', '',
+            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ifNull(${SCREEN}, '')
+     FROM events WHERE event IN ('onboarding_step', 'onboarding_permission') AND ${base}
+     LIMIT 200000`,
+  );
+  const raw: Raw = { overlay: [], activity: [], sessions: [], screens: [] };
+  for (const r of rows) {
+    if (r.k === 'o') raw.overlay.push({ id: r.id, ts: r.ts, tc: r.tc, action: r.action, status: r.status, app: r.app, latency: r.latency, cost: r.cost, panel: r.panel });
+    else if (r.k === 's') raw.sessions.push({ id: r.id, ts: r.ts, tc: r.tc, panel: r.panel, taps: r.taps, firstTry: r.firstTry, used: r.used, app: r.app });
+    else if (r.k === 'a') raw.activity.push({ id: r.id, hour: hourOf(r.ts), tc: r.tc, n: 1, version: r.extra });
+    else if (r.k === 'b') raw.screens.push({ id: r.id, screen: r.extra, ts: r.ts });
+  }
+  raw.screens.sort((x, y) => Date.parse(x.ts ?? '') - Date.parse(y.ts ?? ''));
+  return raw;
+}
+
+function merge(history: { since: number; raw: Raw }, recent: Raw | null): Raw {
+  if (!recent) return history.raw;
+  const before = (ts: string) => Date.parse(ts) < history.since;
+  const screens = new Map(history.raw.screens.map((s) => [s.id, s]));
+  for (const s of recent.screens) screens.set(s.id, s); // newest wins (sorted ascending)
+  return {
+    overlay: [...history.raw.overlay.filter((r) => before(r.ts)), ...recent.overlay],
+    sessions: [...history.raw.sessions.filter((r) => before(r.ts)), ...recent.sessions],
+    // Hour buckets may overlap at the seam; activity is used for presence, so a repeat is harmless.
+    activity: [...history.raw.activity, ...recent.activity],
+    screens: [...screens.values()],
+  };
+}
+
+/** Returns the freshest dataset this instance can give without exceeding PostHog's budget. */
+export async function getDataset(cfg: Config): Promise<Dataset> {
+  if (!inflight) inflight = refresh(cfg).finally(() => (inflight = null));
+  return inflight;
+}
+
+let lastBuilt: { at: number; data: Dataset } | null = null;
+
+async function refresh(cfg: Config): Promise<Dataset> {
+  const now = Date.now();
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(cfg.dataStart) ? cfg.dataStart : '2026-09-11';
+  const posthogAllowed = now >= state.backoffUntil;
+  let changed = false;
+
+  if (!state.backend || now - state.backend.at >= RECENT_MS) {
+    try {
+      state.backend = { at: now, data: await fetchBackend(cfg) };
+      changed = true;
+    } catch (error) {
+      if (!state.backend) throw error;
+      console.error('backend refresh failed', error);
+    }
+  }
+
+  if (posthogAllowed) {
+    try {
+      if (!state.history || now - state.history.at >= HISTORY_MS) {
+        const raw = await queryHistory(cfg, start);
+        state.history = { at: Date.now(), since: now - OVERLAP_MS, raw };
+        state.recent = { at: Date.now(), raw: { overlay: [], activity: [], sessions: [], screens: [] } };
+        changed = true;
+      } else if (!state.recent || now - state.recent.at >= RECENT_MS) {
+        state.recent = { at: Date.now(), raw: await queryRecent(cfg, state.history.since) };
+        changed = true;
+      }
+      state.lastError = null;
+    } catch (error) {
+      state.lastError = error instanceof Error ? error.message : String(error);
+      state.backoffUntil = now + BACKOFF_MS;
+      console.error('posthog refresh failed; backing off', error);
+      if (!state.history) throw error;
+    }
+  }
+  if (!state.history || !state.backend) throw new Error(state.lastError ?? 'No data yet');
+  if (!changed && lastBuilt) return lastBuilt.data;
+
+  const raw = merge(state.history, state.recent?.raw ?? null);
+  const posthogAt = Math.max(state.history.at, state.recent?.at ?? 0);
+  const data = assemble(cfg, start, state.backend.data, raw, new Date(Math.min(posthogAt, state.backend.at)).toISOString(), state.lastError);
+  lastBuilt = { at: now, data };
+  return data;
+}
+
+function assemble(
+  cfg: Config,
+  start: string,
+  backend: Awaited<ReturnType<typeof fetchBackend>>,
+  raw: Raw,
+  freshAt: string,
+  sourceError: string | null,
+): Dataset {
+  const { overlay, activity, sessions, screens } = raw;
   const members = backend.members;
 
   const flaggedTest = new Set<string>();
@@ -166,7 +315,8 @@ export async function loadDataset(cfg: Config): Promise<Dataset> {
   const iso = (value: string) => new Date(value.includes('T') || value.includes('Z') ? value : `${value.replace(' ', 'T')}Z`).toISOString();
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt: freshAt,
+    sourceError,
     dataStart: start,
     people,
     activity: [

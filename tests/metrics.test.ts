@@ -16,6 +16,7 @@ function draft(id: string, msAgo: number, extra: Partial<Dataset['overlay'][numb
 function dataset(partial: Partial<Dataset>): Dataset {
   return {
     generatedAt: new Date(NOW).toISOString(),
+    sourceError: null,
     dataStart: '2026-09-11',
     people: [],
     activity: [],

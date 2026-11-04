@@ -374,6 +374,8 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   const r = (x: Ratio) => x.pct;
   return {
     generatedAt: data.generatedAt,
+    servedAt: new Date(now).toISOString(),
+    stale: data.sourceError !== null,
     filters,
     rangeLabel: label,
     versions: allVersions,

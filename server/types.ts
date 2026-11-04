@@ -1,6 +1,9 @@
 /** Raw, already-filtered inputs (see dataset.ts for who counts as real). */
 export interface Dataset {
+  /** When the data was last read from its sources (the older of PostHog and backend). */
   generatedAt: string;
+  /** Set when the latest PostHog read failed and older rows are being shown. */
+  sourceError: string | null;
   dataStart: string;
   people: { id: string; name: string | null; signupAt: string; team: boolean }[];
   /** Hourly activity counts per user and surface. */
@@ -87,6 +90,8 @@ export interface PlatformRow {
 
 export interface Snapshot {
   generatedAt: string;
+  servedAt: string;
+  stale: boolean;
   filters: Filters;
   rangeLabel: string;
   versions: string[];

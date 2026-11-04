@@ -1,38 +1,12 @@
 import { clearCookie, emailAllowed, getSession, normaliseEmail, passwordMatches, sessionCookie } from './auth';
 import { config } from './config';
-import { loadDataset } from './dataset';
+import { getDataset } from './dataset';
 import { computeSnapshot } from './metrics';
 import { pendingSync } from './posthog-sync';
-import type { Audience, Dataset, Filters, Range, Surface } from './types';
+import type { Audience, Filters, Range, Surface } from './types';
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   Response.json(body, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
-
-/** One PostHog read is shared by every viewer and filter for this long. */
-const CACHE_MS = 60_000;
-let cached: { at: number; data: Dataset } | null = null;
-let inflight: Promise<Dataset> | null = null;
-
-async function dataset(): Promise<Dataset> {
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.data;
-  if (!inflight) {
-    inflight = loadDataset(config())
-      .then((data) => {
-        cached = { at: Date.now(), data };
-        return data;
-      })
-      .finally(() => {
-        inflight = null;
-      });
-  }
-  try {
-    return await inflight;
-  } catch (error) {
-    // Serve the last good numbers if a refresh fails; the page shows their age.
-    if (cached) return cached.data;
-    throw error;
-  }
-}
 
 function pick<T extends string>(value: string | null, allowed: readonly T[], fallback: T): T {
   return value && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
@@ -78,7 +52,7 @@ export async function handle(request: Request): Promise<Response> {
       version: /^(all|\d+(\.\d+){0,3})$/.test(url.searchParams.get('version') ?? '') ? (url.searchParams.get('version') as string) : 'all',
     };
     try {
-      const data = await dataset();
+      const data = await getDataset(config());
       const body = computeSnapshot(data, filters, config());
       // Finish a running PostHog account sync before the serverless instance is frozen (bounded wait).
       const sync = pendingSync();
