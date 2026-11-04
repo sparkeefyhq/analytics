@@ -158,7 +158,7 @@ async function doSync(cfg, classes) {
   const batch = changes.map((c) => ({
     event: "$set",
     distinct_id: c.id,
-    properties: { $set: { keefie_account: c.cls }, traffic_class: "system", $lib: "keefie-control-plane" },
+    properties: { $set: { keefie_account: c.cls }, traffic_class: "system", $lib: "keefie-control-plane", $geoip_disable: true },
     timestamp: (/* @__PURE__ */ new Date()).toISOString()
   }));
   for (let i = 0; i < batch.length; i += 500) {
