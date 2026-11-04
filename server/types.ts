@@ -36,6 +36,15 @@ export interface Dataset {
   onboarding: { id: string; screen: string }[];
   /** Completed in-app chat replies, from the backend. */
   chatReplies: { id: string; at: string }[];
+  /** Overlay reply model calls from the backend's ai_call_telemetry (empty until backend PR #357 is live). */
+  overlayCalls: { id: string; at: string; request: string; ok: boolean; latency: number | null; cost: number | null }[];
+  sources: {
+    /** When PostHog rows were last read; null = never (PostHog unavailable). */
+    posthogAt: string | null;
+    backendAt: string;
+    /** First backend overlay call; from here on overlay requests/latency/cost come from the backend. */
+    overlayCallsFrom: string | null;
+  };
 }
 
 export type Range = '7d' | '30d' | 'all';
@@ -92,6 +101,7 @@ export interface Snapshot {
   generatedAt: string;
   servedAt: string;
   stale: boolean;
+  sources: { posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog' };
   filters: Filters;
   rangeLabel: string;
   versions: string[];

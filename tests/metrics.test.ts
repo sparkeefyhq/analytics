@@ -26,6 +26,8 @@ function dataset(partial: Partial<Dataset>): Dataset {
     versions: [],
     onboarding: [],
     chatReplies: [],
+    overlayCalls: [],
+    sources: { posthogAt: new Date(NOW).toISOString(), backendAt: new Date(NOW).toISOString(), overlayCallsFrom: null },
     ...partial,
   };
 }
@@ -148,4 +150,41 @@ test('retention: D1 counts activity on the day after signup; open windows stay p
   assert.deepEqual(row.d1, { kind: 'value', n: 1, d: 2, pct: 50 });
   assert.equal(row.d14.kind, 'pending'); // days 14-20 end 9 Nov
   assert.equal(row.state, 'Measuring');
+});
+
+test('backend overlay calls replace PostHog drafts from their first row; retries merge into one request', () => {
+  const backendFrom = at(10 * H);
+  const data = dataset({
+    people: [{ id: 'a', name: 'A', signupAt: at(40 * 24 * H), team: false }],
+    overlay: [
+      draft('a', 20 * H, { cost: null, latency: 900 }), // before backend start: counted from PostHog, cost estimated
+      draft('a', 5 * H, { latency: 5000 }), // after backend start: ignored in favour of backend rows
+    ],
+    overlayCalls: [
+      { id: 'a', at: at(5 * H), request: 'r1', ok: false, latency: null, cost: 0.0002 }, // first attempt failed
+      { id: 'a', at: at(5 * H - 1000), request: 'r1', ok: true, latency: 1500, cost: 0.0004 }, // retry succeeded
+      { id: 'a', at: at(4 * H), request: 'r2', ok: false, latency: null, cost: 0.0001 },
+    ],
+    sources: { posthogAt: at(0), backendAt: at(0), overlayCallsFrom: backendFrom },
+  });
+  const s = computeSnapshot(data, { range: '30d', surface: 'combined', audience: 'external', version: 'all' }, cfg, NOW);
+  assert.equal(s.overlay.cost.requests, 3); // 1 PostHog draft + 2 backend requests
+  assert.equal(s.overlay.failures.failed, 1); // r2 only; r1 recovered on retry
+  assert.deepEqual([s.overlay.latency.p50, s.sources.overlayCalls], [1200, 'backend']); // 900 and 1500
+  assert.ok(Math.abs(s.overlay.cost.total - (0.0006 + 0.0001 + 0.00035)) < 1e-9, `total ${s.overlay.cost.total}`); // r1 + r2 + estimated draft at avg(0.0006, 0.0001)
+  assert.equal(s.overlay.cost.estimated, true);
+});
+
+test('with PostHog down, backend numbers still compute and the snapshot says so', () => {
+  const data = dataset({
+    people: [{ id: 'a', name: 'A', signupAt: at(3 * 24 * H), team: false }],
+    activity: [{ id: 'a', hour: hourAgo(1), surface: 'app', n: 1 }],
+    chatReplies: [{ id: 'a', at: at(2 * 24 * H) }],
+    sources: { posthogAt: null, backendAt: at(0), overlayCallsFrom: null },
+    sourceError: 'PostHog 429',
+  });
+  const s = computeSnapshot(data, { range: '30d', surface: 'combined', audience: 'external', version: 'all' }, cfg, NOW);
+  assert.equal(s.sources.posthog, 'down');
+  assert.equal(s.overview.dau.value, 1);
+  assert.equal(s.overview.onboarding.completed, 1);
 });

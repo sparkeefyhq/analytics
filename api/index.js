@@ -187,7 +187,9 @@ async function fetchBackend(cfg) {
   if (!Array.isArray(members)) throw new Error("Unexpected backend accounts response");
   return {
     members: members.filter((m) => typeof m.id === "string" && UUID.test(m.id) && Number.isFinite(Date.parse(m.firstOpen))),
-    facts: Array.isArray(body.data?.facts) ? body.data.facts : []
+    facts: Array.isArray(body.data?.facts) ? body.data.facts : [],
+    // Older backends (before PR #357) don't send overlay calls; PostHog drafts are used instead.
+    overlay: Array.isArray(body.data?.overlay) ? body.data.overlay : null
   };
 }
 var APP_EVENTS = [
@@ -358,18 +360,22 @@ async function refresh(cfg) {
       state.lastError = error instanceof Error ? error.message : String(error);
       state.backoffUntil = now + BACKOFF_MS;
       console.error("posthog refresh failed; backing off", error);
-      if (!state.history) throw error;
     }
   }
-  if (!state.history || !state.backend) throw new Error(state.lastError ?? "No data yet");
+  if (!state.backend) throw new Error(state.lastError ?? "No data yet");
   if (!changed && lastBuilt) return lastBuilt.data;
-  const raw = merge(state.history, state.recent?.raw ?? null);
-  const posthogAt = Math.max(state.history.at, state.recent?.at ?? 0);
-  const data = assemble(cfg, start, state.backend.data, raw, new Date(Math.min(posthogAt, state.backend.at)).toISOString(), state.lastError);
+  const empty = { overlay: [], activity: [], sessions: [], screens: [] };
+  const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
+  const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
+  const data = assemble(cfg, start, state.backend.data, raw, {
+    posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
+    backendAt: new Date(state.backend.at).toISOString(),
+    error: state.lastError
+  });
   lastBuilt = { at: now, data };
   return data;
 }
-function assemble(cfg, start, backend, raw, freshAt, sourceError) {
+function assemble(cfg, start, backend, raw, fresh) {
   const { overlay, activity, sessions, screens } = raw;
   const members = backend.members;
   const flaggedTest = /* @__PURE__ */ new Set();
@@ -389,12 +395,15 @@ function assemble(cfg, start, backend, raw, freshAt, sourceError) {
   const keep = (rows) => rows.map((r) => ({ ...r, id: r.id.toLowerCase() })).filter((r) => known.has(r.id));
   const iso = (value) => new Date(value.includes("T") || value.includes("Z") ? value : `${value.replace(" ", "T")}Z`).toISOString();
   return {
-    generatedAt: freshAt,
-    sourceError,
+    generatedAt: fresh.posthogAt && fresh.posthogAt < fresh.backendAt ? fresh.posthogAt : fresh.backendAt,
+    sourceError: fresh.error,
     dataStart: start,
     people,
     activity: [
       ...keep(activity).map((r) => ({ id: r.id, hour: iso(r.hour), surface: "app", n: Number(r.n) })),
+      // Backend activity keeps DAU/WAU/MAU right even without PostHog: chat messages (app) and overlay calls (overlay).
+      ...appHours(keep(backend.facts.filter((f) => f.kind === "message" || f.kind === "wingman").map((f) => ({ id: f.user, ts: f.at })))),
+      ...overlayHours(keep((backend.overlay ?? []).map((c) => ({ id: c.user, ts: c.at })))),
       ...overlayHours(keep(overlay).map((r) => ({ id: r.id, ts: iso(r.ts) }))),
       ...overlayHours(keep(sessions).map((r) => ({ id: r.id, ts: iso(r.ts) })))
     ],
@@ -420,10 +429,19 @@ function assemble(cfg, start, backend, raw, freshAt, sourceError) {
     aiCost: keep(backend.facts.filter((f) => f.kind === "usage" && typeof f.cost === "number").map((f) => ({ id: f.user, at: f.at, cost: f.cost }))),
     versions: latestVersions(keep(activity).map((r) => ({ id: r.id, hour: iso(r.hour), version: r.version }))),
     onboarding: keep(screens).filter((r) => r.screen).map((r) => ({ id: r.id, screen: r.screen })),
-    chatReplies: keep(backend.facts.filter((f) => f.kind === "complete").map((f) => ({ id: f.user, at: f.at })))
+    chatReplies: keep(backend.facts.filter((f) => f.kind === "complete").map((f) => ({ id: f.user, at: f.at }))),
+    overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
+    sources: {
+      posthogAt: fresh.posthogAt,
+      backendAt: fresh.backendAt,
+      overlayCallsFrom: backend.overlay?.length ? backend.overlay.reduce((min, c) => c.at < min ? c.at : min, backend.overlay[0].at) : null
+    }
   };
 }
 var HOUR_MS = 36e5;
+function appHours(rows) {
+  return overlayHours(rows).map((r) => ({ ...r, surface: "app" }));
+}
 function overlayHours(rows) {
   const counts = /* @__PURE__ */ new Map();
   for (const r of rows) {
@@ -551,6 +569,35 @@ function buildSessions(overlay, summaries) {
   for (const s of out) if (s.taps === null) s.taps = s.events;
   return out.sort((a, b) => a.start - b.start);
 }
+function buildRequests(data, ids) {
+  const calls = data.overlayCalls.filter((c) => ids.has(c.id));
+  const byRequest = /* @__PURE__ */ new Map();
+  for (const c of calls) {
+    const list2 = byRequest.get(c.request);
+    if (list2) list2.push(c);
+    else byRequest.set(c.request, [c]);
+  }
+  const out = [];
+  for (const list2 of byRequest.values()) {
+    const okCall = list2.find((c) => c.ok);
+    const costs = list2.map((c) => c.cost).filter((c) => c !== null);
+    out.push({
+      id: list2[0].id,
+      at: Math.min(...list2.map((c) => t(c.at))),
+      ok: Boolean(okCall),
+      failed: !okCall,
+      latency: okCall?.latency ?? null,
+      cost: costs.length ? costs.reduce((a, b) => a + b, 0) : null
+    });
+  }
+  const backendFrom = data.sources.overlayCallsFrom ? t(data.sources.overlayCallsFrom) : Infinity;
+  for (const e of data.overlay) {
+    if (e.action !== "draft" || !ids.has(e.id) || t(e.ts) >= backendFrom) continue;
+    if (e.status !== "ok" && e.status !== "failed") continue;
+    out.push({ id: e.id, at: t(e.ts), ok: e.status === "ok", failed: e.status === "failed", latency: e.latency, cost: e.cost });
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
 function windowFor(filters, now, dataStart) {
   const startAll = Date.parse(`${dataStart}T00:00:00+05:30`);
   if (filters.range === "all") return { from: startAll, prevFrom: null, label: "All time" };
@@ -598,15 +645,16 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const freqPrev = prevFrom === null ? null : frequency(prevSessions);
   const firstDay = istDay(from);
   const lastDay = istDay(now);
-  const costed = overlayEvents.filter((e) => e.action === "draft" && e.cost !== null);
-  const avgDraftCost = costed.length ? costed.reduce((a, e) => a + e.cost, 0) / costed.length : 0;
-  const draftCost = (e) => e.cost !== null ? e.cost : e.action === "draft" && e.status === "ok" ? avgDraftCost : 0;
+  const requests = buildRequests(data, ids);
+  const costed = requests.filter((r2) => r2.cost !== null);
+  const avgRequestCost = costed.length ? costed.reduce((a, r2) => a + r2.cost, 0) / costed.length : 0;
+  const requestCost = (r2) => r2.cost !== null ? r2.cost : r2.ok ? avgRequestCost : 0;
   const dailyModel = /* @__PURE__ */ new Map();
   let estimatedCost = false;
-  for (const e of overlayEvents) {
-    if (!inRange(t(e.ts))) continue;
-    if (e.cost === null && e.action === "draft" && e.status === "ok") estimatedCost = true;
-    dailyModel.set(istDay(t(e.ts)), (dailyModel.get(istDay(t(e.ts))) ?? 0) + draftCost(e));
+  for (const r2 of requests) {
+    if (!inRange(r2.at)) continue;
+    if (r2.cost === null && r2.ok) estimatedCost = true;
+    dailyModel.set(istDay(r2.at), (dailyModel.get(istDay(r2.at)) ?? 0) + requestCost(r2));
   }
   for (const c of data.aiCost) {
     if (!ids.has(c.id) || !inRange(t(c.at))) continue;
@@ -702,21 +750,20 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     d1n += r2.d1.n;
     d1d += r2.d1.d;
   }
-  const rangeEvents = overlayEvents.filter((e) => inRange(t(e.ts)));
-  const drafts = rangeEvents.filter((e) => e.action === "draft");
-  const latencies = drafts.filter((e) => e.status === "ok" && e.latency !== null && e.latency > 0).map((e) => e.latency);
+  const drafts = requests.filter((r2) => inRange(r2.at));
+  const okLatency = (list2) => list2.filter((r2) => r2.ok && r2.latency !== null && r2.latency > 0).map((r2) => r2.latency);
+  const latencies = okLatency(drafts);
   const latencySeries = [];
   const hourNow = Math.floor(now / HOUR) * HOUR;
   for (let h = hourNow - 23 * HOUR; h <= hourNow; h += HOUR) {
-    const values = overlayEvents.filter((e) => e.action === "draft" && e.status === "ok" && e.latency && t(e.ts) >= h && t(e.ts) < h + HOUR).map((e) => e.latency);
-    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(values, 0.95) });
+    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(requests.filter((r2) => r2.at >= h && r2.at < h + HOUR)), 0.95) });
   }
-  const overlayCost = rangeEvents.reduce((a, e) => a + draftCost(e), 0);
-  const trackedDrafts = drafts.filter((e) => e.cost !== null);
-  const perRequest = trackedDrafts.length ? trackedDrafts.reduce((a, e) => a + e.cost, 0) / trackedDrafts.length : null;
-  const prevTracked = overlayEvents.filter((e) => e.action === "draft" && e.cost !== null && inPrev(t(e.ts)));
-  const prevPerRequest = prevTracked.length ? prevTracked.reduce((a, e) => a + e.cost, 0) / prevTracked.length : null;
-  const failed = drafts.filter((e) => e.status === "failed").length;
+  const overlayCost = drafts.reduce((a, r2) => a + requestCost(r2), 0);
+  const trackedDrafts = drafts.filter((r2) => r2.cost !== null);
+  const perRequest = trackedDrafts.length ? trackedDrafts.reduce((a, r2) => a + r2.cost, 0) / trackedDrafts.length : null;
+  const prevTracked = requests.filter((r2) => r2.cost !== null && inPrev(r2.at));
+  const prevPerRequest = prevTracked.length ? prevTracked.reduce((a, r2) => a + r2.cost, 0) / prevTracked.length : null;
+  const failed = drafts.filter((r2) => r2.failed).length;
   const byApp = /* @__PURE__ */ new Map();
   for (const s of rangeSessions) {
     const entry = byApp.get(s.app) ?? { users: /* @__PURE__ */ new Set(), requests: 0 };
@@ -725,7 +772,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     byApp.set(s.app, entry);
   }
   const totalRequests = drafts.length;
-  const platforms = [...byApp.entries()].filter(([, v]) => v.requests > 0 || v.users.size > 0).map(([key, v]) => ({ key, label: appLabel(key), users: v.users.size, requests: v.requests, share: totalRequests ? v.requests / totalRequests * 100 : 0 })).sort((a, b) => b.requests - a.requests || b.users - a.users);
+  const appRequests = [...byApp.values()].reduce((a, v) => a + v.requests, 0);
+  const platforms = [...byApp.entries()].filter(([, v]) => v.requests > 0 || v.users.size > 0).map(([key, v]) => ({ key, label: appLabel(key), users: v.users.size, requests: v.requests, share: appRequests ? v.requests / appRequests * 100 : 0 })).sort((a, b) => b.requests - a.requests || b.users - a.users);
   const todayStart = dayStartMs(today);
   const todaySessions = sessions.filter((s) => s.start >= todayStart);
   const tapValues = rangeSessions.map((s) => s.taps ?? 0);
@@ -761,6 +809,12 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     generatedAt: data.generatedAt,
     servedAt: new Date(now).toISOString(),
     stale: data.sourceError !== null,
+    sources: {
+      posthog: !data.sources.posthogAt ? "down" : data.sourceError ? "stale" : "live",
+      posthogAt: data.sources.posthogAt,
+      backendAt: data.sources.backendAt,
+      overlayCalls: data.sources.overlayCallsFrom ? "backend" : "posthog"
+    },
     filters,
     rangeLabel: label,
     versions: allVersions,
@@ -815,7 +869,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         total: overlayCost,
         requests: totalRequests,
         tracked: trackedDrafts.length,
-        estimated: trackedDrafts.length < drafts.filter((e) => e.status === "ok").length,
+        estimated: drafts.some((r2) => r2.ok && r2.cost === null),
         deltaPct: change(perRequest, prevPerRequest)
       },
       failures: { failed, requests: totalRequests, pct: pct(failed, totalRequests), slaPct: cfg.failureSlaPct },

@@ -6,7 +6,16 @@ The team analytics dashboard for Keefie: **Overview** (founder & investor summar
 
 - **Front end:** Vite + React + TypeScript, plain CSS with the Figma tokens (`src/styles.css`). Fonts: Inter, Space Grotesk, Cousine (metric match for Liberation Mono).
 - **API:** one Vercel Node function, `api/index.js`, bundled from `server/` by `scripts/build-api.mjs`. No runtime dependencies.
-- **Data:** PostHog (HogQL query API) for events, and the backend's `GET /api/admin/analytics/v2` for the account list, in-app model cost and completed chat replies. Everything is read-only.
+- **Data:** two read-only sources, each the owner of specific numbers:
+
+| Number | Source | If PostHog is down |
+|---|---|---|
+| Accounts, signups, onboarding completion, chat replies, in-app cost | Backend `/api/admin/analytics/v2` | Unchanged |
+| Overlay requests, latency, failures, overlay cost | Backend `overlay` list (`ai_call_telemetry`, needs backend PR #357); PostHog drafts only before the backend's first row | Unchanged |
+| Activity (DAU/WAU/MAU) | Backend chat + overlay calls, plus PostHog app opens and overlay events | Backend activity only |
+| Reply use, apps, taps, onboarding screens | PostHog | Paused, with a banner |
+
+PostHog is on the free plan (~120 queries/hour), so history is re-read every 15 min and the minutes since come from one small query each minute. On a throttle the last rows stay and PostHog is left alone for 5 min.
 
 ## Who counts as a real user
 

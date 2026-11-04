@@ -132,6 +132,51 @@ export function buildSessions(overlay: Dataset['overlay'], summaries: Dataset['s
   return out.sort((a, b) => a.start - b.start);
 }
 
+export interface OverlayRequest {
+  id: string;
+  at: number;
+  ok: boolean;
+  failed: boolean;
+  latency: number | null;
+  /** null = no cost recorded (PostHog drafts before 1 Nov); valued at the recorded average. */
+  cost: number | null;
+}
+
+/**
+ * One row per overlay reply request, from the best source for each period:
+ * the backend's ai_call_telemetry (every model call, real cost; retries of one request are merged)
+ * from its first row onwards, and PostHog draft events only for the time before that.
+ */
+export function buildRequests(data: Dataset, ids: Set<string>): OverlayRequest[] {
+  const calls = data.overlayCalls.filter((c) => ids.has(c.id));
+  const byRequest = new Map<string, Dataset['overlayCalls']>();
+  for (const c of calls) {
+    const list = byRequest.get(c.request);
+    if (list) list.push(c);
+    else byRequest.set(c.request, [c]);
+  }
+  const out: OverlayRequest[] = [];
+  for (const list of byRequest.values()) {
+    const okCall = list.find((c) => c.ok);
+    const costs = list.map((c) => c.cost).filter((c): c is number => c !== null);
+    out.push({
+      id: list[0].id,
+      at: Math.min(...list.map((c) => t(c.at))),
+      ok: Boolean(okCall),
+      failed: !okCall,
+      latency: okCall?.latency ?? null,
+      cost: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
+    });
+  }
+  const backendFrom = data.sources.overlayCallsFrom ? t(data.sources.overlayCallsFrom) : Infinity;
+  for (const e of data.overlay) {
+    if (e.action !== 'draft' || !ids.has(e.id) || t(e.ts) >= backendFrom) continue;
+    if (e.status !== 'ok' && e.status !== 'failed') continue; // needs_target / no_reply / unsupported never reach the model
+    out.push({ id: e.id, at: t(e.ts), ok: e.status === 'ok', failed: e.status === 'failed', latency: e.latency, cost: e.cost });
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
 function windowFor(filters: Filters, now: number, dataStart: string) {
   const startAll = Date.parse(`${dataStart}T00:00:00+05:30`);
   if (filters.range === 'all') return { from: startAll, prevFrom: null as number | null, label: 'All time' };
@@ -188,20 +233,20 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   const freqNow = frequency(rangeSessions);
   const freqPrev = prevFrom === null ? null : frequency(prevSessions);
 
-  // Cost: overlay drafts (cost_usd) + in-app model calls ($ai_generation); never double counted.
+  // Cost: overlay reply requests + in-app model calls (backend telemetry); never double counted.
   const firstDay = istDay(from);
   const lastDay = istDay(now);
-  // Drafts from before cost tracking carry no cost; they are valued at the tracked average.
-  const costed = overlayEvents.filter((e) => e.action === 'draft' && e.cost !== null);
-  const avgDraftCost = costed.length ? costed.reduce((a, e) => a + (e.cost as number), 0) / costed.length : 0;
-  const draftCost = (e: Dataset['overlay'][number]) =>
-    e.cost !== null ? e.cost : e.action === 'draft' && e.status === 'ok' ? avgDraftCost : 0;
+  const requests = buildRequests(data, ids);
+  // Requests with no recorded cost (before cost tracking) are valued at the recorded average.
+  const costed = requests.filter((r) => r.cost !== null);
+  const avgRequestCost = costed.length ? costed.reduce((a, r) => a + (r.cost as number), 0) / costed.length : 0;
+  const requestCost = (r: OverlayRequest) => (r.cost !== null ? r.cost : r.ok ? avgRequestCost : 0);
   const dailyModel = new Map<number, number>();
   let estimatedCost = false;
-  for (const e of overlayEvents) {
-    if (!inRange(t(e.ts))) continue;
-    if (e.cost === null && e.action === 'draft' && e.status === 'ok') estimatedCost = true;
-    dailyModel.set(istDay(t(e.ts)), (dailyModel.get(istDay(t(e.ts))) ?? 0) + draftCost(e));
+  for (const r of requests) {
+    if (!inRange(r.at)) continue;
+    if (r.cost === null && r.ok) estimatedCost = true;
+    dailyModel.set(istDay(r.at), (dailyModel.get(istDay(r.at)) ?? 0) + requestCost(r));
   }
   for (const c of data.aiCost) {
     if (!ids.has(c.id) || !inRange(t(c.at))) continue;
@@ -305,23 +350,20 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   for (const r of rows) if (r.d1.kind === 'value') { d1n += r.d1.n; d1d += r.d1.d; }
 
   // Overlay performance.
-  const rangeEvents = overlayEvents.filter((e) => inRange(t(e.ts)));
-  const drafts = rangeEvents.filter((e) => e.action === 'draft');
-  const latencies = drafts.filter((e) => e.status === 'ok' && e.latency !== null && e.latency > 0).map((e) => e.latency as number);
+  const drafts = requests.filter((r) => inRange(r.at));
+  const okLatency = (list: OverlayRequest[]) => list.filter((r) => r.ok && r.latency !== null && r.latency > 0).map((r) => r.latency as number);
+  const latencies = okLatency(drafts);
   const latencySeries: { hour: string; p95: number | null }[] = [];
   const hourNow = Math.floor(now / HOUR) * HOUR;
   for (let h = hourNow - 23 * HOUR; h <= hourNow; h += HOUR) {
-    const values = overlayEvents
-      .filter((e) => e.action === 'draft' && e.status === 'ok' && e.latency && t(e.ts) >= h && t(e.ts) < h + HOUR)
-      .map((e) => e.latency as number);
-    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(values, 0.95) });
+    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(requests.filter((r) => r.at >= h && r.at < h + HOUR)), 0.95) });
   }
-  const overlayCost = rangeEvents.reduce((a, e) => a + draftCost(e), 0);
-  const trackedDrafts = drafts.filter((e) => e.cost !== null);
-  const perRequest = trackedDrafts.length ? trackedDrafts.reduce((a, e) => a + (e.cost as number), 0) / trackedDrafts.length : null;
-  const prevTracked = overlayEvents.filter((e) => e.action === 'draft' && e.cost !== null && inPrev(t(e.ts)));
-  const prevPerRequest = prevTracked.length ? prevTracked.reduce((a, e) => a + (e.cost as number), 0) / prevTracked.length : null;
-  const failed = drafts.filter((e) => e.status === 'failed').length;
+  const overlayCost = drafts.reduce((a, r) => a + requestCost(r), 0);
+  const trackedDrafts = drafts.filter((r) => r.cost !== null);
+  const perRequest = trackedDrafts.length ? trackedDrafts.reduce((a, r) => a + (r.cost as number), 0) / trackedDrafts.length : null;
+  const prevTracked = requests.filter((r) => r.cost !== null && inPrev(r.at));
+  const prevPerRequest = prevTracked.length ? prevTracked.reduce((a, r) => a + (r.cost as number), 0) / prevTracked.length : null;
+  const failed = drafts.filter((r) => r.failed).length;
 
   const byApp = new Map<string, { users: Set<string>; requests: number }>();
   for (const s of rangeSessions) {
@@ -331,9 +373,10 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
     byApp.set(s.app, entry);
   }
   const totalRequests = drafts.length;
+  const appRequests = [...byApp.values()].reduce((a, v) => a + v.requests, 0);
   const platforms: PlatformRow[] = [...byApp.entries()]
     .filter(([, v]) => v.requests > 0 || v.users.size > 0)
-    .map(([key, v]) => ({ key, label: appLabel(key), users: v.users.size, requests: v.requests, share: totalRequests ? (v.requests / totalRequests) * 100 : 0 }))
+    .map(([key, v]) => ({ key, label: appLabel(key), users: v.users.size, requests: v.requests, share: appRequests ? (v.requests / appRequests) * 100 : 0 }))
     .sort((a, b) => b.requests - a.requests || b.users - a.users);
 
   const todayStart = dayStartMs(today);
@@ -376,6 +419,12 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
     generatedAt: data.generatedAt,
     servedAt: new Date(now).toISOString(),
     stale: data.sourceError !== null,
+    sources: {
+      posthog: !data.sources.posthogAt ? 'down' : data.sourceError ? 'stale' : 'live',
+      posthogAt: data.sources.posthogAt,
+      backendAt: data.sources.backendAt,
+      overlayCalls: data.sources.overlayCallsFrom ? 'backend' : 'posthog',
+    },
     filters,
     rangeLabel: label,
     versions: allVersions,
@@ -430,7 +479,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
         total: overlayCost,
         requests: totalRequests,
         tracked: trackedDrafts.length,
-        estimated: trackedDrafts.length < drafts.filter((e) => e.status === 'ok').length,
+        estimated: drafts.some((r) => r.ok && r.cost === null),
         deltaPct: change(perRequest, prevPerRequest),
       },
       failures: { failed, requests: totalRequests, pct: pct(failed, totalRequests), slaPct: cfg.failureSlaPct },

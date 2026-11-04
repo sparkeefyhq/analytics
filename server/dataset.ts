@@ -25,6 +25,15 @@ interface BackendMember {
   name: string | null;
 }
 
+interface BackendOverlayCall {
+  user: string;
+  at: string;
+  request: string;
+  ok: boolean;
+  latency: number | null;
+  cost: number | null;
+}
+
 interface BackendFact {
   user: string;
   at: string;
@@ -32,19 +41,21 @@ interface BackendFact {
   cost?: number;
 }
 
-async function fetchBackend(cfg: Config): Promise<{ members: BackendMember[]; facts: BackendFact[] }> {
+async function fetchBackend(cfg: Config): Promise<{ members: BackendMember[]; facts: BackendFact[]; overlay: BackendOverlayCall[] | null }> {
   if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error('Backend URL/admin key not set');
   const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2`, {
     headers: { 'x-admin-api-key': cfg.backendAdminKey },
     signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) throw new Error(`Backend accounts ${response.status}`);
-  const body = (await response.json()) as { data?: { members?: BackendMember[]; facts?: BackendFact[] } };
+  const body = (await response.json()) as { data?: { members?: BackendMember[]; facts?: BackendFact[]; overlay?: BackendOverlayCall[] } };
   const members = body.data?.members;
   if (!Array.isArray(members)) throw new Error('Unexpected backend accounts response');
   return {
     members: members.filter((m) => typeof m.id === 'string' && UUID.test(m.id) && Number.isFinite(Date.parse(m.firstOpen))),
     facts: Array.isArray(body.data?.facts) ? body.data.facts : [],
+    // Older backends (before PR #357) don't send overlay calls; PostHog drafts are used instead.
+    overlay: Array.isArray(body.data?.overlay) ? body.data.overlay : null,
   };
 }
 
@@ -266,15 +277,20 @@ async function refresh(cfg: Config): Promise<Dataset> {
       state.lastError = error instanceof Error ? error.message : String(error);
       state.backoffUntil = now + BACKOFF_MS;
       console.error('posthog refresh failed; backing off', error);
-      if (!state.history) throw error;
     }
   }
-  if (!state.history || !state.backend) throw new Error(state.lastError ?? 'No data yet');
+  // PostHog unavailable and never read: still serve backend numbers; PostHog-only cards show as unavailable.
+  if (!state.backend) throw new Error(state.lastError ?? 'No data yet');
   if (!changed && lastBuilt) return lastBuilt.data;
 
-  const raw = merge(state.history, state.recent?.raw ?? null);
-  const posthogAt = Math.max(state.history.at, state.recent?.at ?? 0);
-  const data = assemble(cfg, start, state.backend.data, raw, new Date(Math.min(posthogAt, state.backend.at)).toISOString(), state.lastError);
+  const empty: Raw = { overlay: [], activity: [], sessions: [], screens: [] };
+  const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
+  const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
+  const data = assemble(cfg, start, state.backend.data, raw, {
+    posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
+    backendAt: new Date(state.backend.at).toISOString(),
+    error: state.lastError,
+  });
   lastBuilt = { at: now, data };
   return data;
 }
@@ -284,8 +300,7 @@ function assemble(
   start: string,
   backend: Awaited<ReturnType<typeof fetchBackend>>,
   raw: Raw,
-  freshAt: string,
-  sourceError: string | null,
+  fresh: { posthogAt: string | null; backendAt: string; error: string | null },
 ): Dataset {
   const { overlay, activity, sessions, screens } = raw;
   const members = backend.members;
@@ -315,12 +330,15 @@ function assemble(
   const iso = (value: string) => new Date(value.includes('T') || value.includes('Z') ? value : `${value.replace(' ', 'T')}Z`).toISOString();
 
   return {
-    generatedAt: freshAt,
-    sourceError,
+    generatedAt: fresh.posthogAt && fresh.posthogAt < fresh.backendAt ? fresh.posthogAt : fresh.backendAt,
+    sourceError: fresh.error,
     dataStart: start,
     people,
     activity: [
       ...keep(activity).map((r) => ({ id: r.id, hour: iso(r.hour), surface: 'app' as const, n: Number(r.n) })),
+      // Backend activity keeps DAU/WAU/MAU right even without PostHog: chat messages (app) and overlay calls (overlay).
+      ...appHours(keep(backend.facts.filter((f) => f.kind === 'message' || f.kind === 'wingman').map((f) => ({ id: f.user, ts: f.at })))),
+      ...overlayHours(keep((backend.overlay ?? []).map((c) => ({ id: c.user, ts: c.at })))),
       ...overlayHours(keep(overlay).map((r) => ({ id: r.id, ts: iso(r.ts) }))),
       ...overlayHours(keep(sessions).map((r) => ({ id: r.id, ts: iso(r.ts) }))),
     ],
@@ -347,10 +365,22 @@ function assemble(
     versions: latestVersions(keep(activity).map((r) => ({ id: r.id, hour: iso(r.hour), version: r.version }))),
     onboarding: keep(screens).filter((r) => r.screen).map((r) => ({ id: r.id, screen: r.screen })),
     chatReplies: keep(backend.facts.filter((f) => f.kind === 'complete').map((f) => ({ id: f.user, at: f.at }))),
+    overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
+    sources: {
+      posthogAt: fresh.posthogAt,
+      backendAt: fresh.backendAt,
+      overlayCallsFrom: backend.overlay?.length
+        ? backend.overlay.reduce((min, c) => (c.at < min ? c.at : min), backend.overlay[0].at)
+        : null,
+    },
   };
 }
 
 const HOUR_MS = 3_600_000;
+
+function appHours(rows: { id: string; ts: string }[]): Dataset['activity'] {
+  return overlayHours(rows).map((r) => ({ ...r, surface: 'app' as const }));
+}
 
 function overlayHours(rows: { id: string; ts: string }[]): Dataset['activity'] {
   const counts = new Map<string, number>();

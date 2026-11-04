@@ -126,7 +126,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
     };
   }, [load]);
 
-  const syncState = error ? (data ? 'stale' : 'down') : 'ok';
+  const syncState = error ? (data ? 'stale' : 'down') : data && data.sources.posthog !== 'live' ? 'stale' : 'ok';
   const versionLabel = filters.version === 'all' ? 'All builds' : `v${filters.version}`;
 
   const exportCsv = () => {
@@ -221,7 +221,12 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
             <b className={syncState === 'ok' ? '' : syncState}>{syncState === 'ok' ? 'ACTIVE' : syncState === 'stale' ? 'STALE' : 'OFFLINE'}</b>
           </div>
           <div className="sync-time">
-            {lastOk ? `Updated ${ago(new Date(lastOk).toISOString())}` : 'Connecting…'} ·{' '}
+            {data ? (
+              <>
+                PostHog {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'unavailable'} · Backend {ago(data.sources.backendAt)}
+                <br />
+              </>
+            ) : lastOk ? null : 'Connecting… '}
             <a href="#" onClick={(e) => { e.preventDefault(); fetch('/api/logout', { method: 'POST' }).then(onSignedOut); }}>Sign out</a>
           </div>
         </div>
@@ -274,6 +279,16 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
 
         <main className="page">
           {error && <div className="banner">{data ? `Showing the last good numbers. ${error}` : error}</div>}
+          {!error && data?.sources.posthog === 'down' && (
+            <div className="banner">
+              PostHog is not reachable. Accounts, onboarding, activity, cost, latency and failures are live from the backend; reply use, apps and taps are paused until PostHog is back.
+            </div>
+          )}
+          {!error && data?.sources.posthog === 'stale' && (
+            <div className="banner" style={{ borderColor: 'var(--line)', background: 'var(--card)', color: 'var(--muted)' }}>
+              PostHog refresh is paused for a few minutes (rate limit). Event numbers are from {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'earlier'}; backend numbers are live.
+            </div>
+          )}
           {route === 'overview' && <OverviewPage data={data} loading={loading} filters={filters} />}
           {route === 'onboarding' && <ProductPage data={data} loading={loading} filters={filters} />}
           {route === 'overlay' && <OverlayPage data={data} loading={loading} filters={filters} search={search} />}
