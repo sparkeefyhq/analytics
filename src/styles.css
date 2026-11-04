@@ -291,6 +291,7 @@ th.r, td.r { text-align: right; }
 }
 @media (max-width: 980px) {
   .side { display: none; }
+  .topbar { position: static; }
   .g3, .g-1-1 { grid-template-columns: 1fr; }
   .mobile-nav { display: flex !important; }
 }

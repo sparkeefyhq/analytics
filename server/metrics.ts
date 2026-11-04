@@ -409,7 +409,9 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   const allVersions = versions;
   // The build most of this audience is on (not simply the highest number, which may be a test build).
   const versionCounts = new Map<string, number>();
+  const recentlyActive = activeBetween(now - 30 * DAY, now);
   for (const p of people) {
+    if (!recentlyActive.has(p.id)) continue; // the build people use now, not the one churned users last had
     const v = versionOf.get(p.id);
     if (v && /^\d+(\.\d+)*$/.test(v)) versionCounts.set(v, (versionCounts.get(v) ?? 0) + 1);
   }
