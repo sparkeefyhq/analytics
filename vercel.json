@@ -1,14 +1,41 @@
 {
-  "version": 2,
-  "buildCommand": "node scripts/build-vercel-api.mjs && npx vite build --config vercel-static/vite.config.ts",
-  "outputDirectory": "vercel-static/dist",
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/native?path=/api/$1" },
-    { "source": "/analytics", "destination": "/index.html" },
-    { "source": "/plan", "destination": "/index.html" },
-    { "source": "/users", "destination": "/index.html" },
-    { "source": "/launch", "destination": "/index.html" },
-    { "source": "/sarthak", "destination": "/index.html" },
-    { "source": "/suggestions", "destination": "/index.html" }
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index?path=/api/$1"
+    },
+    {
+      "source": "/((?!api/|assets/|.*\\..*).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
   ]
 }
