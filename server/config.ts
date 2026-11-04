@@ -22,6 +22,9 @@ export function config() {
     posthogHost: (env.POSTHOG_HOST ?? 'https://us.posthog.com').replace(/\/$/, ''),
     posthogProjectId: env.POSTHOG_PROJECT_ID ?? '599431',
     posthogApiKey: env.POSTHOG_PERSONAL_API_KEY ?? '',
+    /** Project (capture) key, used only to stamp keefie_account on persons. Empty = no sync. */
+    posthogProjectApiKey: env.POSTHOG_PROJECT_API_KEY ?? '',
+    posthogIngestHost: (env.POSTHOG_INGEST_HOST ?? 'https://us.i.posthog.com').replace(/\/$/, ''),
     backendUrl: (env.V2_SPARKEEFY_BACKEND_URL ?? '').replace(/\/$/, ''),
     backendAdminKey: env.V2_SPARKEEFY_BACKEND_ADMIN_KEY ?? '',
     /** Team accounts: shown only under "Internal", never mixed into real numbers. */

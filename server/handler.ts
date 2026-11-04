@@ -2,6 +2,7 @@ import { clearCookie, emailAllowed, getSession, normaliseEmail, passwordMatches,
 import { config } from './config';
 import { loadDataset } from './dataset';
 import { computeSnapshot } from './metrics';
+import { pendingSync } from './posthog-sync';
 import type { Audience, Dataset, Filters, Range, Surface } from './types';
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -78,7 +79,11 @@ export async function handle(request: Request): Promise<Response> {
     };
     try {
       const data = await dataset();
-      return json(computeSnapshot(data, filters, config()));
+      const body = computeSnapshot(data, filters, config());
+      // Finish a running PostHog account sync before the serverless instance is frozen (bounded wait).
+      const sync = pendingSync();
+      if (sync) await Promise.race([sync, new Promise((r) => setTimeout(r, 8000))]);
+      return json(body);
     } catch (error) {
       console.error('dashboard failed', error);
       return json({ error: 'Analytics sources are unavailable right now. Retrying shortly.' }, 503);

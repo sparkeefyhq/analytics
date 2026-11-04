@@ -87,6 +87,9 @@ function config() {
     posthogHost: (env.POSTHOG_HOST ?? "https://us.posthog.com").replace(/\/$/, ""),
     posthogProjectId: env.POSTHOG_PROJECT_ID ?? "599431",
     posthogApiKey: env.POSTHOG_PERSONAL_API_KEY ?? "",
+    /** Project (capture) key, used only to stamp keefie_account on persons. Empty = no sync. */
+    posthogProjectApiKey: env.POSTHOG_PROJECT_API_KEY ?? "",
+    posthogIngestHost: (env.POSTHOG_INGEST_HOST ?? "https://us.i.posthog.com").replace(/\/$/, ""),
     backendUrl: (env.V2_SPARKEEFY_BACKEND_URL ?? "").replace(/\/$/, ""),
     backendAdminKey: env.V2_SPARKEEFY_BACKEND_ADMIN_KEY ?? "",
     /** Team accounts: shown only under "Internal", never mixed into real numbers. */
@@ -123,6 +126,51 @@ async function hogql(cfg, query) {
   if (body.error || !Array.isArray(body.results)) throw new Error(`PostHog query error: ${String(body.error ?? "no results").slice(0, 200)}`);
   const columns = body.columns ?? [];
   return (body.results ?? []).map((row) => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+}
+
+// server/posthog-sync.ts
+var SYNC_EVERY_MS = 10 * 6e4;
+var lastSync = 0;
+var running = null;
+function syncAccountClasses(cfg, classes) {
+  if (!cfg.posthogProjectApiKey || classes.size === 0) return;
+  if (running || Date.now() - lastSync < SYNC_EVERY_MS) return;
+  lastSync = Date.now();
+  running = doSync(cfg, classes).catch((error) => console.error("posthog account sync failed", error)).finally(() => {
+    running = null;
+  });
+}
+var pendingSync = () => running;
+async function doSync(cfg, classes) {
+  const current = await hogql(
+    cfg,
+    `SELECT distinct_id AS id, ifNull(toString(person.properties.keefie_account), '') AS cls
+     FROM person_distinct_ids
+     WHERE length(distinct_id) = 36 AND (person.properties.keefie_account IS NOT NULL
+       OR distinct_id IN (${[...classes.keys()].map((id) => `'${id}'`).join(",")}))
+     LIMIT 100000`
+  );
+  const now = new Map(current.map((r) => [r.id.toLowerCase(), r.cls]));
+  const changes = [];
+  for (const [id, cls] of classes) if (now.get(id) !== cls) changes.push({ id, cls });
+  for (const [id, cls] of now) if (cls && cls !== "deleted" && !classes.has(id)) changes.push({ id, cls: "deleted" });
+  if (!changes.length) return;
+  const batch = changes.map((c) => ({
+    event: "$set",
+    distinct_id: c.id,
+    properties: { $set: { keefie_account: c.cls }, traffic_class: "system", $lib: "keefie-control-plane" },
+    timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  }));
+  for (let i = 0; i < batch.length; i += 500) {
+    const response = await fetch(`${cfg.posthogIngestHost}/batch/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: cfg.posthogProjectApiKey, batch: batch.slice(i, i + 500) }),
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (!response.ok) throw new Error(`PostHog batch ${response.status}`);
+  }
+  console.log(`posthog account sync: ${changes.length} change(s)`);
 }
 
 // server/dataset.ts
@@ -226,6 +274,12 @@ async function loadDataset(cfg) {
     if (r.tc === "internal") flaggedInternal.add(r.id.toLowerCase());
   }
   const people = members.map((m) => ({ id: m.id.toLowerCase(), name: m.name, signupAt: new Date(m.firstOpen).toISOString() })).filter((m) => !cfg.excludedIds.has(m.id) && !flaggedTest.has(m.id)).map((m) => ({ ...m, team: cfg.teamIds.has(m.id) || flaggedInternal.has(m.id) }));
+  const classes = /* @__PURE__ */ new Map();
+  for (const m of members) {
+    const id = m.id.toLowerCase();
+    classes.set(id, cfg.excludedIds.has(id) || flaggedTest.has(id) ? "excluded" : cfg.teamIds.has(id) || flaggedInternal.has(id) ? "team" : "real");
+  }
+  syncAccountClasses(cfg, classes);
   const known = new Set(people.map((p) => p.id));
   const keep = (rows) => rows.map((r) => ({ ...r, id: r.id.toLowerCase() })).filter((r) => known.has(r.id));
   const iso = (value) => new Date(value.includes("T") || value.includes("Z") ? value : `${value.replace(" ", "T")}Z`).toISOString();
@@ -729,7 +783,10 @@ async function handle(request) {
     };
     try {
       const data = await dataset();
-      return json(computeSnapshot(data, filters, config()));
+      const body = computeSnapshot(data, filters, config());
+      const sync = pendingSync();
+      if (sync) await Promise.race([sync, new Promise((r) => setTimeout(r, 8e3))]);
+      return json(body);
     } catch (error) {
       console.error("dashboard failed", error);
       return json({ error: "Analytics sources are unavailable right now. Retrying shortly." }, 503);

@@ -14,6 +14,7 @@
  */
 import type { Config } from './config';
 import { hogql } from './posthog';
+import { type AccountClass, syncAccountClasses } from './posthog-sync';
 import type { Dataset } from './types';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -151,6 +152,13 @@ export async function loadDataset(cfg: Config): Promise<Dataset> {
     .map((m) => ({ id: m.id.toLowerCase(), name: m.name, signupAt: new Date(m.firstOpen).toISOString() }))
     .filter((m) => !cfg.excludedIds.has(m.id) && !flaggedTest.has(m.id))
     .map((m) => ({ ...m, team: cfg.teamIds.has(m.id) || flaggedInternal.has(m.id) }));
+
+  const classes = new Map<string, AccountClass>();
+  for (const m of members) {
+    const id = m.id.toLowerCase();
+    classes.set(id, cfg.excludedIds.has(id) || flaggedTest.has(id) ? 'excluded' : cfg.teamIds.has(id) || flaggedInternal.has(id) ? 'team' : 'real');
+  }
+  syncAccountClasses(cfg, classes);
 
   const known = new Set(people.map((p) => p.id));
   const keep = <T extends { id: string }>(rows: T[]) =>

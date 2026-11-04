@@ -44,6 +44,7 @@ All days are India days (IST, UTC+5:30).
 | `POSTHOG_PROJECT_ID` | Default `599431`. |
 | `V2_SPARKEEFY_BACKEND_URL`, `V2_SPARKEEFY_BACKEND_ADMIN_KEY` | Backend admin analytics endpoint (secret key). |
 | `SPARKEEFY_LOGIN_PASSWORD`, `SPARKEEFY_SESSION_SECRET` | Team sign-in (secret). |
+| `POSTHOG_PROJECT_API_KEY` | Optional. When set, the server stamps `keefie_account` = real / team / excluded / deleted on PostHog persons (changes only, at most every 10 min), so PostHog insights can filter on the same real users. |
 | `TEAM_USER_IDS` | Comma-separated team account ids (same list as the backend's `INTERNAL_USER_IDS`). |
 | `EXCLUDED_USER_IDS` | Accounts never counted anywhere. |
 | `INFRA_MONTHLY_USD`, `REVENUE_MONTHLY_USD` | Optional. Without revenue, gross margin shows *Pre-revenue*. |
