@@ -1,1 +1,0 @@
-ALTER TABLE `founder_tasks` ADD `deleted_at` text;
