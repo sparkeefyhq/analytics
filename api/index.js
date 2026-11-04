@@ -751,19 +751,21 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     d1d += r2.d1.d;
   }
   const drafts = requests.filter((r2) => inRange(r2.at));
+  const userFacing = data.sources.posthogAt ? overlayEvents.filter((e) => e.action === "draft" && (e.status === "ok" || e.status === "failed")).map((e) => ({ id: e.id, at: t(e.ts), ok: e.status === "ok", failed: e.status === "failed", latency: e.latency, cost: e.cost })) : requests;
+  const userFacingInRange = userFacing.filter((r2) => inRange(r2.at));
   const okLatency = (list2) => list2.filter((r2) => r2.ok && r2.latency !== null && r2.latency > 0).map((r2) => r2.latency);
-  const latencies = okLatency(drafts);
+  const latencies = okLatency(userFacingInRange);
   const latencySeries = [];
   const hourNow = Math.floor(now / HOUR) * HOUR;
   for (let h = hourNow - 23 * HOUR; h <= hourNow; h += HOUR) {
-    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(requests.filter((r2) => r2.at >= h && r2.at < h + HOUR)), 0.95) });
+    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(userFacing.filter((r2) => r2.at >= h && r2.at < h + HOUR)), 0.95) });
   }
   const overlayCost = drafts.reduce((a, r2) => a + requestCost(r2), 0);
   const trackedDrafts = drafts.filter((r2) => r2.cost !== null);
   const perRequest = trackedDrafts.length ? trackedDrafts.reduce((a, r2) => a + r2.cost, 0) / trackedDrafts.length : null;
   const prevTracked = requests.filter((r2) => r2.cost !== null && inPrev(r2.at));
   const prevPerRequest = prevTracked.length ? prevTracked.reduce((a, r2) => a + r2.cost, 0) / prevTracked.length : null;
-  const failed = drafts.filter((r2) => r2.failed).length;
+  const failed = userFacingInRange.filter((r2) => r2.failed).length;
   const byApp = /* @__PURE__ */ new Map();
   for (const s of rangeSessions) {
     const entry = byApp.get(s.app) ?? { users: /* @__PURE__ */ new Set(), requests: 0 };
@@ -799,7 +801,9 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   })).sort((a, b) => b.lastActive.localeCompare(a.lastActive));
   const allVersions = versions;
   const versionCounts = /* @__PURE__ */ new Map();
+  const recentlyActive = activeBetween(now - 30 * DAY, now);
   for (const p of people) {
+    if (!recentlyActive.has(p.id)) continue;
     const v = versionOf.get(p.id);
     if (v && /^\d+(\.\d+)*$/.test(v)) versionCounts.set(v, (versionCounts.get(v) ?? 0) + 1);
   }
@@ -872,7 +876,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         estimated: drafts.some((r2) => r2.ok && r2.cost === null),
         deltaPct: change(perRequest, prevPerRequest)
       },
-      failures: { failed, requests: totalRequests, pct: pct(failed, totalRequests), slaPct: cfg.failureSlaPct },
+      failures: { failed, requests: userFacingInRange.length, pct: pct(failed, userFacingInRange.length), slaPct: cfg.failureSlaPct },
       platforms,
       pairedUsers: new Set(sessions.map((s) => s.id)).size,
       taps: {

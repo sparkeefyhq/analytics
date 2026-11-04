@@ -351,19 +351,28 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
 
   // Overlay performance.
   const drafts = requests.filter((r) => inRange(r.at));
+  // Latency and failures are what the user experiences: PostHog draft events (tap to reply on screen,
+  // a failure the user saw). Backend telemetry measures one model call and counts retried attempts,
+  // so it is used for these two only when PostHog has no rows.
+  const userFacing: OverlayRequest[] = data.sources.posthogAt
+    ? overlayEvents
+        .filter((e) => e.action === 'draft' && (e.status === 'ok' || e.status === 'failed'))
+        .map((e) => ({ id: e.id, at: t(e.ts), ok: e.status === 'ok', failed: e.status === 'failed', latency: e.latency, cost: e.cost }))
+    : requests;
+  const userFacingInRange = userFacing.filter((r) => inRange(r.at));
   const okLatency = (list: OverlayRequest[]) => list.filter((r) => r.ok && r.latency !== null && r.latency > 0).map((r) => r.latency as number);
-  const latencies = okLatency(drafts);
+  const latencies = okLatency(userFacingInRange);
   const latencySeries: { hour: string; p95: number | null }[] = [];
   const hourNow = Math.floor(now / HOUR) * HOUR;
   for (let h = hourNow - 23 * HOUR; h <= hourNow; h += HOUR) {
-    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(requests.filter((r) => r.at >= h && r.at < h + HOUR)), 0.95) });
+    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(userFacing.filter((r) => r.at >= h && r.at < h + HOUR)), 0.95) });
   }
   const overlayCost = drafts.reduce((a, r) => a + requestCost(r), 0);
   const trackedDrafts = drafts.filter((r) => r.cost !== null);
   const perRequest = trackedDrafts.length ? trackedDrafts.reduce((a, r) => a + (r.cost as number), 0) / trackedDrafts.length : null;
   const prevTracked = requests.filter((r) => r.cost !== null && inPrev(r.at));
   const prevPerRequest = prevTracked.length ? prevTracked.reduce((a, r) => a + (r.cost as number), 0) / prevTracked.length : null;
-  const failed = drafts.filter((r) => r.failed).length;
+  const failed = userFacingInRange.filter((r) => r.failed).length;
 
   const byApp = new Map<string, { users: Set<string>; requests: number }>();
   for (const s of rangeSessions) {
@@ -484,7 +493,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
         estimated: drafts.some((r) => r.ok && r.cost === null),
         deltaPct: change(perRequest, prevPerRequest),
       },
-      failures: { failed, requests: totalRequests, pct: pct(failed, totalRequests), slaPct: cfg.failureSlaPct },
+      failures: { failed, requests: userFacingInRange.length, pct: pct(failed, userFacingInRange.length), slaPct: cfg.failureSlaPct },
       platforms,
       pairedUsers: new Set(sessions.map((s) => s.id)).size,
       taps: {

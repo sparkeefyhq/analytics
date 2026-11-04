@@ -11,7 +11,8 @@ The team analytics dashboard for Keefie: **Overview** (founder & investor summar
 | Number | Source | If PostHog is down |
 |---|---|---|
 | Accounts, signups, onboarding completion, chat replies, in-app cost | Backend `/api/admin/analytics/v2` | Unchanged |
-| Overlay requests, latency, failures, overlay cost | Backend `overlay` list (`ai_call_telemetry`, needs backend PR #357); PostHog drafts only before the backend's first row | Unchanged |
+| Overlay requests and overlay cost | Backend `overlay` list (`ai_call_telemetry`, live since backend #357); PostHog drafts only before the backend's first row | Unchanged |
+| Overlay latency and failures | PostHog draft events: what the user waits for and sees (end to end, a retried model call is not a failure) | Backend model calls (retries merged) |
 | Activity (DAU/WAU/MAU) | Backend chat + overlay calls, plus PostHog app opens and overlay events | Backend activity only |
 | Reply use, apps, taps, onboarding screens | PostHog | Paused, with a banner |
 

@@ -169,10 +169,25 @@ test('backend overlay calls replace PostHog drafts from their first row; retries
   });
   const s = computeSnapshot(data, { range: '30d', surface: 'combined', audience: 'external', version: 'all' }, cfg, NOW);
   assert.equal(s.overlay.cost.requests, 3); // 1 PostHog draft + 2 backend requests
-  assert.equal(s.overlay.failures.failed, 1); // r2 only; r1 recovered on retry
-  assert.deepEqual([s.overlay.latency.p50, s.sources.overlayCalls], [1200, 'backend']); // 900 and 1500
+  // Latency and failures stay user-facing (PostHog drafts: 900 ms and 5000 ms, none failed) while PostHog is up.
+  assert.equal(s.overlay.failures.failed, 0);
+  assert.deepEqual([s.overlay.latency.p50, s.sources.overlayCalls], [2950, 'backend']);
   assert.ok(Math.abs(s.overlay.cost.total - (0.0006 + 0.0001 + 0.00035)) < 1e-9, `total ${s.overlay.cost.total}`); // r1 + r2 + estimated draft at avg(0.0006, 0.0001)
   assert.equal(s.overlay.cost.estimated, true);
+});
+
+test('with PostHog down, latency and failures fall back to backend requests (retries merged)', () => {
+  const data = dataset({
+    people: [{ id: 'a', name: 'A', signupAt: at(40 * 24 * H), team: false }],
+    overlayCalls: [
+      { id: 'a', at: at(5 * H), request: 'r1', ok: false, latency: null, cost: 0.0002 },
+      { id: 'a', at: at(5 * H - 1000), request: 'r1', ok: true, latency: 1500, cost: 0.0004 },
+      { id: 'a', at: at(4 * H), request: 'r2', ok: false, latency: null, cost: 0.0001 },
+    ],
+    sources: { posthogAt: null, backendAt: at(0), overlayCallsFrom: at(5 * H) },
+  });
+  const s = computeSnapshot(data, { range: '30d', surface: 'combined', audience: 'external', version: 'all' }, cfg, NOW);
+  assert.deepEqual([s.overlay.failures.failed, s.overlay.failures.requests, s.overlay.latency.p50], [1, 2, 1500]);
 });
 
 test('with PostHog down, backend numbers still compute and the snapshot says so', () => {
