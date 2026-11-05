@@ -95,3 +95,18 @@ test('totals and filtered views agree after the reset', () => {
   assert.equal(all.overview.dau.value, week.overview.dau.value);
   assert.equal(app.overview.dau.value + overlay.overview.dau.value, all.overview.dau.value);
 });
+
+test('the hour that contains the cutoff never makes someone active on pre-cutoff activity alone', () => {
+  const cut = '2026-11-05T20:14:09Z';
+  const d = dataset();
+  d.people.push({ id: 'early-only', name: 'D', signupAt: '2026-10-03T00:00:00.000Z', team: false }, { id: 'stays', name: 'E', signupAt: '2026-10-04T00:00:00.000Z', team: false });
+  d.activity.push(
+    { id: 'early-only', hour: '2026-11-05T20:00:00.000Z', surface: 'app', n: 1 }, // only the mixed hour: dropped
+    { id: 'stays', hour: '2026-11-05T20:00:00.000Z', surface: 'app', n: 1 },
+    { id: 'stays', hour: '2026-11-05T22:00:00.000Z', surface: 'app', n: 1 }, // later hour: kept, and the mixed one too
+  );
+  const out = applyCountFrom(d, cut);
+  assert.equal(out.activity.some((r) => r.id === 'early-only'), false);
+  assert.equal(out.people.some((p) => p.id === 'early-only'), false);
+  assert.equal(out.activity.filter((r) => r.id === 'stays').length, 2);
+});

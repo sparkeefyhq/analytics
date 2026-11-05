@@ -21,13 +21,23 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
   if (!Number.isFinite(cut)) return data;
 
   const after = (value: string) => Date.parse(value) >= cut;
-  // Hourly buckets from the cutoff's hour on (IST midnight is a whole UTC hour).
-  const activity = data.activity.filter((r) => Date.parse(r.hour) >= cut - (cut % 3_600_000));
   const overlay = data.overlay.filter((r) => after(r.ts));
   const sessions = data.sessions.filter((r) => after(r.ts));
   const aiCost = data.aiCost.filter((r) => after(r.at));
   const chatReplies = data.chatReplies.filter((r) => after(r.at));
   const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
+  // Activity comes in hourly buckets. Later buckets are wholly after the cutoff. The bucket that
+  // contains the cutoff mixes before and after, so a user in it only counts if they also have an
+  // exact-time row at/after the cutoff or a later bucket: never active on pre-cutoff activity alone.
+  const cutHour = cut - (cut % 3_600_000);
+  const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) > cutHour).map((r) => r.id));
+  const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...overlayCalls].map((r) => r.id));
+  const activity = data.activity.filter((r) => {
+    const h = Date.parse(r.hour);
+    if (h > cutHour) return true;
+    if (h < cutHour) return false;
+    return h === cut || laterBucket.has(r.id) || exactAfter.has(r.id);
+  });
 
   const newSince = new Set(data.people.filter((p) => after(p.signupAt)).map((p) => p.id));
   const activeSince = new Set<string>([
