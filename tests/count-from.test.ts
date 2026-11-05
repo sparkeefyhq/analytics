@@ -110,3 +110,19 @@ test('the hour that contains the cutoff never makes someone active on pre-cutoff
   assert.equal(out.people.some((p) => p.id === 'early-only'), false);
   assert.equal(out.activity.filter((r) => r.id === 'stays').length, 2);
 });
+
+test('half-hour (IST) buckets that straddle the cutoff need post-cutoff evidence too', () => {
+  const cut = '2026-11-05T20:48:16Z';
+  const d = dataset();
+  d.people.push({ id: 'ist-only', name: 'F', signupAt: '2026-10-05T00:00:00.000Z', team: true }, { id: 'ist-proven', name: 'G', signupAt: '2026-10-06T00:00:00.000Z', team: true });
+  d.activity.push(
+    { id: 'ist-only', hour: '2026-11-05T20:30:00.000Z', surface: 'app', n: 1 }, // 20:30–21:30 straddles 20:48: dropped
+    { id: 'ist-only', hour: '2026-11-05T20:00:00.000Z', surface: 'overlay', n: 1 }, // 20:00–21:00 straddles: dropped
+    { id: 'ist-proven', hour: '2026-11-05T20:30:00.000Z', surface: 'overlay', n: 1 },
+  );
+  d.overlayCalls.push({ id: 'ist-proven', at: '2026-11-05T20:49:27.000Z', request: 'r9', ok: true, latency: 900, cost: 0.001 });
+  const out = applyCountFrom(d, cut);
+  assert.equal(out.people.some((p) => p.id === 'ist-only'), false);
+  assert.equal(out.activity.filter((r) => r.id === 'ist-proven').length, 1);
+  assert.equal(out.people.some((p) => p.id === 'ist-proven'), true);
+});

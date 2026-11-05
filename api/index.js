@@ -122,14 +122,14 @@ function applyCountFrom(data, countFrom) {
   const aiCost = data.aiCost.filter((r) => after(r.at));
   const chatReplies = data.chatReplies.filter((r) => after(r.at));
   const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
-  const cutHour = cut - cut % 36e5;
-  const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) > cutHour).map((r) => r.id));
+  const HOUR2 = 36e5;
+  const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) >= cut).map((r) => r.id));
   const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...overlayCalls].map((r) => r.id));
   const activity = data.activity.filter((r) => {
     const h = Date.parse(r.hour);
-    if (h > cutHour) return true;
-    if (h < cutHour) return false;
-    return h === cut || laterBucket.has(r.id) || exactAfter.has(r.id);
+    if (h >= cut) return true;
+    if (h + HOUR2 <= cut) return false;
+    return laterBucket.has(r.id) || exactAfter.has(r.id);
   });
   const newSince = new Set(data.people.filter((p) => after(p.signupAt)).map((p) => p.id));
   const activeSince = /* @__PURE__ */ new Set([
