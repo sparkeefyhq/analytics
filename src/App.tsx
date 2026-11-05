@@ -132,7 +132,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   const exportCsv = () => {
     if (!data) return;
     const stamp = new Date().toISOString().slice(0, 10);
-    const head = [['Keefie Control Plane', route], ['Generated', data.generatedAt], ['Range', data.rangeLabel], ['Surface', filters.surface], ['Audience', filters.audience], ['Build', versionLabel], []];
+    const head = [['Keefie Control Plane', route], ['Generated', data.generatedAt], ['Range', data.rangeLabel], ['Counting from', data.countFrom ?? 'full history'], ['Surface', filters.surface], ['Audience', filters.audience], ['Build', versionLabel], []];
     const o = data.overview;
     const ov = data.overlay;
     if (route === 'overlay') {
