@@ -117,12 +117,20 @@ function applyCountFrom(data, countFrom) {
   const cut = Date.parse(countFrom);
   if (!Number.isFinite(cut)) return data;
   const after = (value) => Date.parse(value) >= cut;
-  const activity = data.activity.filter((r) => Date.parse(r.hour) >= cut - cut % 36e5);
   const overlay = data.overlay.filter((r) => after(r.ts));
   const sessions = data.sessions.filter((r) => after(r.ts));
   const aiCost = data.aiCost.filter((r) => after(r.at));
   const chatReplies = data.chatReplies.filter((r) => after(r.at));
   const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
+  const cutHour = cut - cut % 36e5;
+  const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) > cutHour).map((r) => r.id));
+  const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...overlayCalls].map((r) => r.id));
+  const activity = data.activity.filter((r) => {
+    const h = Date.parse(r.hour);
+    if (h > cutHour) return true;
+    if (h < cutHour) return false;
+    return h === cut || laterBucket.has(r.id) || exactAfter.has(r.id);
+  });
   const newSince = new Set(data.people.filter((p) => after(p.signupAt)).map((p) => p.id));
   const activeSince = /* @__PURE__ */ new Set([
     ...activity.map((r) => r.id),
