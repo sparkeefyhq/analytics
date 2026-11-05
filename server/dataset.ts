@@ -12,6 +12,7 @@
  *     they appear only when the Internal audience is selected.
  * Anonymous pre-login ids (anon_*) are not users and are never counted.
  */
+import { applyCountFrom } from './count-from';
 import type { Config } from './config';
 import { hogql } from './posthog';
 import { type AccountClass, syncAccountClasses } from './posthog-sync';
@@ -286,11 +287,12 @@ async function refresh(cfg: Config): Promise<Dataset> {
   const empty: Raw = { overlay: [], activity: [], sessions: [], screens: [] };
   const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
   const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
-  const data = assemble(cfg, start, state.backend.data, raw, {
+  const built = assemble(cfg, start, state.backend.data, raw, {
     posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
     backendAt: new Date(state.backend.at).toISOString(),
     error: state.lastError,
   });
+  const data = applyCountFrom(built, cfg.countFrom);
   lastBuilt = { at: now, data };
   return data;
 }

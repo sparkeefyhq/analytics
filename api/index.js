@@ -105,7 +105,52 @@ function config() {
     latencySlaMs: num(env.LATENCY_SLA_MS, 3e3),
     failureSlaPct: num(env.FAILURE_SLA_PCT, 3),
     /** Earliest date the dashboard reads ("All Time"). */
-    dataStart: env.DATA_START ?? "2026-09-11"
+    dataStart: env.DATA_START ?? "2026-09-11",
+    /** Analytics reset: count everything from this moment (ISO, e.g. 2026-11-06T00:00:00+05:30). Unset = full history. */
+    countFrom: env.COUNT_FROM?.trim() ? env.COUNT_FROM.trim() : null
+  };
+}
+
+// server/count-from.ts
+function applyCountFrom(data, countFrom) {
+  if (countFrom === null) return data;
+  const cut = Date.parse(countFrom);
+  if (!Number.isFinite(cut)) return data;
+  const after = (value) => Date.parse(value) >= cut;
+  const activity = data.activity.filter((r) => Date.parse(r.hour) >= cut - cut % 36e5);
+  const overlay = data.overlay.filter((r) => after(r.ts));
+  const sessions = data.sessions.filter((r) => after(r.ts));
+  const aiCost = data.aiCost.filter((r) => after(r.at));
+  const chatReplies = data.chatReplies.filter((r) => after(r.at));
+  const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
+  const newSince = new Set(data.people.filter((p) => after(p.signupAt)).map((p) => p.id));
+  const activeSince = /* @__PURE__ */ new Set([
+    ...activity.map((r) => r.id),
+    ...overlay.map((r) => r.id),
+    ...sessions.map((r) => r.id),
+    ...chatReplies.map((r) => r.id),
+    ...overlayCalls.map((r) => r.id)
+  ]);
+  const people = data.people.filter((p) => newSince.has(p.id) || activeSince.has(p.id)).map((p) => newSince.has(p.id) ? p : { ...p, returning: true });
+  const cutDay = new Date(cut + 5.5 * 36e5).toISOString().slice(0, 10);
+  return {
+    ...data,
+    dataStart: cutDay > data.dataStart ? cutDay : data.dataStart,
+    countFrom: new Date(cut).toISOString(),
+    people,
+    activity,
+    overlay,
+    sessions,
+    aiCost,
+    chatReplies,
+    overlayCalls,
+    // Onboarding screens have no time: only accounts created after the cutoff.
+    onboarding: data.onboarding.filter((r) => newSince.has(r.id)),
+    versions: data.versions.filter((v) => newSince.has(v.id) || activeSince.has(v.id)),
+    sources: {
+      ...data.sources,
+      overlayCallsFrom: data.sources.overlayCallsFrom === null ? null : after(data.sources.overlayCallsFrom) ? data.sources.overlayCallsFrom : overlayCalls.length ? new Date(cut).toISOString() : null
+    }
   };
 }
 
@@ -367,11 +412,12 @@ async function refresh(cfg) {
   const empty = { overlay: [], activity: [], sessions: [], screens: [] };
   const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
   const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
-  const data = assemble(cfg, start, state.backend.data, raw, {
+  const built = assemble(cfg, start, state.backend.data, raw, {
     posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
     backendAt: new Date(state.backend.at).toISOString(),
     error: state.lastError
   });
+  const data = applyCountFrom(built, cfg.countFrom);
   lastBuilt = { at: now, data };
   return data;
 }
@@ -675,7 +721,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const firstReply = /* @__PURE__ */ new Set();
   for (const r2 of data.chatReplies) firstReply.add(r2.id);
   for (const e of data.overlay) if (e.action === "draft" && e.status === "ok") firstReply.add(e.id);
-  const signups = people.filter((p) => inRange(t(p.signupAt)));
+  const signups = people.filter((p) => !p.returning && inRange(t(p.signupAt)));
   const completed = signups.filter((p) => firstReply.has(p.id));
   const dropped = signups.filter((p) => !firstReply.has(p.id));
   const lastScreen = new Map(data.onboarding.map((o) => [o.id, o.screen]));
@@ -703,6 +749,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const weekOf = (day) => day - (day + 3) % 7;
   const cohorts = /* @__PURE__ */ new Map();
   for (const p of people) {
+    if (p.returning) continue;
     const day = istDay(t(p.signupAt));
     if (dayStartMs(weekOf(day) + 7) <= from && filters.range !== "all") continue;
     const list2 = cohorts.get(weekOf(day)) ?? [];
@@ -821,6 +868,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     },
     filters,
     rangeLabel: label,
+    countFrom: data.countFrom ?? null,
     versions: allVersions,
     latestVersion: mainVersion,
     people: people.length,

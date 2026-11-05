@@ -269,7 +269,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   const firstReply = new Set<string>();
   for (const r of data.chatReplies) firstReply.add(r.id);
   for (const e of data.overlay) if (e.action === 'draft' && e.status === 'ok') firstReply.add(e.id);
-  const signups = people.filter((p) => inRange(t(p.signupAt)));
+  const signups = people.filter((p) => !p.returning && inRange(t(p.signupAt)));
   const completed = signups.filter((p) => firstReply.has(p.id));
   const dropped = signups.filter((p) => !firstReply.has(p.id));
   const lastScreen = new Map(data.onboarding.map((o) => [o.id, o.screen]));
@@ -301,6 +301,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   const weekOf = (day: number) => day - ((day + 3) % 7); // epoch day 0 was a Thursday; Monday-start weeks
   const cohorts = new Map<number, typeof people>();
   for (const p of people) {
+    if (p.returning) continue; // signed up before the analytics reset: active, but not a cohort member
     const day = istDay(t(p.signupAt));
     if (dayStartMs(weekOf(day) + 7) <= from && filters.range !== 'all') continue;
     const list = cohorts.get(weekOf(day)) ?? [];
@@ -438,6 +439,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
     },
     filters,
     rangeLabel: label,
+    countFrom: data.countFrom ?? null,
     versions: allVersions,
     latestVersion: mainVersion,
     people: people.length,

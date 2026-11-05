@@ -41,6 +41,8 @@ export function config() {
     failureSlaPct: num(env.FAILURE_SLA_PCT, 3),
     /** Earliest date the dashboard reads ("All Time"). */
     dataStart: env.DATA_START ?? '2026-09-11',
+    /** Analytics reset: count everything from this moment (ISO, e.g. 2026-11-06T00:00:00+05:30). Unset = full history. */
+    countFrom: env.COUNT_FROM?.trim() ? env.COUNT_FROM.trim() : null,
   };
 }
 

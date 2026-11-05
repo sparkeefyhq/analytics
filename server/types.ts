@@ -5,7 +5,10 @@ export interface Dataset {
   /** Set when the latest PostHog read failed and older rows are being shown. */
   sourceError: string | null;
   dataStart: string;
-  people: { id: string; name: string | null; signupAt: string; team: boolean }[];
+  /** Analytics reset: every number counts from here (COUNT_FROM). Absent = full history. */
+  countFrom?: string;
+  /** returning = an account created before COUNT_FROM that was active after it (active, never a signup). */
+  people: { id: string; name: string | null; signupAt: string; team: boolean; returning?: boolean }[];
   /** Hourly activity counts per user and surface. */
   activity: { id: string; hour: string; surface: 'overlay' | 'app'; n: number }[];
   /** One row per overlay_used event (draft, inserted, copied, sent, closed, ...). */
@@ -104,6 +107,8 @@ export interface Snapshot {
   sources: { posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog' };
   filters: Filters;
   rangeLabel: string;
+  /** Analytics reset time, when set: every number counts from here. */
+  countFrom: string | null;
   versions: string[];
   latestVersion: string | null;
   people: number;
