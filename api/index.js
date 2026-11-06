@@ -276,6 +276,24 @@ async function hogqlOnce(cfg, query) {
   return (body.results ?? []).map((row) => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
 }
 
+// server/replies.ts
+function oneReplyPerTurn(facts) {
+  const firstByTurn = /* @__PURE__ */ new Map();
+  const out = [];
+  for (const f of facts) {
+    if (f.kind !== "complete") continue;
+    if (!f.request) {
+      out.push({ id: f.user, at: f.at });
+      continue;
+    }
+    const key = `${f.user.toLowerCase()}|${f.request}`;
+    const seen = firstByTurn.get(key);
+    if (!seen || Date.parse(f.at) < Date.parse(seen.at)) firstByTurn.set(key, f);
+  }
+  for (const f of firstByTurn.values()) out.push({ id: f.user, at: f.at });
+  return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
 // server/posthog-sync.ts
 var SYNC_EVERY_MS = 10 * 6e4;
 var lastSync = 0;
@@ -666,7 +684,7 @@ function assemble(cfg, start, backend, raw, fresh) {
     onboarding: lastScreens(steps.filter((r) => r.account && known.has(r.id))),
     // Accounts in this dataset, plus installs that never signed in (top of the funnel only).
     steps: steps.filter((r) => r.account ? known.has(r.id) : true),
-    chatReplies: keep(backend.facts.filter((f) => f.kind === "complete").map((f) => ({ id: f.user, at: f.at }))),
+    chatReplies: keep(oneReplyPerTurn(backend.facts)),
     chatTurns: keep(raw.chatTurns ?? []),
     overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
     sources: {
@@ -759,6 +777,7 @@ async function getLive(cfg, since, audience, names, person = null) {
 // server/users.ts
 var HOUR = 36e5;
 var DAY = 24 * HOUR;
+var NOT_A_DRAFT = /* @__PURE__ */ new Set(["needs_target", "no_reply", "unsupported"]);
 var IST = 5.5 * HOUR;
 var t = (iso) => Date.parse(iso);
 var pct = (n, d) => d > 0 ? n / d * 100 : null;
@@ -924,7 +943,7 @@ function buildRoster({ data, people, versionOf, from, now }) {
       } else repeat = now - t(firstAct.ts) >= 7 * DAY ? "no" : "pending";
     }
     const r = events.filter((e) => inRange(e.ts));
-    const rDrafts = r.filter((e) => e.action === "draft");
+    const rDrafts = r.filter((e) => e.action === "draft" && !NOT_A_DRAFT.has(e.status));
     const sent = r.filter((e) => e.action === "sent");
     const sessions = (sessionsBy.get(p.id) ?? []).filter((s) => s.start >= from && s.start <= now);
     const shown = sessions.filter((s) => s.ok > 0);

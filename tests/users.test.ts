@@ -141,3 +141,16 @@ test('count-from keeps funnel rows only for people who started after the cutoff 
   );
   assert.deepEqual(out.steps!.map((s) => s.id).sort(), [A, 'anon:new']);
 });
+
+test('roster drafts count only taps that reached the model (7 Nov: Karan 6 shown vs 5 real)', () => {
+  const overlay = [
+    ev(A, H, 'draft'),
+    ev(A, 2 * H, 'draft', { status: 'failed' }),
+    ev(A, 3 * H, 'draft', { status: 'needs_target' }),
+    ev(A, 4 * H, 'draft', { status: 'no_reply' }),
+    ev(A, 5 * H, 'draft', { status: 'unsupported' }),
+  ];
+  const snap = computeSnapshot(dataset({ people: [{ id: A, name: 'A', signupAt: at(D), team: false }], overlay }), filters, cfg, NOW);
+  const a = snap.roster.find((u) => u.id === A)!;
+  assert.deepEqual([a.overlay.drafts, a.overlay.delivered, a.overlay.failed], [2, 1, 1]);
+});
