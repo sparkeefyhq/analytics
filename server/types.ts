@@ -176,6 +176,8 @@ export interface Snapshot {
   };
   /** Onboarding funnel: how many people reached each screen, in app order. */
   funnel: FunnelStep[];
+  /** 6 Nov: installs seen only mid-onboarding (their anonymous id changed); not counted as starts. */
+  funnelPartial?: number;
   /** Phase 1 benchmark (BENCHMARK - Phase 1, 20 users): the four gates to expand 20 -> 50. */
   scorecard: Scorecard;
   /** Users tab: one row per account in this audience, with everything the detail panel shows. */

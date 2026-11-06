@@ -15,7 +15,7 @@ import type {
   RetentionRow,
   Snapshot,
 } from './types';
-import { buildFunnel, buildRoster, buildScorecard } from './users';
+import { buildFunnel, funnelPartial, buildRoster, buildScorecard } from './users';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -516,6 +516,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   return {
     ...snapshot,
     funnel: buildFunnel(data, filters, teamIds, from, now),
+    funnelPartial: funnelPartial(data, filters, teamIds, from, now),
     scorecard: buildScorecard(roster, snapshot, overlayUsersToday, now),
     roster,
   };
