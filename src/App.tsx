@@ -12,8 +12,8 @@ type Route = 'overview' | 'overlay' | 'onboarding' | 'users';
 const PATHS: Record<Route, string> = { overview: '/', overlay: '/overlay', onboarding: '/onboarding', users: '/users' };
 const routeOf = (path: string): Route =>
   path.startsWith('/overlay') ? 'overlay' : path.startsWith('/onboarding') ? 'onboarding' : path.startsWith('/users') ? 'users' : 'overview';
-/** Live: the page re-reads every 20 s while visible (backend rows are at most 20 s old, PostHog rows 60 s). */
-const REFRESH_MS = 20_000;
+/** Live: the page re-reads every 15 s while visible (backend rows are at most 15 s old, PostHog rows 60 s). */
+const REFRESH_MS = 15_000;
 
 function readFilters(): Filters {
   const q = new URLSearchParams(location.search);
@@ -101,14 +101,27 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   const load = useCallback(async () => {
     const id = ++req.current;
     setLoading(true);
+    const q = new URLSearchParams({ range: filters.range, surface: filters.surface, audience: filters.audience, version: filters.version });
+    const key = `kcp:v1:${q}`;
+    // Instant first paint: show the last numbers this browser saw for these filters, then replace them.
     try {
-      const q = new URLSearchParams({ range: filters.range, surface: filters.surface, audience: filters.audience, version: filters.version });
+      const cached = localStorage.getItem(key);
+      if (cached && id === req.current) setData((cur) => cur && cur.filters.audience === filters.audience && cur.filters.range === filters.range && cur.filters.surface === filters.surface && cur.filters.version === filters.version ? cur : (JSON.parse(cached) as Snapshot));
+    } catch {
+      /* no storage: just wait for the network */
+    }
+    try {
       const r = await fetch(`/api/dashboard?${q}`, { credentials: 'same-origin' });
       if (r.status === 401) return onSignedOut();
       const body = await r.json();
       if (id !== req.current) return;
       if (!r.ok) throw new Error(body.error ?? `Error ${r.status}`);
       setData(body as Snapshot);
+      try {
+        localStorage.setItem(key, JSON.stringify(body));
+      } catch {
+        /* storage full or blocked: fine */
+      }
       setError(null);
       setLastOk(Date.now());
     } catch (e) {
@@ -123,7 +136,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') load();
     }, REFRESH_MS);
-    const clock = setInterval(() => tick((n) => n + 1), 15_000);
+    const clock = setInterval(() => tick((n) => n + 1), 5_000);
     const onVisible = () => document.visibilityState === 'visible' && load();
     document.addEventListener('visibilitychange', onVisible);
     return () => {
@@ -237,6 +250,8 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
           <div className="sync-time">
             {data ? (
               <>
+                {lastOk ? `Live · checked ${Math.max(0, Math.round((Date.now() - lastOk) / 1000))}s ago` : 'Showing saved numbers…'}
+                <br />
                 PostHog {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'unavailable'} · Backend {ago(data.sources.backendAt)}
                 <br />
               </>

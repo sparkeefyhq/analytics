@@ -275,7 +275,7 @@ async function pool(tasks, limit) {
 }
 var HISTORY_MS = 15 * 6e4;
 var RECENT_MS = 6e4;
-var BACKEND_MS = 2e4;
+var BACKEND_MS = 15e3;
 var BACKOFF_MS = 5 * 6e4;
 var OVERLAP_MS = 2 * 6e4;
 var state = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
