@@ -147,6 +147,13 @@ export function describeLive(r: LiveRow): { text: string; tone: 'good' | 'bad' |
       return { text: `ended an overlay session${inApp(r.app)}: ${n} draft${n === 1 ? '' : 's'}, ${how}${secsLong(r.durationMs)}`, tone: r.used ? 'good' : 'plain' };
     }
     case 'app_event': {
+      if (r.event === 'chat_turn') {
+        return r.outcome === 'safety'
+          ? { text: 'sent an in-app message: Safety answered it', tone: 'bad' }
+          : r.outcome === 'failed'
+            ? { text: 'sent an in-app message: it failed', tone: 'bad' }
+            : null; // answered turns already show as "asked Wingman" + "got a reply"
+      }
       if (r.event === 'onboarding_step') return r.screen ? { text: `onboarding: ${words(r.screen)}`, tone: 'plain' } : null;
       if (r.event === 'onboarding_permission') return r.screen ? { text: `${r.granted ? 'granted' : 'declined'} ${words(r.screen)} permission`, tone: r.granted ? 'good' : 'bad' } : null;
       const text = r.event ? APP_EVENT_TEXT[r.event] : undefined;

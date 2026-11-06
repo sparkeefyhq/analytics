@@ -339,7 +339,11 @@ function UserPanel({ user: u, onClose }: { user: RosterUser; onClose: () => void
             <div className="k-label">Free pilot allowance · {u.quota.month}</div>
             <Allowance label="Overlay drafts" n={u.quota.drafts} cap={u.quota.draftCap} />
             <Allowance label="In-app answers" n={u.quota.answers} cap={u.quota.answerCap} />
-            <div className="small-muted" style={{ marginTop: 6 }}>In-app: {int(u.app.replies)} answers in range · cost {usd(u.app.cost)}</div>
+            <div className="small-muted" style={{ marginTop: 6 }}>
+              {u.app.messages !== null && u.app.messages !== undefined
+                ? `In-app: ${int(u.app.messages)} messages · ${int(u.app.answered ?? 0)} answered by Wingman${u.app.safety ? ` · ${int(u.app.safety)} answered by Safety` : ''}${u.app.failed ? ` · ${int(u.app.failed)} failed` : ''} · cost ${usd(u.app.cost)}`
+                : `In-app: ${int(u.app.replies)} answers in range · cost ${usd(u.app.cost)}`}
+            </div>
           </section>
 
           <section>
