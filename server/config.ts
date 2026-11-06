@@ -16,6 +16,16 @@ const num = (value: string | undefined, fallback: number) => {
   return Number.isFinite(n) && value !== undefined && value !== '' ? n : fallback;
 };
 
+/**
+ * 6 Nov (Sarthak): team test accounts shown under Internal, never in the real-user numbers.
+ * Nothing is deleted. Add others to TEAM_USER_IDS (Vercel).
+ */
+const TEAM_TEST_ACCOUNTS = [
+  '0f83d040-def3-4f44-a07d-2ece7ed488a3', // john
+  '7c5f8155-031f-49d5-b45a-4888850ddb00', // Roshan (test account)
+  '8e97eb48-c732-4f04-87f3-44b79f48ddf4', // Skywalker
+];
+
 export function config() {
   const env = process.env;
   return {
@@ -28,7 +38,7 @@ export function config() {
     backendUrl: (env.V2_SPARKEEFY_BACKEND_URL ?? '').replace(/\/$/, ''),
     backendAdminKey: env.V2_SPARKEEFY_BACKEND_ADMIN_KEY ?? '',
     /** Team accounts: shown only under "Internal", never mixed into real numbers. */
-    teamIds: new Set([...list(env.TEAM_USER_IDS), ...list(env.CONTROL_V2_INTERNAL_USER_IDS)]),
+    teamIds: new Set([...list(env.TEAM_USER_IDS), ...list(env.CONTROL_V2_INTERNAL_USER_IDS), ...TEAM_TEST_ACCOUNTS]),
     /** Smoke leftovers, Play reviewer and test-lab accounts: never counted anywhere. */
     excludedIds: list(env.EXCLUDED_USER_IDS),
     /** Monthly fixed infrastructure cost in USD, spread across active users. 0 = model cost only. */

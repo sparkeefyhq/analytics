@@ -13,6 +13,7 @@ export function Funnel({ data }: { data: Snapshot }) {
         <span className="tc-title">Onboarding funnel</span>
         <span className="tc-help">
           {start ? `${int(start)} started onboarding in this range${worst ? ` · biggest stop: ${worst.label} (${worst.stoppedHere})` : ''}` : 'No one started onboarding in this range.'}
+          {data.funnelPartial ? ` · ${int(data.funnelPartial)} more seen only part-way (the phone's anonymous id changed), not counted` : ''}
         </span>
       </div>
       {f.length > 0 && (

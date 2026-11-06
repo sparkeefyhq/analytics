@@ -81,6 +81,14 @@ var num = (value, fallback) => {
   const n = Number(value);
   return Number.isFinite(n) && value !== void 0 && value !== "" ? n : fallback;
 };
+var TEAM_TEST_ACCOUNTS = [
+  "0f83d040-def3-4f44-a07d-2ece7ed488a3",
+  // john
+  "7c5f8155-031f-49d5-b45a-4888850ddb00",
+  // Roshan (test account)
+  "8e97eb48-c732-4f04-87f3-44b79f48ddf4"
+  // Skywalker
+];
 function config() {
   const env = process.env;
   return {
@@ -93,7 +101,7 @@ function config() {
     backendUrl: (env.V2_SPARKEEFY_BACKEND_URL ?? "").replace(/\/$/, ""),
     backendAdminKey: env.V2_SPARKEEFY_BACKEND_ADMIN_KEY ?? "",
     /** Team accounts: shown only under "Internal", never mixed into real numbers. */
-    teamIds: /* @__PURE__ */ new Set([...list(env.TEAM_USER_IDS), ...list(env.CONTROL_V2_INTERNAL_USER_IDS)]),
+    teamIds: /* @__PURE__ */ new Set([...list(env.TEAM_USER_IDS), ...list(env.CONTROL_V2_INTERNAL_USER_IDS), ...TEAM_TEST_ACCOUNTS]),
     /** Smoke leftovers, Play reviewer and test-lab accounts: never counted anywhere. */
     excludedIds: list(env.EXCLUDED_USER_IDS),
     /** Monthly fixed infrastructure cost in USD, spread across active users. 0 = model cost only. */
@@ -520,7 +528,8 @@ function withLedger(raw, ledger) {
       app: r.app
     }))
   ];
-  const steps = [...raw.steps.filter((r) => ms(r.ts) < funnelFrom)];
+  const ledgerSteps = [];
+  const steps = [...raw.steps];
   const activity = [...raw.activity];
   const chatTurns = [];
   for (const f of ledger.funnel) {
@@ -530,12 +539,13 @@ function withLedger(raw, ledger) {
       activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? "" });
       continue;
     }
-    if (f.event === "onboarding_step" && f.screen) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
-    else if (f.event === "onboarding_permission" && f.granted === true && f.permission) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
+    if (f.event === "onboarding_step" && f.screen) ledgerSteps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
+    else if (f.event === "onboarding_permission" && f.granted === true && f.permission) ledgerSteps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
     if (uid && APP_EVENTS.includes(f.event) && Date.parse(f.at) >= funnelFrom) {
       activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? "" });
     }
   }
+  if (steps.length === 0) steps.push(...ledgerSteps);
   return { overlay, sessions, steps, activity, chatTurns };
 }
 async function getDataset(cfg) {
@@ -815,6 +825,17 @@ var LABELS = {
 };
 var screenLabel = (s) => LABELS[s] ?? s.replace(/^perm:/, "").replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
 var isAct = (e) => e.action === "copied" || e.action === "inserted" || e.action === "sent" && (e.sentOutcome === "as_is" || e.sentOutcome === "edited");
+var ENTRY_SCREENS = /* @__PURE__ */ new Set(["IntroVideo", "Welcome"]);
+function funnelPartial(data, filters, teamIds, from, now) {
+  const steps = (data.steps ?? []).filter((s) => {
+    const team = s.account && teamIds.has(s.id);
+    return filters.audience === "internal" ? team : !team;
+  });
+  const entered = new Set(steps.filter((s) => ENTRY_SCREENS.has(s.screen)).map((s) => s.id));
+  const first = /* @__PURE__ */ new Map();
+  for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
+  return [...first.entries()].filter(([id, ms2]) => ms2 >= from && ms2 <= now && !entered.has(id)).length;
+}
 function buildFunnel(data, filters, teamIds, from, now) {
   const steps = (data.steps ?? []).filter((s) => {
     const team = s.account && teamIds.has(s.id);
@@ -822,7 +843,8 @@ function buildFunnel(data, filters, teamIds, from, now) {
   });
   const first = /* @__PURE__ */ new Map();
   for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
-  const people = new Set([...first.entries()].filter(([, ms2]) => ms2 >= from && ms2 <= now).map(([id]) => id));
+  const entered = new Set(steps.filter((s) => ENTRY_SCREENS.has(s.screen)).map((s) => s.id));
+  const people = new Set([...first.entries()].filter(([id, ms2]) => ms2 >= from && ms2 <= now && entered.has(id)).map(([id]) => id));
   const byScreen = /* @__PURE__ */ new Map();
   const offsets = /* @__PURE__ */ new Map();
   for (const s of steps) {
@@ -1496,6 +1518,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   return {
     ...snapshot,
     funnel: buildFunnel(data, filters, teamIds, from, now),
+    funnelPartial: funnelPartial(data, filters, teamIds, from, now),
     scorecard: buildScorecard(roster, snapshot, overlayUsersToday, now),
     roster
   };

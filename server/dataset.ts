@@ -297,7 +297,12 @@ export function withLedger(raw: Raw, ledger: LedgerView): Raw {
       firstTry: r.firstTry === null ? null : r.firstTry ? 1 : 0, used: r.used === null ? null : r.used ? 1 : 0, app: r.app,
     })),
   ];
-  const steps: StepRow[] = [...raw.steps.filter((r) => ms(r.ts) < funnelFrom)];
+  // 6 Nov (Sarthak: "47% intro video? doesn't make sense"): onboarding stays on PostHog. The app sends
+  // part of its onboarding events and the sign-in merge straight to PostHog, so our ledger sees only
+  // some screens and cannot join a phone's pre-sign-in id to its account. PostHog's persons can.
+  // Ledger steps are used only when PostHog has no onboarding rows at all (PostHog down).
+  const ledgerSteps: StepRow[] = [];
+  const steps: StepRow[] = [...raw.steps];
   const activity: ActivityRow[] = [...raw.activity];
   const chatTurns: { id: string; at: string; outcome: string }[] = [];
   for (const f of ledger.funnel) {
@@ -307,13 +312,14 @@ export function withLedger(raw: Raw, ledger: LedgerView): Raw {
       activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? '' });
       continue;
     }
-    if (f.event === 'onboarding_step' && f.screen) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
-    else if (f.event === 'onboarding_permission' && f.granted === true && f.permission) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
+    if (f.event === 'onboarding_step' && f.screen) ledgerSteps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
+    else if (f.event === 'onboarding_permission' && f.granted === true && f.permission) ledgerSteps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
     // In-app presence after the cutover (activity is presence per hour, so the seam hour is harmless).
     if (uid && APP_EVENTS.includes(f.event) && Date.parse(f.at) >= funnelFrom) {
       activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? '' });
     }
   }
+  if (steps.length === 0) steps.push(...ledgerSteps);
   return { overlay, sessions, steps, activity, chatTurns };
 }
 

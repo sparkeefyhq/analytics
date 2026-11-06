@@ -47,6 +47,20 @@ export const screenLabel = (s: string) => LABELS[s] ?? s.replace(/^perm:/, '').r
 const isAct = (e: Dataset['overlay'][number]) =>
   e.action === 'copied' || e.action === 'inserted' || (e.action === 'sent' && (e.sentOutcome === 'as_is' || e.sentOutcome === 'edited'));
 
+const ENTRY_SCREENS = new Set(['IntroVideo', 'Welcome']);
+
+/** Ids with onboarding screens in range that never show the first screen (anonymous id changed mid-way). */
+export function funnelPartial(data: Dataset, filters: Filters, teamIds: Set<string>, from: number, now: number): number {
+  const steps = (data.steps ?? []).filter((s) => {
+    const team = s.account && teamIds.has(s.id);
+    return filters.audience === 'internal' ? team : !team;
+  });
+  const entered = new Set(steps.filter((s) => ENTRY_SCREENS.has(s.screen)).map((s) => s.id));
+  const first = new Map<string, number>();
+  for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
+  return [...first.entries()].filter(([id, ms]) => ms >= from && ms <= now && !entered.has(id)).length;
+}
+
 export function buildFunnel(data: Dataset, filters: Filters, teamIds: Set<string>, from: number, now: number): FunnelStep[] {
   const steps = (data.steps ?? []).filter((s) => {
     const team = s.account && teamIds.has(s.id);
@@ -54,7 +68,11 @@ export function buildFunnel(data: Dataset, filters: Filters, teamIds: Set<string
   });
   const first = new Map<string, number>();
   for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
-  const people = new Set([...first.entries()].filter(([, ms]) => ms >= from && ms <= now).map(([id]) => id));
+  // 6 Nov (Sarthak: "47% intro video?"): someone starts onboarding by reaching its first screen.
+  // An id seen only mid-way (the phone's anonymous id changed during onboarding) is a piece of
+  // someone already counted; it is reported apart (funnelPartial) and never inflates "started".
+  const entered = new Set(steps.filter((s) => ENTRY_SCREENS.has(s.screen)).map((s) => s.id));
+  const people = new Set([...first.entries()].filter(([id, ms]) => ms >= from && ms <= now && entered.has(id)).map(([id]) => id));
   const byScreen = new Map<string, Set<string>>();
   const offsets = new Map<string, number[]>();
   for (const s of steps) {

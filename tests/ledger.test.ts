@@ -83,8 +83,11 @@ test('PostHog is used only before the ledger starts: no double counting at the s
   assert.equal(raw.overlay.filter((r) => r.panel === 'p1-raw').length, 0);
   assert.equal(raw.overlay.length, 1 + 8); // 8 ledger rows that aren't session rows
   assert.equal(raw.sessions.length, 3);
-  // The anonymous onboarding steps carry B's account (identity link), and PostHog's copy is gone.
-  assert.deepEqual(raw.steps.map((s) => [s.uid, s.screen]).sort(), [[B, 'done'], [B, 'perm:accessibility'], [B, 'welcome']]);
+  // 6 Nov: onboarding stays on PostHog (person-merged) whenever PostHog has rows...
+  assert.deepEqual(raw.steps.map((s) => s.pid), ['ph-b']);
+  // ...and falls back to the ledger, joined to the account, only when PostHog has none.
+  const fallback = withLedger({ overlay: [], sessions: [], activity: [], steps: [] }, v);
+  assert.deepEqual(fallback.steps.map((s) => [s.uid, s.screen]).sort(), [[B, 'done'], [B, 'perm:accessibility'], [B, 'welcome']]);
 });
 
 test('dashboard numbers from the ledger say exactly what happened', () => {
@@ -149,4 +152,24 @@ test('6 Nov: every PostHog time filter says UTC (a bare toDateTime is read as IS
   const { baseFilter } = await import('../server/dataset');
   const f = baseFilter({ ...cfgFull, excludedIds: new Set() } as never, '2026-11-06 10:00:00');
   assert.match(f, /toDateTime\('2026-11-06 10:00:00', 'UTC'\)/);
+});
+
+test("6 Nov (Sarthak's screenshot): pieces of a person whose anonymous id changed mid-way never inflate 'started'", async () => {
+  const { buildFunnel, funnelPartial } = await import('../server/users');
+  const s = (id: string, screen: string, min: number, account = false) => ({ id, screen, ts: t(min), account });
+  const steps = [
+    // 2 real starts: both reach Intro video and Welcome; one goes on to Meet Keefie.
+    s('anon:a', 'IntroVideo', 0), s('anon:a', 'Welcome', 1), s('anon:a', 'MeetKeefie', 2),
+    s('anon:b', 'IntroVideo', 0), s('anon:b', 'Welcome', 1),
+    // 3 pieces: one screen each, mid-way, under fresh anonymous ids.
+    s('anon:x', 'MeetKeefie', 3), s('anon:y', 'Privacy', 4), s('anon:z', 'FounderNote', 5),
+  ];
+  const data = { steps } as never;
+  const f = { range: '7d', surface: 'combined', audience: 'external', version: 'all' } as const;
+  const funnel = buildFunnel(data, f, new Set(), 0, NOW);
+  assert.equal(funnel[0]?.label, 'Intro video');
+  assert.equal(funnel[0]?.reached, 2);
+  assert.equal(funnel[0]?.pctOfStart, 100);
+  assert.equal(funnel.find((r) => r.screen === 'MeetKeefie')?.reached, 1);
+  assert.equal(funnelPartial(data, f, new Set(), 0, NOW), 3);
 });
