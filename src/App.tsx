@@ -349,7 +349,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
               PostHog refresh is paused for a few minutes (rate limit). Event numbers are from {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'earlier'}; backend numbers are live.
             </div>
           )}
-          <LiveStrip audience={filters.audience} onActivity={onLiveActivity} person={livePerson} onClear={() => watch(null)} />
+          <LiveStrip audience={filters.audience} onActivity={onLiveActivity} person={livePerson} onClear={() => watch(null)} onPick={watch} />
           {route === 'overview' && <OverviewPage data={data} loading={loading} filters={filters} />}
           {route === 'onboarding' && <ProductPage data={data} loading={loading} filters={filters} />}
           {route === 'overlay' && <OverlayPage data={data} loading={loading} filters={filters} search={search} />}

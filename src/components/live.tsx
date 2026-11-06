@@ -20,7 +20,7 @@ export interface LivePerson {
  * With `person` set (the Live button on a Users row) it shows only that account: their last hour,
  * a one-line summary, and every new step within seconds. `onClear` goes back to everyone.
  */
-export function LiveStrip({ audience, onActivity, person = null, onClear }: { audience: Audience; onActivity: () => void; person?: LivePerson | null; onClear?: () => void }) {
+export function LiveStrip({ audience, onActivity, person = null, onClear, onPick }: { audience: Audience; onActivity: () => void; person?: LivePerson | null; onClear?: () => void; onPick?: (p: LivePerson) => void }) {
   const [rows, setRows] = useState<LiveRow[]>([]);
   const [all, setAll] = useState<LiveRow[]>([]);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
@@ -131,7 +131,16 @@ export function LiveStrip({ audience, onActivity, person = null, onClear }: { au
             if (!d) return null;
             return (
               <li key={row.id} className={`${fresh.has(row.id) ? 'new ' : ''}${d.tone}`}>
-                <span className="who">{person ? new Date(row.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : row.name || (row.user.startsWith('anon_') ? 'New install' : `${row.user.slice(0, 8)}…`)}</span>
+                {person ? (
+                  <span className="who">{new Date(row.at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                ) : row.user.startsWith('anon_') || !onPick ? (
+                  <span className="who">{row.name || (row.user.startsWith('anon_') ? 'New install' : `${row.user.slice(0, 8)}…`)}</span>
+                ) : (
+                  // 6 Nov: tap a name to follow just that person's live activity.
+                  <button type="button" className="who who-btn" title="Show only their live activity" onClick={() => onPick({ id: row.user, name: row.name ?? null })}>
+                    {row.name || 'New user'}
+                  </button>
+                )}
                 <span className="what">{d.text}</span>
                 <span className="when">{ago(row.at)}</span>
               </li>

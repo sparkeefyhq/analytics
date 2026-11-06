@@ -426,3 +426,5 @@ th.r, td.r { text-align: right; }
 .live-btn.on .dot { background: var(--green); animation: live-pulse 1.6s ease-in-out infinite; }
 .roster tr.watching td { background: var(--green-bg); }
 @media (prefers-reduced-motion: reduce) { .live-btn.on .dot { animation: none; } }
+.live-list .who-btn { all: unset; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); border-bottom: 1px dashed var(--line); justify-self: start; max-width: 100%; }
+.live-list .who-btn:hover, .live-list .who-btn:focus-visible { color: var(--green); border-bottom-color: var(--green); }
