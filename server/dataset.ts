@@ -16,6 +16,7 @@ import { applyCountFrom } from './count-from';
 import type { Config } from './config';
 import { type LedgerView, ledgerView, refreshLedger } from './ledger';
 import { hogql, isRateLimit } from './posthog';
+import { oneReplyPerTurn } from './replies';
 import { type AccountClass, syncAccountClasses } from './posthog-sync';
 import type { Dataset } from './types';
 
@@ -41,6 +42,7 @@ interface BackendFact {
   at: string;
   kind: string;
   cost?: number;
+  request?: string;
 }
 
 async function fetchBackend(cfg: Config): Promise<{ members: BackendMember[]; facts: BackendFact[]; overlay: BackendOverlayCall[] | null }> {
@@ -465,7 +467,7 @@ export function assemble(
     onboarding: lastScreens(steps.filter((r) => r.account && known.has(r.id))),
     // Accounts in this dataset, plus installs that never signed in (top of the funnel only).
     steps: steps.filter((r) => (r.account ? known.has(r.id) : true)),
-    chatReplies: keep(backend.facts.filter((f) => f.kind === 'complete').map((f) => ({ id: f.user, at: f.at }))),
+    chatReplies: keep(oneReplyPerTurn(backend.facts)),
     chatTurns: keep(raw.chatTurns ?? []),
     overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
     sources: {

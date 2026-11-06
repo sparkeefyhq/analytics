@@ -16,6 +16,8 @@ import type { Dataset, Filters, FunnelStep, Gate, RosterUser, Scorecard, Snapsho
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+/** Draft taps that never reach the model (no chat found, no reply needed, app not supported). */
+const NOT_A_DRAFT = new Set(['needs_target', 'no_reply', 'unsupported']);
 const IST = 5.5 * HOUR;
 const t = (iso: string) => Date.parse(iso);
 const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
@@ -167,7 +169,9 @@ export function buildRoster({ data, people, versionOf, from, now }: Ctx): Roster
     }
 
     const r = events.filter((e) => inRange(e.ts));
-    const rDrafts = r.filter((e) => e.action === 'draft');
+    // 7 Nov: a draft is a tap that reached the model (ok or failed), the same as the overview's requests.
+    // needs_target / no_reply / unsupported taps made Karan's 5 drafts show as 6 and Aniket's 1 as 2.
+    const rDrafts = r.filter((e) => e.action === 'draft' && !NOT_A_DRAFT.has(e.status));
     const sent = r.filter((e) => e.action === 'sent');
     const sessions = (sessionsBy.get(p.id) ?? []).filter((s) => s.start >= from && s.start <= now);
     const shown = sessions.filter((s) => s.ok > 0);
