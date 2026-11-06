@@ -11,6 +11,9 @@ interface Props {
   search: string;
   selected: string | null;
   onSelect: (id: string | null) => void;
+  /** 6 Nov: whose live activity the strip at the top shows (null = everyone). */
+  watching?: string | null;
+  onWatch?: (p: { id: string; name: string | null } | null) => void;
 }
 
 const POSTHOG_PERSON = 'https://us.posthog.com/project/599431/person/';
@@ -28,7 +31,7 @@ const shortId = (id: string) => `usr_${id.slice(0, 5)}`;
 const sends = (u: RosterUser) => u.overlay.sent.asIs + u.overlay.sent.edited + u.overlay.sent.own;
 const attention = (u: RosterUser) => u.flags.some((f) => f.tone === 'red');
 
-export function UsersPage({ data, filters, search, selected, onSelect }: Props) {
+export function UsersPage({ data, filters, search, selected, onSelect, watching = null, onWatch }: Props) {
   const [q, setQ] = useState('');
   const [view, setView] = useState<View>('all');
   const [sort, setSort] = useState<Sort>('recent');
@@ -120,12 +123,29 @@ export function UsersPage({ data, filters, search, selected, onSelect }: Props) 
             <tbody>
               {rows.length === 0 && <tr><td colSpan={9} className="empty">No users match.</td></tr>}
               {rows.map((u) => (
-                <tr key={u.id} className={`click ${selected === u.id ? 'sel' : ''}`} onClick={() => onSelect(u.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && onSelect(u.id)}>
+                <tr key={u.id} className={`click ${selected === u.id ? 'sel' : ''} ${watching === u.id ? 'watching' : ''}`} onClick={() => onSelect(u.id)} tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && onSelect(u.id)}>
                   <td style={{ paddingLeft: 24 }}>
                     <div className="who">
                       <span className="avatar">{(u.name ?? '?').slice(0, 1).toUpperCase()}</span>
                       <div>
-                        <div style={{ fontWeight: 600 }}>{u.name ?? <span className="small-muted">No name</span>}</div>
+                        <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {u.name ?? <span className="small-muted">No name</span>}
+                          {onWatch && (
+                            <button
+                              type="button"
+                              className={`live-btn ${watching === u.id ? 'on' : ''}`}
+                              title={watching === u.id ? 'Showing their live activity at the top. Click to show everyone.' : 'Show only their live activity at the top'}
+                              aria-pressed={watching === u.id}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onWatch(watching === u.id ? null : { id: u.id, name: u.name });
+                              }}
+                              onKeyDown={(e) => e.stopPropagation()}
+                            >
+                              <span className="dot" />Live
+                            </button>
+                          )}
+                        </div>
                         <div className="uid" style={{ fontSize: 11 }}>{shortId(u.id)}{u.returning ? <span className="small-muted"> · returning</span> : null}</div>
                       </div>
                     </div>

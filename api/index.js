@@ -704,26 +704,28 @@ function lastScreens(steps) {
 
 // server/live.ts
 var LIVE_OVERLAP_MS = 15e3;
-function filterLive(rows, cfg, audience) {
+function filterLive(rows, cfg, audience, person = null) {
   const cut = cfg.countFrom ? Date.parse(cfg.countFrom) : Number.NEGATIVE_INFINITY;
   return rows.filter((r) => {
     const id = r.user.toLowerCase();
     if (cfg.excludedIds.has(id)) return false;
     if (Number.isFinite(cut) && Date.parse(r.at) < cut) return false;
+    if (person !== null) return id === person;
     return audience === "internal" ? cfg.teamIds.has(id) : !cfg.teamIds.has(id);
   });
 }
-async function getLive(cfg, since, audience, names) {
+async function getLive(cfg, since, audience, names, person = null) {
   if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("backend not configured");
   const parsed = since ? Date.parse(since) : Number.NaN;
-  const from = new Date((Number.isFinite(parsed) ? parsed : Date.now() - 10 * 6e4) - LIVE_OVERLAP_MS).toISOString();
+  const first = person ? 60 * 6e4 : 10 * 6e4;
+  const from = new Date((Number.isFinite(parsed) ? parsed : Date.now() - first) - LIVE_OVERLAP_MS).toISOString();
   const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/live?since=${encodeURIComponent(from)}`, {
     headers: { "x-admin-api-key": cfg.backendAdminKey },
     signal: AbortSignal.timeout(8e3)
   });
   if (!response.ok) throw new Error(`live ${response.status}`);
   const body = await response.json();
-  const rows = filterLive(Array.isArray(body.data?.rows) ? body.data.rows : [], cfg, audience).map((r) => ({
+  const rows = filterLive(Array.isArray(body.data?.rows) ? body.data.rows : [], cfg, audience, person).map((r) => ({
     ...r,
     name: r.name ?? names.get(r.user.toLowerCase()) ?? null
   }));
@@ -1585,7 +1587,8 @@ async function handle(request) {
     if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
     const audience = pick(url.searchParams.get("audience"), ["external", "internal"], "external");
     try {
-      return json(await getLive(config(), url.searchParams.get("since"), audience, knownNames()));
+      const person = url.searchParams.get("user");
+      return json(await getLive(config(), url.searchParams.get("since"), audience, knownNames(), isUserId(person) ? person.toLowerCase() : null));
     } catch (error) {
       console.error("live failed", error);
       return json({ error: "Live feed unavailable" }, 503);
