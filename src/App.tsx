@@ -1,4 +1,4 @@
-import { ChevronDown, Download, Layers, LayoutGrid, Search, TrendingUp } from 'lucide-react';
+import { ChevronDown, Download, Layers, LayoutGrid, Search, TrendingUp, Users } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Audience, Filters, Range, Snapshot, Surface } from '../server/types';
 import { ago, downloadCsv } from './format';
@@ -6,11 +6,14 @@ import { Login } from './pages/Login';
 import { OverlayPage } from './pages/Overlay';
 import { OverviewPage } from './pages/Overview';
 import { ProductPage } from './pages/Product';
+import { UsersPage } from './pages/Users';
 
-type Route = 'overview' | 'overlay' | 'onboarding';
-const PATHS: Record<Route, string> = { overview: '/', overlay: '/overlay', onboarding: '/onboarding' };
-const routeOf = (path: string): Route => (path.startsWith('/overlay') ? 'overlay' : path.startsWith('/onboarding') ? 'onboarding' : 'overview');
-const REFRESH_MS = 60_000;
+type Route = 'overview' | 'overlay' | 'onboarding' | 'users';
+const PATHS: Record<Route, string> = { overview: '/', overlay: '/overlay', onboarding: '/onboarding', users: '/users' };
+const routeOf = (path: string): Route =>
+  path.startsWith('/overlay') ? 'overlay' : path.startsWith('/onboarding') ? 'onboarding' : path.startsWith('/users') ? 'users' : 'overview';
+/** Live: the page re-reads every 20 s while visible (backend rows are at most 20 s old, PostHog rows 60 s). */
+const REFRESH_MS = 20_000;
 
 function readFilters(): Filters {
   const q = new URLSearchParams(location.search);
@@ -23,8 +26,9 @@ function readFilters(): Filters {
   };
 }
 
-function urlFor(route: Route, f: Filters) {
+function urlFor(route: Route, f: Filters, user?: string | null) {
   const q = new URLSearchParams();
+  if (route === 'users' && user) q.set('user', user);
   if (f.range !== '30d') q.set('range', f.range);
   if (f.surface !== 'combined') q.set('surface', f.surface);
   if (f.audience !== 'external') q.set('audience', f.audience);
@@ -67,6 +71,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   const [lastOk, setLastOk] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [cohortOpen, setCohortOpen] = useState(false);
+  const [user, setUser] = useState<string | null>(new URLSearchParams(location.search).get('user'));
   const [, tick] = useState(0);
   const req = useRef(0);
 
@@ -74,6 +79,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
     const onPop = () => {
       setRoute(routeOf(location.pathname));
       setFilters(readFilters());
+      setUser(new URLSearchParams(location.search).get('user'));
     };
     addEventListener('popstate', onPop);
     return () => removeEventListener('popstate', onPop);
@@ -81,13 +87,14 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
 
   const go = useCallback((r: Route, f: Filters = filters) => {
     history.pushState(null, '', urlFor(r, f));
+    setUser(null);
     setRoute(r);
     setFilters(f);
     scrollTo({ top: 0 });
   }, [filters]);
   const setF = (patch: Partial<Filters>) => {
     const next = { ...filters, ...patch };
-    history.replaceState(null, '', urlFor(route, next));
+    history.replaceState(null, '', urlFor(route, next, user));
     setFilters(next);
   };
 
@@ -125,6 +132,11 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [load]);
+
+  const selectUser = useCallback((id: string | null) => {
+    history.replaceState(null, '', urlFor('users', filters, id));
+    setUser(id);
+  }, [filters]);
 
   const syncState = error ? (data ? 'stale' : 'down') : data && data.sources.posthog !== 'live' ? 'stale' : 'ok';
   const versionLabel = filters.version === 'all' ? 'All builds' : `v${filters.version}`;
@@ -177,8 +189,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
     if (e.key !== 'Enter') return;
     const v = search.trim().toLowerCase();
     if (['overview', 'home'].includes(v)) return go('overview');
-    if (['onboarding', 'product', 'retention'].includes(v)) return go('onboarding');
-    if (v === 'overlay' || route !== 'overlay') go('overlay');
+    if (['onboarding', 'product', 'retention', 'funnel'].includes(v)) return go('onboarding');
+    if (v === 'overlay') return go('overlay');
+    if (route !== 'overlay' && route !== 'users') go('users');
   };
 
   const nav = useMemo(
@@ -186,6 +199,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       ['overview', 'Overview', LayoutGrid],
       ['overlay', 'Overlay', Layers],
       ['onboarding', 'Onboarding', TrendingUp],
+      ['users', 'Users', Users],
     ] as const,
     [],
   );
@@ -292,6 +306,15 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
           {route === 'overview' && <OverviewPage data={data} loading={loading} filters={filters} />}
           {route === 'onboarding' && <ProductPage data={data} loading={loading} filters={filters} />}
           {route === 'overlay' && <OverlayPage data={data} loading={loading} filters={filters} search={search} />}
+          {route === 'users' && (
+            <UsersPage
+              data={data}
+              filters={filters}
+              search={search}
+              selected={user}
+              onSelect={selectUser}
+            />
+          )}
         </main>
       </div>
     </div>

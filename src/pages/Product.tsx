@@ -1,4 +1,5 @@
 import type { Filters, Snapshot } from '../../server/types';
+import { Funnel } from '../components/insights';
 import { Delta, RetentionTable, Skel } from '../components/parts';
 import { dec, humanStep, int, pct, usd } from '../format';
 import { acceptance, acceptanceColor } from './Overview';
@@ -83,6 +84,10 @@ export function ProductPage({ data }: Props) {
             </div>
           </div>
         </div>
+      </section>
+
+      <section className="section">
+        <Funnel data={data} />
       </section>
 
       <section className="section">

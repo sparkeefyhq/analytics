@@ -22,7 +22,17 @@ export interface Dataset {
     /** null on drafts sent before cost tracking started (1 Nov 2026). */
     cost: number | null;
     panel: string;
+    /** sent only: as_is | edited | own (what the user actually sent after a suggestion). */
+    sentOutcome?: string;
+    /** drafts: the mood that shaped the reply, and who the chat is with (romantic / friend / family / work / unknown). */
+    mood?: string;
+    relationship?: string;
   }[];
+  /**
+   * Onboarding screens reached, one row per person and screen (earliest time). `perm:<name>` rows are
+   * permissions turned on. id = account uuid, or `anon:<posthog person>` for installs that never signed in.
+   */
+  steps?: { id: string; screen: string; ts: string; account: boolean }[];
   /** overlay_session summaries (new app builds only). */
   sessions: {
     id: string;
@@ -160,4 +170,100 @@ export interface Snapshot {
     taps: { perSession: number | null; firstUsed: number; other: number; total: number };
     users: OverlayUserRow[];
   };
+  /** Onboarding funnel: how many people reached each screen, in app order. */
+  funnel: FunnelStep[];
+  /** Phase 1 benchmark (BENCHMARK - Phase 1, 20 users): the four gates to expand 20 -> 50. */
+  scorecard: Scorecard;
+  /** Users tab: one row per account in this audience, with everything the detail panel shows. */
+  roster: RosterUser[];
+}
+
+export interface FunnelStep {
+  screen: string;
+  label: string;
+  /** People who reached this screen (accounts + installs that never signed in). */
+  reached: number;
+  /** Share of everyone who started onboarding. */
+  pctOfStart: number | null;
+  /** Share of the previous step. */
+  pctOfPrev: number | null;
+  /** Last screen for people who stopped here (did not reach Home). */
+  stoppedHere: number;
+  permission: boolean;
+}
+
+export interface Gate {
+  key: 'setup' | 'useful' | 'acted' | 'repeat';
+  label: string;
+  help: string;
+  n: number;
+  d: number;
+  pct: number | null;
+  /** Minimum and stretch, as shares of the cohort (16/20 = 80%). */
+  targetPct: number;
+  stretchPct: number;
+  pass: boolean | null;
+  pending?: number;
+}
+
+export interface Scorecard {
+  cohort: number;
+  gates: Gate[];
+  diagnostics: { key: string; label: string; value: string; target: string; ok: boolean | null; help: string }[];
+  /** Users at or above 80% of a free pilot monthly allowance. */
+  nearCap: number;
+}
+
+export interface RosterUser {
+  id: string;
+  name: string | null;
+  team: boolean;
+  returning: boolean;
+  signupAt: string;
+  version: string | null;
+  lastActive: string | null;
+  activeDays: number;
+  /** Last 14 IST days, oldest first: 0 none, 1 in-app only, 2 overlay. */
+  days: number[];
+  journey: {
+    firstOpen: string;
+    setupAt: string | null;
+    firstDraftAt: string | null;
+    firstActAt: string | null;
+    repeatAt: string | null;
+    /** yes | no | pending (7-day window still open) | na (never acted). */
+    repeat: 'yes' | 'no' | 'pending' | 'na';
+    lastScreen: string | null;
+    screens: number;
+    permissions: string[];
+  };
+  overlay: {
+    sessions: number;
+    drafts: number;
+    delivered: number;
+    failed: number;
+    copied: number;
+    inserted: number;
+    sent: { asIs: number; edited: number; own: number };
+    firstTryPct: number | null;
+    usedPct: number | null;
+    medianLatency: number | null;
+    cost: number;
+    apps: { label: string; n: number }[];
+    moods: { label: string; n: number }[];
+    relationships: { label: string; n: number }[];
+  };
+  app: { replies: number; cost: number };
+  /** This IST calendar month vs the free pilot allowance (monetization doc: 100 drafts / 40 answers). */
+  quota: { month: string; drafts: number; draftCap: number; answers: number; answerCap: number };
+  flags: { key: string; label: string; tone: 'purple' | 'green' | 'red' | 'tan' }[];
+}
+
+/** /api/user: details read on demand for one person. */
+export interface UserDetail {
+  id: string;
+  person: { city: string | null; region: string | null; country: string | null; email: string | null } | null;
+  conversations: { sessionId: string; startedAt: string; personName: string | null; messages: { role: string; content: string; at: string }[] }[];
+  truncated: boolean;
+  errors: string[];
 }

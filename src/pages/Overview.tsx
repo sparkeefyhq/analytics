@@ -1,5 +1,6 @@
 import { CircleArrowRight, CreditCard, Zap } from 'lucide-react';
 import type { Filters, Snapshot } from '../../server/types';
+import { Scorecard } from '../components/insights';
 import { Delta, Donut, RetentionTable, Skel, Sparkline } from '../components/parts';
 import { dec, humanStep, int, pct, usd } from '../format';
 
@@ -72,6 +73,8 @@ export function OverviewPage({ data }: Props) {
           </div>
         </div>
       </div>
+
+      <Scorecard data={data} />
 
       <div className="grid g3" style={{ marginTop: 32 }}>
         <div className="card rich">

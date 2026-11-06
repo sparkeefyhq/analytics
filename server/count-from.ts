@@ -68,6 +68,8 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
     overlayCalls,
     // Onboarding screens have no time: only accounts created after the cutoff.
     onboarding: data.onboarding.filter((r) => newSince.has(r.id)),
+    // Funnel: people whose first onboarding screen came after the cutoff; accounts must also be new.
+    steps: data.steps && funnelAfter(data.steps, cut, newSince),
     versions: data.versions.filter((v) => newSince.has(v.id) || activeSince.has(v.id)),
     sources: {
       ...data.sources,
@@ -75,4 +77,10 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
         data.sources.overlayCallsFrom === null ? null : after(data.sources.overlayCallsFrom) ? data.sources.overlayCallsFrom : overlayCalls.length ? new Date(cut).toISOString() : null,
     },
   };
+}
+
+function funnelAfter(steps: NonNullable<Dataset['steps']>, cut: number, newSince: Set<string>): NonNullable<Dataset['steps']> {
+  const first = new Map<string, number>();
+  for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, Date.parse(s.ts)));
+  return steps.filter((s) => (first.get(s.id) ?? 0) >= cut && (!s.account || newSince.has(s.id)));
 }
