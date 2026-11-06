@@ -57,27 +57,52 @@ export interface LiveFeed {
 /** Overlap so a row committed a moment late is not missed; the page drops ids it already has. */
 export const LIVE_OVERLAP_MS = 15_000;
 
-export function filterLive(rows: LiveRow[], cfg: Pick<Config, 'teamIds' | 'excludedIds' | 'countFrom'>, audience: Audience): LiveRow[] {
+/** `person` (6 Nov): one account only, whichever audience it is in (team or not). */
+export function filterLive(rows: LiveRow[], cfg: Pick<Config, 'teamIds' | 'excludedIds' | 'countFrom'>, audience: Audience, person: string | null = null): LiveRow[] {
   const cut = cfg.countFrom ? Date.parse(cfg.countFrom) : Number.NEGATIVE_INFINITY;
   return rows.filter((r) => {
     const id = r.user.toLowerCase();
     if (cfg.excludedIds.has(id)) return false;
     if (Number.isFinite(cut) && Date.parse(r.at) < cut) return false;
+    if (person !== null) return id === person;
     return audience === 'internal' ? cfg.teamIds.has(id) : !cfg.teamIds.has(id);
   });
 }
 
-export async function getLive(cfg: Config, since: string | null, audience: Audience, names: Map<string, string | null>): Promise<LiveFeed> {
+/** What one person did in the feed window, for the strip's summary line. */
+export function summarizeLive(rows: LiveRow[]) {
+  const n = (k: LiveKind, f: (r: LiveRow) => boolean = () => true) => rows.filter((r) => r.kind === k && f(r)).length;
+  const moods = new Map<string, number>();
+  for (const r of rows) if ((r.kind === 'overlay_draft' || r.kind === 'overlay_refine') && r.mood) moods.set(r.mood, (moods.get(r.mood) ?? 0) + 1);
+  return {
+    drafts: n('overlay_draft', (r) => !r.status || r.status === 'ok'),
+    noReply: n('overlay_draft', (r) => Boolean(r.status) && r.status !== 'ok'),
+    changes: n('overlay_refine'),
+    used: n('overlay_copied') + n('overlay_inserted'),
+    sentAsIs: n('overlay_sent', (r) => r.outcome === 'as_is'),
+    sessions: n('overlay_session'),
+    firstTry: n('overlay_session', (r) => r.firstTry === true),
+    messages: rows.some((r) => r.kind === 'app_event' && r.event === 'chat_turn')
+      ? n('app_event', (r) => r.event === 'chat_turn')
+      : n('chat_message'),
+    safety: n('app_event', (r) => r.event === 'chat_turn' && r.outcome === 'safety'),
+    topMood: [...moods.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
+  };
+}
+
+export async function getLive(cfg: Config, since: string | null, audience: Audience, names: Map<string, string | null>, person: string | null = null): Promise<LiveFeed> {
   if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error('backend not configured');
   const parsed = since ? Date.parse(since) : Number.NaN;
-  const from = new Date((Number.isFinite(parsed) ? parsed : Date.now() - 10 * 60_000) - LIVE_OVERLAP_MS).toISOString();
+  // One person: their whole last hour on first open; everyone: the last 10 minutes.
+  const first = person ? 60 * 60_000 : 10 * 60_000;
+  const from = new Date((Number.isFinite(parsed) ? parsed : Date.now() - first) - LIVE_OVERLAP_MS).toISOString();
   const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/live?since=${encodeURIComponent(from)}`, {
     headers: { 'x-admin-api-key': cfg.backendAdminKey },
     signal: AbortSignal.timeout(8_000),
   });
   if (!response.ok) throw new Error(`live ${response.status}`);
   const body = (await response.json()) as { data?: { now?: string; rows?: LiveRow[]; truncated?: boolean } };
-  const rows = filterLive(Array.isArray(body.data?.rows) ? body.data.rows : [], cfg, audience).map((r) => ({
+  const rows = filterLive(Array.isArray(body.data?.rows) ? body.data.rows : [], cfg, audience, person).map((r) => ({
     ...r,
     name: r.name ?? names.get(r.user.toLowerCase()) ?? null,
   }));

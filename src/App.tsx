@@ -2,7 +2,7 @@ import { ChevronDown, Download, Layers, LayoutGrid, Search, TrendingUp, Users } 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Audience, Filters, Range, Snapshot, Surface } from '../server/types';
 import { ago, downloadCsv } from './format';
-import { LiveStrip } from './components/live';
+import { LiveStrip, type LivePerson } from './components/live';
 import { Login } from './pages/Login';
 import { OverlayPage } from './pages/Overlay';
 import { OverviewPage } from './pages/Overview';
@@ -73,6 +73,25 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   const [search, setSearch] = useState('');
   const [cohortOpen, setCohortOpen] = useState(false);
   const [user, setUser] = useState<string | null>(new URLSearchParams(location.search).get('user'));
+  // 6 Nov: the Live button on a Users row points the Live strip at that one person (kept per browser).
+  const [livePerson, setLivePerson] = useState<LivePerson | null>(() => {
+    try {
+      const saved = localStorage.getItem('kcp:livePerson');
+      return saved ? (JSON.parse(saved) as LivePerson) : null;
+    } catch {
+      return null;
+    }
+  });
+  const watch = useCallback((p: LivePerson | null) => {
+    setLivePerson(p);
+    try {
+      if (p) localStorage.setItem('kcp:livePerson', JSON.stringify(p));
+      else localStorage.removeItem('kcp:livePerson');
+    } catch {
+      /* no storage: fine */
+    }
+    if (p) scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
   const [, tick] = useState(0);
   const req = useRef(0);
 
@@ -330,7 +349,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
               PostHog refresh is paused for a few minutes (rate limit). Event numbers are from {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'earlier'}; backend numbers are live.
             </div>
           )}
-          <LiveStrip audience={filters.audience} onActivity={onLiveActivity} />
+          <LiveStrip audience={filters.audience} onActivity={onLiveActivity} person={livePerson} onClear={() => watch(null)} />
           {route === 'overview' && <OverviewPage data={data} loading={loading} filters={filters} />}
           {route === 'onboarding' && <ProductPage data={data} loading={loading} filters={filters} />}
           {route === 'overlay' && <OverlayPage data={data} loading={loading} filters={filters} search={search} />}
@@ -341,6 +360,8 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
               search={search}
               selected={user}
               onSelect={selectUser}
+              watching={livePerson?.id ?? null}
+              onWatch={watch}
             />
           )}
         </main>

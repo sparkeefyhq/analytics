@@ -70,7 +70,8 @@ export async function handle(request: Request): Promise<Response> {
     if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
     const audience = pick<Audience>(url.searchParams.get('audience'), ['external', 'internal'], 'external');
     try {
-      return json(await getLive(config(), url.searchParams.get('since'), audience, knownNames()));
+      const person = url.searchParams.get('user');
+      return json(await getLive(config(), url.searchParams.get('since'), audience, knownNames(), isUserId(person) ? person.toLowerCase() : null));
     } catch (error) {
       console.error('live failed', error);
       return json({ error: 'Live feed unavailable' }, 503);
