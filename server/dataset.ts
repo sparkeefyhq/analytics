@@ -110,7 +110,7 @@ interface Raw {
 const HISTORY_MS = 15 * 60_000;
 const RECENT_MS = 60_000;
 /** Backend reads are cheap (one admin query), so they refresh faster than PostHog. */
-const BACKEND_MS = 20_000;
+const BACKEND_MS = 15_000;
 const BACKOFF_MS = 5 * 60_000;
 const OVERLAP_MS = 2 * 60_000;
 
