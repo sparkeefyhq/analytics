@@ -441,6 +441,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
       posthogAt: data.sources.posthogAt,
       backendAt: data.sources.backendAt,
       overlayCalls: data.sources.overlayCallsFrom ? 'backend' : 'posthog',
+      ledgerFrom: data.sources.ledgerFrom ?? null,
     },
     filters,
     rangeLabel: label,

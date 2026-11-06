@@ -81,7 +81,7 @@ export function LiveStrip({ audience, onActivity }: { audience: Audience; onActi
             if (!d) return null;
             return (
               <li key={row.id} className={`${fresh.has(row.id) ? 'new ' : ''}${d.tone}`}>
-                <span className="who">{row.name || `${row.user.slice(0, 8)}…`}</span>
+                <span className="who">{row.name || (row.user.startsWith('anon_') ? 'New install' : `${row.user.slice(0, 8)}…`)}</span>
                 <span className="what">{d.text}</span>
                 <span className="when">{ago(row.at)}</span>
               </li>

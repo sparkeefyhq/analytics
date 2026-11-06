@@ -320,7 +320,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
           {error && <div className="banner">{data ? `Showing the last good numbers. ${error}` : error}</div>}
           {!error && data?.sources.posthog === 'down' && (
             <div className="banner">
-              PostHog is not reachable. Accounts, onboarding, activity, cost, latency and failures are live from the backend; reply use, apps and taps are paused until PostHog is back.
+              {data.sources.ledgerFrom
+                ? 'PostHog is not reachable. Everything since our own ledger started is live from the backend; only older history waits for PostHog.'
+                : 'PostHog is not reachable. Accounts, onboarding, activity, cost, latency and failures are live from the backend; reply use, apps and taps are paused until PostHog is back.'}
             </div>
           )}
           {!error && data?.sources.posthog === 'stale' && (

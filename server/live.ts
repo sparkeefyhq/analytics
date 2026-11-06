@@ -22,7 +22,9 @@ export type LiveKind =
   | 'overlay_copied'
   | 'overlay_inserted'
   | 'overlay_closed'
-  | 'overlay_sent';
+  | 'overlay_sent'
+  | 'overlay_session'
+  | 'app_event';
 
 export interface LiveRow {
   id: string;
@@ -35,6 +37,15 @@ export interface LiveRow {
   status?: string | null;
   outcome?: string | null;
   option?: number | null;
+  mood?: string | null;
+  refinement?: string | null;
+  drafts?: number | null;
+  firstTry?: boolean | null;
+  used?: boolean | null;
+  durationMs?: number | null;
+  event?: string | null;
+  screen?: string | null;
+  granted?: boolean | null;
 }
 
 export interface LiveFeed {
@@ -81,6 +92,24 @@ const APP_NAMES: Record<string, string> = {
   'com.snapchat.android': 'Snapchat',
 };
 const inApp = (app: string | null | undefined) => (app ? ` in ${APP_NAMES[app] ?? app}` : '');
+const inMood = (r: LiveRow) => (r.refinement ? ` (${r.refinement.replace(/_/g, ' ')})` : r.mood ? ` (${r.mood})` : '');
+const words = (s: string) => s.replace(/_/g, ' ');
+const secsLong = (ms: number | null | undefined) => (typeof ms === 'number' && ms > 0 ? ` in ${Math.round(ms / 1000)} s` : '');
+
+const APP_EVENT_TEXT: Record<string, string> = {
+  onboarding_started: 'started onboarding',
+  onboarding_completed: 'finished onboarding',
+  signup_completed: 'created an account',
+  login_completed: 'signed in',
+  auth_failed: 'sign-in failed',
+  accessibility_permission_granted: 'turned on Accessibility',
+  accessibility_permission_not_granted: 'did not turn on Accessibility',
+  overlay_permission_granted: 'allowed display over apps',
+  overlay_permission_not_granted: 'did not allow display over apps',
+  notification_permission_granted: 'allowed notifications',
+  home_first_viewed: 'reached Home for the first time',
+  person_profile_created: 'added their first person',
+};
 
 /**
  * One line per row for the feed. `null` = not shown on its own (still refreshes the numbers):
@@ -102,14 +131,28 @@ export function describeLive(r: LiveRow): { text: string; tone: 'good' | 'bad' |
       return { text: 'overlay reply failed', tone: 'bad' };
     case 'overlay_draft':
       return r.status && r.status !== 'ok'
-        ? { text: `tapped the bubble${inApp(r.app)}: no reply (${r.status.replace(/_/g, ' ')})`, tone: 'bad' }
-        : { text: `got an overlay draft${inApp(r.app)}${sec(r.latency)}`, tone: 'plain' };
+        ? { text: `tapped the bubble${inApp(r.app)}: no reply (${words(r.status)})`, tone: 'bad' }
+        : { text: `got an overlay draft${inMood(r)}${inApp(r.app)}${sec(r.latency)}`, tone: 'plain' };
     case 'overlay_refine':
-      return { text: `changed the mood or tab${inApp(r.app)}${sec(r.latency)}`, tone: 'plain' };
+      return r.refinement
+        ? { text: `switched to the ${words(r.refinement)} tab${inApp(r.app)}${sec(r.latency)}`, tone: 'plain' }
+        : { text: `switched mood to ${r.mood ?? 'another mood'}${inApp(r.app)}${sec(r.latency)}`, tone: 'plain' };
     case 'overlay_copied':
-      return { text: `copied ${r.option && r.option > 1 ? `option ${r.option}` : 'the first draft'}${inApp(r.app)}`, tone: 'good' };
+      return { text: `copied ${r.option && r.option > 1 ? `option ${r.option}` : 'the first draft'}${inMood(r)}${inApp(r.app)}`, tone: 'good' };
     case 'overlay_inserted':
-      return { text: `inserted ${r.option && r.option > 1 ? `option ${r.option}` : 'the first draft'}${inApp(r.app)}`, tone: 'good' };
+      return { text: `inserted ${r.option && r.option > 1 ? `option ${r.option}` : 'the first draft'}${inMood(r)}${inApp(r.app)}`, tone: 'good' };
+    case 'overlay_session': {
+      const n = r.drafts ?? 0;
+      const how = r.used ? (r.firstTry ? 'used the first draft' : 'used a reply after changing it') : 'left without using a reply';
+      return { text: `ended an overlay session${inApp(r.app)}: ${n} draft${n === 1 ? '' : 's'}, ${how}${secsLong(r.durationMs)}`, tone: r.used ? 'good' : 'plain' };
+    }
+    case 'app_event': {
+      if (r.event === 'onboarding_step') return r.screen ? { text: `onboarding: ${words(r.screen)}`, tone: 'plain' } : null;
+      if (r.event === 'onboarding_permission') return r.screen ? { text: `${r.granted ? 'granted' : 'declined'} ${words(r.screen)} permission`, tone: r.granted ? 'good' : 'bad' } : null;
+      const text = r.event ? APP_EVENT_TEXT[r.event] : undefined;
+      if (!text) return null;
+      return { text, tone: /not_granted|failed/.test(r.event ?? '') ? 'bad' : r.event === 'onboarding_completed' || r.event?.endsWith('_granted') ? 'good' : 'plain' };
+    }
     case 'overlay_closed':
       return { text: `closed the bubble${inApp(r.app)}`, tone: 'plain' };
     case 'overlay_sent':

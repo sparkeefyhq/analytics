@@ -14,6 +14,7 @@
  */
 import { applyCountFrom } from './count-from';
 import type { Config } from './config';
+import { type LedgerView, ledgerView, refreshLedger } from './ledger';
 import { hogql } from './posthog';
 import { type AccountClass, syncAccountClasses } from './posthog-sync';
 import type { Dataset } from './types';
@@ -261,6 +262,47 @@ export function knownNames(): Map<string, string | null> {
   return new Map((state.backend?.data.members ?? []).map((m) => [m.id.toLowerCase(), m.name]));
 }
 
+const ms = (ts: string) => Date.parse(ts.includes('T') || ts.includes('Z') ? ts : `${ts.replace(' ', 'T')}Z`);
+
+/**
+ * 6 Nov: from the first ledger row on, overlay rows, sessions, onboarding steps and in-app activity
+ * come from our own Postgres ledger; PostHog only for the time before. Exported for tests.
+ */
+export function withLedger(raw: Raw, ledger: LedgerView): Raw {
+  const tc = (value: string) => (value === 'internal' ? 'internal' : '');
+  const overlayFrom = ledger.overlayFrom === null ? Infinity : Date.parse(ledger.overlayFrom);
+  const funnelFrom = ledger.funnelFrom === null ? Infinity : Date.parse(ledger.funnelFrom);
+  const userOf = (f: { user: string | null; distinct: string }) => f.user ?? ledger.links.get(f.distinct) ?? '';
+
+  const overlay: OverlayRow[] = [
+    ...raw.overlay.filter((r) => ms(r.ts) < overlayFrom),
+    ...ledger.overlay.filter((r) => r.action !== 'session').map((r) => ({
+      id: r.user, ts: r.at, tc: tc(r.tc), action: r.action, status: r.status ?? '', app: r.app,
+      latency: r.latency, cost: r.cost, panel: r.panel ?? '', outcome: r.outcome ?? '',
+      mood: r.moodApplied ?? r.mood ?? '', rel: r.relationship ?? '',
+    })),
+  ];
+  const sessions: SessionRow[] = [
+    ...raw.sessions.filter((r) => ms(r.ts) < overlayFrom),
+    ...ledger.overlay.filter((r) => r.action === 'session').map((r) => ({
+      id: r.user, ts: r.at, tc: tc(r.tc), panel: r.panel ?? '', taps: r.taps,
+      firstTry: r.firstTry === null ? null : r.firstTry ? 1 : 0, used: r.used === null ? null : r.used ? 1 : 0, app: r.app,
+    })),
+  ];
+  const steps: StepRow[] = [...raw.steps.filter((r) => ms(r.ts) < funnelFrom)];
+  const activity: ActivityRow[] = [...raw.activity];
+  for (const f of ledger.funnel) {
+    const uid = userOf(f);
+    if (f.event === 'onboarding_step' && f.screen) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
+    else if (f.event === 'onboarding_permission' && f.granted === true && f.permission) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
+    // In-app presence after the cutover (activity is presence per hour, so the seam hour is harmless).
+    if (uid && APP_EVENTS.includes(f.event) && Date.parse(f.at) >= funnelFrom) {
+      activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? '' });
+    }
+  }
+  return { overlay, sessions, steps, activity };
+}
+
 /** Returns the freshest dataset this instance can give without exceeding PostHog's budget. */
 export async function getDataset(cfg: Config): Promise<Dataset> {
   if (!inflight) inflight = refresh(cfg).finally(() => (inflight = null));
@@ -276,13 +318,17 @@ async function refresh(cfg: Config): Promise<Dataset> {
   let changed = false;
 
   if (!state.backend || now - state.backend.at >= BACKEND_MS) {
-    try {
-      state.backend = { at: now, data: await fetchBackend(cfg) };
+    // 6 Nov: the ledger (overlay, sessions, onboarding) refreshes with the backend, in parallel.
+    const [backendResult, ledgerResult] = await Promise.allSettled([fetchBackend(cfg), refreshLedger(cfg)]);
+    if (backendResult.status === 'fulfilled') {
+      state.backend = { at: now, data: backendResult.value };
       changed = true;
-    } catch (error) {
-      if (!state.backend) throw error;
-      console.error('backend refresh failed', error);
+    } else {
+      if (!state.backend) throw backendResult.reason;
+      console.error('backend refresh failed', backendResult.reason);
     }
+    if (ledgerResult.status === 'fulfilled' && ledgerResult.value.ok) changed = true;
+    else if (ledgerResult.status === 'fulfilled' && ledgerResult.value.error !== 'ledger not deployed') console.error('ledger refresh failed', ledgerResult.value.error);
   }
 
   if (posthogAllowed) {
@@ -308,24 +354,28 @@ async function refresh(cfg: Config): Promise<Dataset> {
   if (!changed && lastBuilt) return lastBuilt.data;
 
   const empty: Raw = { overlay: [], activity: [], sessions: [], steps: [] };
-  const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
+  const raw = withLedger(state.history ? merge(state.history, state.recent?.raw ?? null) : empty, ledgerView());
   const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
   const built = assemble(cfg, start, state.backend.data, raw, {
     posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
     backendAt: new Date(state.backend.at).toISOString(),
     error: state.lastError,
+    ledgerFrom: (() => {
+      const v = ledgerView();
+      return [v.overlayFrom, v.funnelFrom].filter((x): x is string => x !== null).sort()[0] ?? null;
+    })(),
   });
   const data = applyCountFrom(built, cfg.countFrom);
   lastBuilt = { at: now, data };
   return data;
 }
 
-function assemble(
+export function assemble(
   cfg: Config,
   start: string,
   backend: Awaited<ReturnType<typeof fetchBackend>>,
   raw: Raw,
-  fresh: { posthogAt: string | null; backendAt: string; error: string | null },
+  fresh: { posthogAt: string | null; backendAt: string; error: string | null; ledgerFrom: string | null },
 ): Dataset {
   const { overlay, activity, sessions } = raw;
   const steps = reduceSteps(raw.steps);
@@ -403,6 +453,7 @@ function assemble(
       overlayCallsFrom: backend.overlay?.length
         ? backend.overlay.reduce((min, c) => (c.at < min ? c.at : min), backend.overlay[0].at)
         : null,
+      ledgerFrom: fresh.ledgerFrom,
     },
   };
 }
