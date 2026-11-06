@@ -30,7 +30,7 @@ export function OverviewPage({ data }: Props) {
         <span className="badge-purple">Founder Telemetry</span>
         <span className="muted-cap">{audienceNote}</span>
       </div>
-      <h1>Overview</h1>
+      <h1>Investor</h1>
       <p className="sub">Founder &amp; Investor Summary{surfaceNote}</p>
 
       <div className="grid g4" style={{ marginTop: 40 }}>
