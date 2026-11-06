@@ -284,7 +284,9 @@ var hourOf = (ts) => new Date(Math.floor(Date.parse(ts) / 36e5) * 36e5).toISOStr
 function baseFilter(cfg, start) {
   const excluded = [...cfg.excludedIds].filter((id) => UUID.test(id));
   return [
-    `timestamp >= toDateTime('${start}')`,
+    // Always UTC: PostHog reads a bare toDateTime() in the project's time zone (IST), which made the
+    // 1-minute "recent" query start 5.5 h early and count those hours twice (fixed 6 Nov).
+    `timestamp >= toDateTime('${start}', 'UTC')`,
     "length(distinct_id) = 36",
     `ifNull(toString(properties.traffic_class), '') != 'system'`,
     excluded.length ? `distinct_id NOT IN (${excluded.map((id) => `'${id}'`).join(",")})` : "true"
