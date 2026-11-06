@@ -109,8 +109,8 @@ interface Raw {
  */
 const HISTORY_MS = 15 * 60_000;
 const RECENT_MS = 60_000;
-/** Backend reads are cheap (one admin query), so they refresh faster than PostHog. */
-const BACKEND_MS = 15_000;
+/** Backend reads are cheap (one admin query, ~0.2 s), so they refresh faster than PostHog: within 5 s of a live event. */
+const BACKEND_MS = 5_000;
 const BACKOFF_MS = 5 * 60_000;
 const OVERLAP_MS = 2 * 60_000;
 
@@ -254,6 +254,11 @@ function merge(history: { since: number; raw: Raw }, recent: Raw | null): Raw {
     // Steps are reduced to the earliest row per person and screen in assemble(), so repeats are harmless.
     steps: [...history.raw.steps, ...recent.steps],
   };
+}
+
+/** Account names this instance already knows (for the live feed); empty before the first read. */
+export function knownNames(): Map<string, string | null> {
+  return new Map((state.backend?.data.members ?? []).map((m) => [m.id.toLowerCase(), m.name]));
 }
 
 /** Returns the freshest dataset this instance can give without exceeding PostHog's budget. */

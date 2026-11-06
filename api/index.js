@@ -275,7 +275,7 @@ async function pool(tasks, limit) {
 }
 var HISTORY_MS = 15 * 6e4;
 var RECENT_MS = 6e4;
-var BACKEND_MS = 15e3;
+var BACKEND_MS = 5e3;
 var BACKOFF_MS = 5 * 6e4;
 var OVERLAP_MS = 2 * 6e4;
 var state = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
@@ -395,6 +395,9 @@ function merge(history, recent) {
     // Steps are reduced to the earliest row per person and screen in assemble(), so repeats are harmless.
     steps: [...history.raw.steps, ...recent.steps]
   };
+}
+function knownNames() {
+  return new Map((state.backend?.data.members ?? []).map((m) => [m.id.toLowerCase(), m.name]));
 }
 async function getDataset(cfg) {
   if (!inflight) inflight = refresh(cfg).finally(() => inflight = null);
@@ -563,6 +566,34 @@ function lastScreens(steps) {
     if (!cur || s.ts > cur.ts) last.set(s.id, { screen: s.screen, ts: s.ts });
   }
   return [...last.entries()].map(([id, v]) => ({ id, screen: v.screen }));
+}
+
+// server/live.ts
+var LIVE_OVERLAP_MS = 15e3;
+function filterLive(rows, cfg, audience) {
+  const cut = cfg.countFrom ? Date.parse(cfg.countFrom) : Number.NEGATIVE_INFINITY;
+  return rows.filter((r) => {
+    const id = r.user.toLowerCase();
+    if (cfg.excludedIds.has(id)) return false;
+    if (Number.isFinite(cut) && Date.parse(r.at) < cut) return false;
+    return audience === "internal" ? cfg.teamIds.has(id) : !cfg.teamIds.has(id);
+  });
+}
+async function getLive(cfg, since, audience, names) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("backend not configured");
+  const parsed = since ? Date.parse(since) : Number.NaN;
+  const from = new Date((Number.isFinite(parsed) ? parsed : Date.now() - 10 * 6e4) - LIVE_OVERLAP_MS).toISOString();
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/live?since=${encodeURIComponent(from)}`, {
+    headers: { "x-admin-api-key": cfg.backendAdminKey },
+    signal: AbortSignal.timeout(8e3)
+  });
+  if (!response.ok) throw new Error(`live ${response.status}`);
+  const body = await response.json();
+  const rows = filterLive(Array.isArray(body.data?.rows) ? body.data.rows : [], cfg, audience).map((r) => ({
+    ...r,
+    name: r.name ?? names.get(r.user.toLowerCase()) ?? null
+  }));
+  return { now: body.data?.now ?? (/* @__PURE__ */ new Date()).toISOString(), rows, truncated: Boolean(body.data?.truncated) };
 }
 
 // server/users.ts
@@ -1308,15 +1339,17 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
 // server/user-detail.ts
 var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TTL_MS = 3 * 6e4;
-var cache = /* @__PURE__ */ new Map();
+var personCache = /* @__PURE__ */ new Map();
 var isUserId = (id) => Boolean(id && UUID2.test(id));
 async function getUserDetail(cfg, id) {
   const key = id.toLowerCase();
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.detail;
+  const hit = personCache.get(key);
   const errors = [];
   const [person, convo] = await Promise.all([
-    readPerson(cfg, key).catch((e) => {
+    hit && Date.now() - hit.at < TTL_MS ? Promise.resolve(hit.person) : readPerson(cfg, key).then((p) => {
+      personCache.set(key, { at: Date.now(), person: p });
+      return p;
+    }).catch((e) => {
       errors.push(`PostHog: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }),
@@ -1325,9 +1358,7 @@ async function getUserDetail(cfg, id) {
       return { sessions: [], truncated: false };
     })
   ]);
-  const detail = { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
-  if (!errors.length) cache.set(key, { at: Date.now(), detail });
-  return detail;
+  return { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
 }
 async function readPerson(cfg, id) {
   const rows = await hogql(
@@ -1399,6 +1430,16 @@ async function handle(request) {
     } catch (error) {
       console.error("dashboard failed", error);
       return json({ error: "Analytics sources are unavailable right now. Retrying shortly." }, 503);
+    }
+  }
+  if (path === "/api/live" && method === "GET") {
+    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    const audience = pick(url.searchParams.get("audience"), ["external", "internal"], "external");
+    try {
+      return json(await getLive(config(), url.searchParams.get("since"), audience, knownNames()));
+    } catch (error) {
+      console.error("live failed", error);
+      return json({ error: "Live feed unavailable" }, 503);
     }
   }
   if (path === "/api/user" && method === "GET") {
