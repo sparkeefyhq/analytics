@@ -115,6 +115,8 @@ export function buildRoster({ data, people, versionOf, from, now }: Ctx): Roster
   const sessionsBy = group(buildSessions(data.overlay.filter((e) => ids.has(e.id)), data.sessions.filter((s) => ids.has(s.id))));
   const stepsBy = group((data.steps ?? []).filter((s) => s.account));
   const repliesBy = group(data.chatReplies);
+  const turnsBy = group(data.chatTurns ?? []);
+  const hasTurns = (data.chatTurns ?? []).length > 0;
   const costBy = group(data.aiCost);
   const activityBy = group(data.activity);
   const callsBy = group(data.overlayCalls);
@@ -208,7 +210,19 @@ export function buildRoster({ data, people, versionOf, from, now }: Ctx): Roster
         moods: tally(rDrafts.map((e) => e.mood ?? '')),
         relationships: tally(rDrafts.map((e) => e.relationship ?? '')),
       },
-      app: { replies: replies.length, cost: (costBy.get(p.id) ?? []).filter((c) => inRange(c.at)).reduce((a, c) => a + c.cost, 0) },
+      app: (() => {
+        const turns = (turnsBy.get(p.id) ?? []).filter((x) => inRange(x.at));
+        const count = (o: string) => (hasTurns ? turns.filter((x) => x.outcome === o).length : null);
+        return {
+          replies: replies.length,
+          cost: (costBy.get(p.id) ?? []).filter((c) => inRange(c.at)).reduce((a, c) => a + c.cost, 0),
+          // 6 Nov: every message they sent, including ones Safety answered (those save no chat row).
+          messages: hasTurns ? turns.length : null,
+          answered: count('answered'),
+          safety: count('safety'),
+          failed: count('failed'),
+        };
+      })(),
       quota: {
         month: monthKey,
         drafts: drafts.filter((e) => e.status === 'ok' && inMonth(e.ts)).length,

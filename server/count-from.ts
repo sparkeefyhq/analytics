@@ -25,6 +25,7 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
   const sessions = data.sessions.filter((r) => after(r.ts));
   const aiCost = data.aiCost.filter((r) => after(r.at));
   const chatReplies = data.chatReplies.filter((r) => after(r.at));
+  const chatTurns = (data.chatTurns ?? []).filter((r) => after(r.at));
   const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
   // Activity comes in one-hour buckets [hour, hour + 1h). Sources align them differently (PostHog
   // on UTC hours, backend rows on IST hours, i.e. :30 UTC), so judge each bucket by its own span:
@@ -33,7 +34,7 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
   // alone never makes someone active.
   const HOUR = 3_600_000;
   const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) >= cut).map((r) => r.id));
-  const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...overlayCalls].map((r) => r.id));
+  const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...chatTurns, ...overlayCalls].map((r) => r.id));
   const activity = data.activity.filter((r) => {
     const h = Date.parse(r.hour);
     if (h >= cut) return true;
@@ -47,6 +48,7 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
     ...overlay.map((r) => r.id),
     ...sessions.map((r) => r.id),
     ...chatReplies.map((r) => r.id),
+    ...chatTurns.map((r) => r.id),
     ...overlayCalls.map((r) => r.id),
   ]);
   const people = data.people
@@ -65,6 +67,7 @@ export function applyCountFrom(data: Dataset, countFrom: string | null): Dataset
     sessions,
     aiCost,
     chatReplies,
+    chatTurns,
     overlayCalls,
     // Onboarding screens have no time: only accounts created after the cutoff.
     onboarding: data.onboarding.filter((r) => newSince.has(r.id)),

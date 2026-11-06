@@ -121,10 +121,11 @@ function applyCountFrom(data, countFrom) {
   const sessions = data.sessions.filter((r) => after(r.ts));
   const aiCost = data.aiCost.filter((r) => after(r.at));
   const chatReplies = data.chatReplies.filter((r) => after(r.at));
+  const chatTurns = (data.chatTurns ?? []).filter((r) => after(r.at));
   const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
   const HOUR3 = 36e5;
   const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) >= cut).map((r) => r.id));
-  const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...overlayCalls].map((r) => r.id));
+  const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...chatTurns, ...overlayCalls].map((r) => r.id));
   const activity = data.activity.filter((r) => {
     const h = Date.parse(r.hour);
     if (h >= cut) return true;
@@ -137,6 +138,7 @@ function applyCountFrom(data, countFrom) {
     ...overlay.map((r) => r.id),
     ...sessions.map((r) => r.id),
     ...chatReplies.map((r) => r.id),
+    ...chatTurns.map((r) => r.id),
     ...overlayCalls.map((r) => r.id)
   ]);
   const people = data.people.filter((p) => newSince.has(p.id) || activeSince.has(p.id)).map((p) => newSince.has(p.id) ? p : { ...p, returning: true });
@@ -151,6 +153,7 @@ function applyCountFrom(data, countFrom) {
     sessions,
     aiCost,
     chatReplies,
+    chatTurns,
     overlayCalls,
     // Onboarding screens have no time: only accounts created after the cutoff.
     onboarding: data.onboarding.filter((r) => newSince.has(r.id)),
@@ -350,7 +353,9 @@ var hourOf = (ts) => new Date(Math.floor(Date.parse(ts) / 36e5) * 36e5).toISOStr
 function baseFilter(cfg, start) {
   const excluded = [...cfg.excludedIds].filter((id) => UUID.test(id));
   return [
-    `timestamp >= toDateTime('${start}')`,
+    // 6 Nov: always UTC. A bare toDateTime() is read in the project's timezone (IST), so the 1-minute
+    // "recent" read started 5.5 h early and every event of the last 5.5 h was counted twice.
+    `timestamp >= toDateTime('${start}', 'UTC')`,
     "length(distinct_id) = 36",
     `ifNull(toString(properties.traffic_class), '') != 'system'`,
     excluded.length ? `distinct_id NOT IN (${excluded.map((id) => `'${id}'`).join(",")})` : "true"
@@ -503,15 +508,21 @@ function withLedger(raw, ledger) {
   ];
   const steps = [...raw.steps.filter((r) => ms(r.ts) < funnelFrom)];
   const activity = [...raw.activity];
+  const chatTurns = [];
   for (const f of ledger.funnel) {
     const uid = userOf(f);
+    if (f.event === "chat_turn" && uid) {
+      chatTurns.push({ id: uid, at: f.at, outcome: f.outcome ?? "answered" });
+      activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? "" });
+      continue;
+    }
     if (f.event === "onboarding_step" && f.screen) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
     else if (f.event === "onboarding_permission" && f.granted === true && f.permission) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
     if (uid && APP_EVENTS.includes(f.event) && Date.parse(f.at) >= funnelFrom) {
       activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? "" });
     }
   }
-  return { overlay, sessions, steps, activity };
+  return { overlay, sessions, steps, activity, chatTurns };
 }
 async function getDataset(cfg) {
   if (!inflight) inflight = refresh(cfg).finally(() => inflight = null);
@@ -632,6 +643,7 @@ function assemble(cfg, start, backend, raw, fresh) {
     // Accounts in this dataset, plus installs that never signed in (top of the funnel only).
     steps: steps.filter((r) => r.account ? known.has(r.id) : true),
     chatReplies: keep(backend.facts.filter((f) => f.kind === "complete").map((f) => ({ id: f.user, at: f.at }))),
+    chatTurns: keep(raw.chatTurns ?? []),
     overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
     sources: {
       posthogAt: fresh.posthogAt,
@@ -843,6 +855,8 @@ function buildRoster({ data, people, versionOf, from, now }) {
   const sessionsBy = group(buildSessions(data.overlay.filter((e) => ids.has(e.id)), data.sessions.filter((s) => ids.has(s.id))));
   const stepsBy = group((data.steps ?? []).filter((s) => s.account));
   const repliesBy = group(data.chatReplies);
+  const turnsBy = group(data.chatTurns ?? []);
+  const hasTurns = (data.chatTurns ?? []).length > 0;
   const costBy = group(data.aiCost);
   const activityBy = group(data.activity);
   const callsBy = group(data.overlayCalls);
@@ -931,7 +945,19 @@ function buildRoster({ data, people, versionOf, from, now }) {
         moods: tally(rDrafts.map((e) => e.mood ?? "")),
         relationships: tally(rDrafts.map((e) => e.relationship ?? ""))
       },
-      app: { replies: replies.length, cost: (costBy.get(p.id) ?? []).filter((c) => inRange(c.at)).reduce((a, c) => a + c.cost, 0) },
+      app: (() => {
+        const turns = (turnsBy.get(p.id) ?? []).filter((x) => inRange(x.at));
+        const count = (o) => hasTurns ? turns.filter((x) => x.outcome === o).length : null;
+        return {
+          replies: replies.length,
+          cost: (costBy.get(p.id) ?? []).filter((c) => inRange(c.at)).reduce((a, c) => a + c.cost, 0),
+          // 6 Nov: every message they sent, including ones Safety answered (those save no chat row).
+          messages: hasTurns ? turns.length : null,
+          answered: count("answered"),
+          safety: count("safety"),
+          failed: count("failed")
+        };
+      })(),
       quota: {
         month: monthKey,
         drafts: drafts.filter((e) => e.status === "ok" && inMonth(e.ts)).length,

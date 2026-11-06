@@ -18,6 +18,8 @@ export interface LedgerOverlay {
 export interface LedgerFunnel {
   id: string; distinct: string; user: string | null; event: string; at: string; recorded: string; tc: string;
   screen: string | null; permission: string | null; granted: boolean | null; appVersion: string | null;
+  /** chat_turn: answered / safety / failed. Absent on older backends. */
+  outcome?: string | null;
 }
 
 /** Re-read this much before the newest row seen: a batch committed a moment late is not missed (ids de-duplicate). */

@@ -115,3 +115,38 @@ test('dashboard numbers from the ledger say exactly what happened', () => {
   assert.ok(data.steps?.some((s) => s.id === B && s.screen === 'perm:accessibility'));
   assert.equal(snap.sources.ledgerFrom, t(0));
 });
+
+test("6 Nov (john's case): every in-app message counts, including the ones Safety answered", () => {
+  resetLedger();
+  const cols = [...FCOLS, 'outcome'];
+  const turn = (min: number, outcome: string) => {
+    const row: Record<string, unknown> = { id: `c${++n}`, distinct: A, user: A, event: 'chat_turn', at: t(min), recorded: t(min), tc: 'external', outcome };
+    return cols.map((c) => row[c] ?? null);
+  };
+  applyPage({
+    until: t(60), more: false,
+    columns: { overlay: OCOLS, funnel: cols, links: [] },
+    overlay: [],
+    funnel: [turn(1, 'answered'), turn(2, 'answered'), ...[3, 4, 5, 6, 7, 8].map((m) => turn(m, 'safety'))],
+    links: [],
+  });
+  const v = ledgerView();
+  const raw = withLedger({ overlay: [], sessions: [], activity: [], steps: [] }, v);
+  const backend = { members: [{ id: A, firstOpen: t(-5), name: 'john' }], facts: [], overlay: [] };
+  const data = applyCountFrom(
+    assemble(cfgFull, '2026-09-11', backend, raw, { posthogAt: null, backendAt: new Date(NOW).toISOString(), error: null, ledgerFrom: v.funnelFrom }),
+    COUNT_FROM,
+  );
+  const snap = computeSnapshot(data, { range: '7d', surface: 'combined', audience: 'external', version: 'all' }, cfgFull, NOW);
+  const john = snap.roster.find((r) => r.id === A);
+  assert.deepEqual(
+    { messages: john?.app.messages, answered: john?.app.answered, safety: john?.app.safety, failed: john?.app.failed },
+    { messages: 8, answered: 2, safety: 6, failed: 0 },
+  );
+});
+
+test('6 Nov: every PostHog time filter says UTC (a bare toDateTime is read as IST and double counted 5.5 h)', async () => {
+  const { baseFilter } = await import('../server/dataset');
+  const f = baseFilter({ ...cfgFull, excludedIds: new Set() } as never, '2026-11-06 10:00:00');
+  assert.match(f, /toDateTime\('2026-11-06 10:00:00', 'UTC'\)/);
+});

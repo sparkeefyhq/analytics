@@ -99,6 +99,8 @@ interface Raw {
   activity: ActivityRow[];
   sessions: SessionRow[];
   steps: StepRow[];
+  /** 6 Nov: in-app messages from the ledger (none before it). */
+  chatTurns?: { id: string; at: string; outcome: string }[];
 }
 
 /**
@@ -126,11 +128,13 @@ let inflight: Promise<Dataset> | null = null;
 
 const hourOf = (ts: string) => new Date(Math.floor(Date.parse(ts) / 3_600_000) * 3_600_000).toISOString();
 
-function baseFilter(cfg: Config, start: string) {
+export function baseFilter(cfg: Config, start: string) {
   const excluded = [...cfg.excludedIds].filter((id) => UUID.test(id));
   // Test traffic is kept in the rows (tc column) so its ids can be dropped everywhere; system traffic is never read.
   return [
-    `timestamp >= toDateTime('${start}')`,
+    // 6 Nov: always UTC. A bare toDateTime() is read in the project's timezone (IST), so the 1-minute
+    // "recent" read started 5.5 h early and every event of the last 5.5 h was counted twice.
+    `timestamp >= toDateTime('${start}', 'UTC')`,
     'length(distinct_id) = 36',
     `ifNull(toString(properties.traffic_class), '') != 'system'`,
     excluded.length ? `distinct_id NOT IN (${excluded.map((id) => `'${id}'`).join(',')})` : 'true',
@@ -291,8 +295,14 @@ export function withLedger(raw: Raw, ledger: LedgerView): Raw {
   ];
   const steps: StepRow[] = [...raw.steps.filter((r) => ms(r.ts) < funnelFrom)];
   const activity: ActivityRow[] = [...raw.activity];
+  const chatTurns: { id: string; at: string; outcome: string }[] = [];
   for (const f of ledger.funnel) {
     const uid = userOf(f);
+    if (f.event === 'chat_turn' && uid) {
+      chatTurns.push({ id: uid, at: f.at, outcome: f.outcome ?? 'answered' });
+      activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? '' });
+      continue;
+    }
     if (f.event === 'onboarding_step' && f.screen) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
     else if (f.event === 'onboarding_permission' && f.granted === true && f.permission) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
     // In-app presence after the cutover (activity is presence per hour, so the seam hour is harmless).
@@ -300,7 +310,7 @@ export function withLedger(raw: Raw, ledger: LedgerView): Raw {
       activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? '' });
     }
   }
-  return { overlay, sessions, steps, activity };
+  return { overlay, sessions, steps, activity, chatTurns };
 }
 
 /** Returns the freshest dataset this instance can give without exceeding PostHog's budget. */
@@ -446,6 +456,7 @@ export function assemble(
     // Accounts in this dataset, plus installs that never signed in (top of the funnel only).
     steps: steps.filter((r) => (r.account ? known.has(r.id) : true)),
     chatReplies: keep(backend.facts.filter((f) => f.kind === 'complete').map((f) => ({ id: f.user, at: f.at }))),
+    chatTurns: keep(raw.chatTurns ?? []),
     overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
     sources: {
       posthogAt: fresh.posthogAt,

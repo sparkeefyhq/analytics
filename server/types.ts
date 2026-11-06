@@ -49,6 +49,8 @@ export interface Dataset {
   onboarding: { id: string; screen: string }[];
   /** Completed in-app chat replies, from the backend. */
   chatReplies: { id: string; at: string }[];
+  /** 6 Nov: every in-app message sent, with what happened (answered / safety / failed), from our ledger. */
+  chatTurns?: { id: string; at: string; outcome: string }[];
   /** Overlay reply model calls from the backend's ai_call_telemetry (empty until backend PR #357 is live). */
   overlayCalls: { id: string; at: string; request: string; ok: boolean; latency: number | null; cost: number | null }[];
   sources: {
@@ -255,7 +257,7 @@ export interface RosterUser {
     moods: { label: string; n: number }[];
     relationships: { label: string; n: number }[];
   };
-  app: { replies: number; cost: number };
+  app: { replies: number; cost: number; messages?: number | null; answered?: number | null; safety?: number | null; failed?: number | null };
   /** This IST calendar month vs the free pilot allowance (monetization doc: 100 drafts / 40 answers). */
   quota: { month: string; drafts: number; draftCap: number; answers: number; answerCap: number };
   flags: { key: string; label: string; tone: 'purple' | 'green' | 'red' | 'tan' }[];
