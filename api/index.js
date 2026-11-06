@@ -239,13 +239,24 @@ function ledgerView() {
 }
 
 // server/posthog.ts
+var isRateLimit = (error) => /PostHog 429|throttl|rate limit/i.test(error instanceof Error ? error.message : String(error));
 async function hogql(cfg, query) {
+  try {
+    return await hogqlOnce(cfg, query);
+  } catch (error) {
+    if (isRateLimit(error)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return hogqlOnce(cfg, query);
+  }
+}
+async function hogqlOnce(cfg, query) {
   if (!cfg.posthogApiKey) throw new Error("POSTHOG_PERSONAL_API_KEY is not set");
   const response = await fetch(`${cfg.posthogHost}/api/projects/${cfg.posthogProjectId}/query/`, {
     method: "POST",
     headers: { Authorization: `Bearer ${cfg.posthogApiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ query: { kind: "HogQLQuery", query }, refresh: "blocking" }),
-    signal: AbortSignal.timeout(45e3)
+    // Two tries must fit in the 60 s function limit.
+    signal: AbortSignal.timeout(25e3)
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -346,6 +357,7 @@ var HISTORY_MS = 15 * 6e4;
 var RECENT_MS = 6e4;
 var BACKEND_MS = 5e3;
 var BACKOFF_MS = 5 * 6e4;
+var RETRY_SOON_MS = 3e4;
 var OVERLAP_MS = 2 * 6e4;
 var state2 = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
 var inflight = null;
@@ -414,7 +426,9 @@ async function queryHistory(cfg, start) {
            GROUP BY pid, uid, screen LIMIT 200000`
       )
     ],
-    3
+    // 6 Nov: two at a time. PostHog queues concurrent queries per project; four at once from each
+    // new instance is what timed out.
+    2
   );
   return { overlay, activity, sessions, steps };
 }
@@ -560,7 +574,7 @@ async function refresh(cfg) {
       state2.lastError = null;
     } catch (error) {
       state2.lastError = error instanceof Error ? error.message : String(error);
-      state2.backoffUntil = now + BACKOFF_MS;
+      state2.backoffUntil = now + (isRateLimit(error) ? BACKOFF_MS : RETRY_SOON_MS);
       console.error("posthog refresh failed; backing off", error);
     }
   }

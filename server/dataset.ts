@@ -15,7 +15,7 @@
 import { applyCountFrom } from './count-from';
 import type { Config } from './config';
 import { type LedgerView, ledgerView, refreshLedger } from './ledger';
-import { hogql } from './posthog';
+import { hogql, isRateLimit } from './posthog';
 import { type AccountClass, syncAccountClasses } from './posthog-sync';
 import type { Dataset } from './types';
 
@@ -115,6 +115,8 @@ const RECENT_MS = 60_000;
 /** Backend reads are cheap (one admin query, ~0.2 s), so they refresh faster than PostHog: within 5 s of a live event. */
 const BACKEND_MS = 5_000;
 const BACKOFF_MS = 5 * 60_000;
+/** 6 Nov: a slow PostHog (timeouts) is retried soon; only a real rate limit waits BACKOFF_MS. */
+const RETRY_SOON_MS = 30_000;
 const OVERLAP_MS = 2 * 60_000;
 
 const state: {
@@ -199,7 +201,9 @@ async function queryHistory(cfg: Config, start: string): Promise<Raw> {
            GROUP BY pid, uid, screen LIMIT 200000`,
         ),
     ],
-    3,
+    // 6 Nov: two at a time. PostHog queues concurrent queries per project; four at once from each
+    // new instance is what timed out.
+    2,
   )) as [OverlayRow[], ActivityRow[], SessionRow[], StepRow[]];
   return { overlay, activity, sessions, steps };
 }
@@ -355,7 +359,7 @@ async function refresh(cfg: Config): Promise<Dataset> {
       state.lastError = null;
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
-      state.backoffUntil = now + BACKOFF_MS;
+      state.backoffUntil = now + (isRateLimit(error) ? BACKOFF_MS : RETRY_SOON_MS);
       console.error('posthog refresh failed; backing off', error);
     }
   }
