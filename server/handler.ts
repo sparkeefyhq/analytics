@@ -3,6 +3,7 @@ import { config } from './config';
 import { getDataset } from './dataset';
 import { computeSnapshot } from './metrics';
 import { pendingSync } from './posthog-sync';
+import { getUserDetail, isUserId } from './user-detail';
 import type { Audience, Filters, Range, Surface } from './types';
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -62,6 +63,13 @@ export async function handle(request: Request): Promise<Response> {
       console.error('dashboard failed', error);
       return json({ error: 'Analytics sources are unavailable right now. Retrying shortly.' }, 503);
     }
+  }
+
+  if (path === '/api/user' && method === 'GET') {
+    if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
+    const id = url.searchParams.get('id');
+    if (!isUserId(id)) return json({ error: 'id must be a user id' }, 400);
+    return json(await getUserDetail(config(), id));
   }
 
   return json({ error: 'Not found' }, 404);

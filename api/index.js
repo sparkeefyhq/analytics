@@ -122,13 +122,13 @@ function applyCountFrom(data, countFrom) {
   const aiCost = data.aiCost.filter((r) => after(r.at));
   const chatReplies = data.chatReplies.filter((r) => after(r.at));
   const overlayCalls = data.overlayCalls.filter((r) => after(r.at));
-  const HOUR2 = 36e5;
+  const HOUR3 = 36e5;
   const laterBucket = new Set(data.activity.filter((r) => Date.parse(r.hour) >= cut).map((r) => r.id));
   const exactAfter = new Set([...overlay, ...sessions, ...aiCost, ...chatReplies, ...overlayCalls].map((r) => r.id));
   const activity = data.activity.filter((r) => {
     const h = Date.parse(r.hour);
     if (h >= cut) return true;
-    if (h + HOUR2 <= cut) return false;
+    if (h + HOUR3 <= cut) return false;
     return laterBucket.has(r.id) || exactAfter.has(r.id);
   });
   const newSince = new Set(data.people.filter((p) => after(p.signupAt)).map((p) => p.id));
@@ -154,12 +154,19 @@ function applyCountFrom(data, countFrom) {
     overlayCalls,
     // Onboarding screens have no time: only accounts created after the cutoff.
     onboarding: data.onboarding.filter((r) => newSince.has(r.id)),
+    // Funnel: people whose first onboarding screen came after the cutoff; accounts must also be new.
+    steps: data.steps && funnelAfter(data.steps, cut, newSince),
     versions: data.versions.filter((v) => newSince.has(v.id) || activeSince.has(v.id)),
     sources: {
       ...data.sources,
       overlayCallsFrom: data.sources.overlayCallsFrom === null ? null : after(data.sources.overlayCallsFrom) ? data.sources.overlayCallsFrom : overlayCalls.length ? new Date(cut).toISOString() : null
     }
   };
+}
+function funnelAfter(steps, cut, newSince) {
+  const first = /* @__PURE__ */ new Map();
+  for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, Date.parse(s.ts)));
+  return steps.filter((s) => (first.get(s.id) ?? 0) >= cut && (!s.account || newSince.has(s.id)));
 }
 
 // server/posthog.ts
@@ -268,6 +275,7 @@ async function pool(tasks, limit) {
 }
 var HISTORY_MS = 15 * 6e4;
 var RECENT_MS = 6e4;
+var BACKEND_MS = 2e4;
 var BACKOFF_MS = 5 * 6e4;
 var OVERLAP_MS = 2 * 6e4;
 var state = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
@@ -285,10 +293,15 @@ function baseFilter(cfg, start) {
 var str = (expr) => `ifNull(toString(${expr}), '')`;
 var FIRST_TRY = `multiIf(toString(properties.first_try) IN ('true', '1'), 1., toString(properties.first_try) IN ('false', '0'), 0., toFloatOrNull(''))`;
 var USED = `multiIf(toString(properties.used) IN ('true', '1'), 1., toString(properties.used) IN ('false', '0'), 0., toFloatOrNull(''))`;
-var SCREEN = `coalesce(toString(properties.screen), toString(properties.permission), event)`;
+var STEP_EVENTS = `event IN ('onboarding_step', 'onboarding_permission') AND (event = 'onboarding_step' OR toString(properties.granted) IN ('true', '1'))`;
+var STEP = `multiIf(event = 'onboarding_permission', concat('perm:', ifNull(toString(properties.permission), '')), ifNull(toString(properties.screen), ''))`;
+var OVERLAY_EXTRA = `${str("properties.sent_outcome")} AS outcome, ${str("properties.mood_applied")} AS mood, ${str("properties.relationship")} AS rel`;
+function stepFilter(cfg, start) {
+  return baseFilter(cfg, start).replace("length(distinct_id) = 36", "true");
+}
 async function queryHistory(cfg, start) {
   const base = baseFilter(cfg, `${start} 00:00:00`);
-  const [overlay, activity, sessions, screens] = await pool(
+  const [overlay, activity, sessions, steps] = await pool(
     [
       () => hogql(
         cfg,
@@ -296,7 +309,7 @@ async function queryHistory(cfg, start) {
                   ${str("properties.action")} AS action, ${str("properties.status")} AS status, ${str("properties.app")} AS app,
                   toFloatOrNull(toString(properties.latency_ms)) AS latency,
                   toFloatOrNull(toString(properties.cost_usd)) AS cost,
-                  ${str("properties.panel_id")} AS panel
+                  ${str("properties.panel_id")} AS panel, ${OVERLAY_EXTRA}
            FROM events
            WHERE event = 'overlay_used' AND ${base}
            ORDER BY ts LIMIT 1000000`
@@ -320,62 +333,67 @@ async function queryHistory(cfg, start) {
       ),
       () => hogql(
         cfg,
-        `SELECT distinct_id AS id, argMax(${SCREEN}, timestamp) AS screen
-           FROM events
-           WHERE event IN ('onboarding_step', 'onboarding_permission') AND ${base}
-           GROUP BY id LIMIT 100000`
+        `SELECT toString(e.person_id) AS pid, ifNull(m.uid, '') AS uid, '' AS did, ${STEP.replaceAll("properties.", "e.properties.").replaceAll("event =", "e.event =")} AS screen,
+                  min(e.timestamp) AS ts
+           FROM events AS e
+           LEFT JOIN (SELECT person_id, max(distinct_id) AS uid FROM person_distinct_ids WHERE length(distinct_id) = 36 GROUP BY person_id) AS m
+             ON m.person_id = e.person_id
+           WHERE ${STEP_EVENTS.replaceAll("properties.", "e.properties.").replaceAll("event ", "e.event ")}
+             AND ${stepFilter(cfg, `${start} 00:00:00`).replaceAll("timestamp", "e.timestamp").replaceAll("distinct_id", "e.distinct_id").replaceAll("properties.", "e.properties.")}
+           GROUP BY pid, uid, screen LIMIT 200000`
       )
     ],
     3
   );
-  return { overlay, activity, sessions, screens };
+  return { overlay, activity, sessions, steps };
 }
 async function queryRecent(cfg, since) {
   const at = new Date(since).toISOString().slice(0, 19).replace("T", " ");
   const base = baseFilter(cfg, at);
+  const none = `'' AS outcome, '' AS mood, '' AS rel`;
   const rows = await hogql(
     cfg,
     `SELECT 'o' AS k, distinct_id AS id, timestamp AS ts, ${str("properties.traffic_class")} AS tc,
             ${str("properties.action")} AS action, ${str("properties.status")} AS status, ${str("properties.app")} AS app,
             toFloatOrNull(toString(properties.latency_ms)) AS latency, toFloatOrNull(toString(properties.cost_usd)) AS cost,
-            ${str("properties.panel_id")} AS panel, toFloatOrNull('') AS taps, toFloatOrNull('') AS firstTry, toFloatOrNull('') AS used, '' AS extra
+            ${str("properties.panel_id")} AS panel, toFloatOrNull('') AS taps, toFloatOrNull('') AS firstTry, toFloatOrNull('') AS used, '' AS extra,
+            ${OVERLAY_EXTRA}
      FROM events WHERE event = 'overlay_used' AND ${base}
      UNION ALL
      SELECT 's', distinct_id, timestamp, ${str("properties.traffic_class")}, '', '', ${str("properties.app")},
             toFloatOrNull(''), toFloatOrNull(''), ${str("properties.panel_id")},
-            toFloatOrNull(toString(properties.taps)), ${FIRST_TRY}, ${USED}, ''
+            toFloatOrNull(toString(properties.taps)), ${FIRST_TRY}, ${USED}, '', ${none}
      FROM events WHERE event = 'overlay_session' AND ${base}
      UNION ALL
      SELECT 'a', distinct_id, timestamp, ${str("properties.traffic_class")}, '', '', '',
-            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ${str("properties.app_version")}
+            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ${str("properties.app_version")}, ${none}
      FROM events WHERE event IN (${APP_EVENTS.map((e) => `'${e}'`).join(",")}) AND ${base}
      UNION ALL
      SELECT 'b', distinct_id, timestamp, ${str("properties.traffic_class")}, '', '', '',
-            toFloatOrNull(''), toFloatOrNull(''), '', toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ifNull(${SCREEN}, '')
-     FROM events WHERE event IN ('onboarding_step', 'onboarding_permission') AND ${base}
+            toFloatOrNull(''), toFloatOrNull(''), toString(person_id), toFloatOrNull(''), toFloatOrNull(''), toFloatOrNull(''), ${STEP}, ${none}
+     FROM events WHERE ${STEP_EVENTS} AND ${stepFilter(cfg, at)}
      LIMIT 200000`
   );
-  const raw = { overlay: [], activity: [], sessions: [], screens: [] };
+  const raw = { overlay: [], activity: [], sessions: [], steps: [] };
   for (const r of rows) {
-    if (r.k === "o") raw.overlay.push({ id: r.id, ts: r.ts, tc: r.tc, action: r.action, status: r.status, app: r.app, latency: r.latency, cost: r.cost, panel: r.panel });
+    if (r.k === "o")
+      raw.overlay.push({ id: r.id, ts: r.ts, tc: r.tc, action: r.action, status: r.status, app: r.app, latency: r.latency, cost: r.cost, panel: r.panel, outcome: r.outcome, mood: r.mood, rel: r.rel });
     else if (r.k === "s") raw.sessions.push({ id: r.id, ts: r.ts, tc: r.tc, panel: r.panel, taps: r.taps, firstTry: r.firstTry, used: r.used, app: r.app });
     else if (r.k === "a") raw.activity.push({ id: r.id, hour: hourOf(r.ts), tc: r.tc, n: 1, version: r.extra });
-    else if (r.k === "b") raw.screens.push({ id: r.id, screen: r.extra, ts: r.ts });
+    else if (r.k === "b") raw.steps.push({ pid: r.panel, uid: UUID.test(r.id) ? r.id : "", did: r.id, screen: r.extra, ts: r.ts });
   }
-  raw.screens.sort((x, y) => Date.parse(x.ts ?? "") - Date.parse(y.ts ?? ""));
   return raw;
 }
 function merge(history, recent) {
   if (!recent) return history.raw;
   const before = (ts) => Date.parse(ts) < history.since;
-  const screens = new Map(history.raw.screens.map((s) => [s.id, s]));
-  for (const s of recent.screens) screens.set(s.id, s);
   return {
     overlay: [...history.raw.overlay.filter((r) => before(r.ts)), ...recent.overlay],
     sessions: [...history.raw.sessions.filter((r) => before(r.ts)), ...recent.sessions],
     // Hour buckets may overlap at the seam; activity is used for presence, so a repeat is harmless.
     activity: [...history.raw.activity, ...recent.activity],
-    screens: [...screens.values()]
+    // Steps are reduced to the earliest row per person and screen in assemble(), so repeats are harmless.
+    steps: [...history.raw.steps, ...recent.steps]
   };
 }
 async function getDataset(cfg) {
@@ -388,7 +406,7 @@ async function refresh(cfg) {
   const start = /^\d{4}-\d{2}-\d{2}$/.test(cfg.dataStart) ? cfg.dataStart : "2026-09-11";
   const posthogAllowed = now >= state.backoffUntil;
   let changed = false;
-  if (!state.backend || now - state.backend.at >= RECENT_MS) {
+  if (!state.backend || now - state.backend.at >= BACKEND_MS) {
     try {
       state.backend = { at: now, data: await fetchBackend(cfg) };
       changed = true;
@@ -402,7 +420,7 @@ async function refresh(cfg) {
       if (!state.history || now - state.history.at >= HISTORY_MS) {
         const raw2 = await queryHistory(cfg, start);
         state.history = { at: Date.now(), since: now - OVERLAP_MS, raw: raw2 };
-        state.recent = { at: Date.now(), raw: { overlay: [], activity: [], sessions: [], screens: [] } };
+        state.recent = { at: Date.now(), raw: { overlay: [], activity: [], sessions: [], steps: [] } };
         changed = true;
       } else if (!state.recent || now - state.recent.at >= RECENT_MS) {
         state.recent = { at: Date.now(), raw: await queryRecent(cfg, state.history.since) };
@@ -417,7 +435,7 @@ async function refresh(cfg) {
   }
   if (!state.backend) throw new Error(state.lastError ?? "No data yet");
   if (!changed && lastBuilt) return lastBuilt.data;
-  const empty = { overlay: [], activity: [], sessions: [], screens: [] };
+  const empty = { overlay: [], activity: [], sessions: [], steps: [] };
   const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
   const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
   const built = assemble(cfg, start, state.backend.data, raw, {
@@ -430,7 +448,8 @@ async function refresh(cfg) {
   return data;
 }
 function assemble(cfg, start, backend, raw, fresh) {
-  const { overlay, activity, sessions, screens } = raw;
+  const { overlay, activity, sessions } = raw;
+  const steps = reduceSteps(raw.steps);
   const members = backend.members;
   const flaggedTest = /* @__PURE__ */ new Set();
   const flaggedInternal = /* @__PURE__ */ new Set();
@@ -469,7 +488,10 @@ function assemble(cfg, start, backend, raw, fresh) {
       app: r.app,
       latency: r.latency === null ? null : Number(r.latency),
       cost: r.cost === null || r.cost === void 0 ? null : Number(r.cost),
-      panel: r.panel
+      panel: r.panel,
+      ...r.outcome ? { sentOutcome: r.outcome } : {},
+      ...r.mood ? { mood: r.mood } : {},
+      ...r.rel ? { relationship: r.rel } : {}
     })),
     sessions: keep(sessions).map((r) => ({
       id: r.id,
@@ -482,7 +504,9 @@ function assemble(cfg, start, backend, raw, fresh) {
     })),
     aiCost: keep(backend.facts.filter((f) => f.kind === "usage" && typeof f.cost === "number").map((f) => ({ id: f.user, at: f.at, cost: f.cost }))),
     versions: latestVersions(keep(activity).map((r) => ({ id: r.id, hour: iso(r.hour), version: r.version }))),
-    onboarding: keep(screens).filter((r) => r.screen).map((r) => ({ id: r.id, screen: r.screen })),
+    onboarding: lastScreens(steps.filter((r) => r.account && known.has(r.id))),
+    // Accounts in this dataset, plus installs that never signed in (top of the funnel only).
+    steps: steps.filter((r) => r.account ? known.has(r.id) : true),
     chatReplies: keep(backend.facts.filter((f) => f.kind === "complete").map((f) => ({ id: f.user, at: f.at }))),
     overlayCalls: keep((backend.overlay ?? []).map((c) => ({ id: c.user, at: c.at, request: c.request, ok: c.ok, latency: c.latency, cost: c.cost }))),
     sources: {
@@ -516,17 +540,342 @@ function latestVersions(rows) {
   }
   return [...best.entries()].map(([id, v]) => ({ id, version: v.version }));
 }
+function reduceSteps(rows) {
+  const uidOf = /* @__PURE__ */ new Map();
+  for (const r of rows) if (r.uid && UUID.test(r.uid)) uidOf.set(r.pid, r.uid.toLowerCase());
+  const best = /* @__PURE__ */ new Map();
+  for (const r of rows) {
+    if (!r.screen || r.screen === "perm:" || !r.pid) continue;
+    const uid = uidOf.get(r.pid);
+    const id = uid ?? `anon:${r.pid}`;
+    const ts = new Date(r.ts.includes("T") || r.ts.includes("Z") ? r.ts : `${r.ts.replace(" ", "T")}Z`).toISOString();
+    const key = `${id}|${r.screen}`;
+    const cur = best.get(key);
+    if (!cur || ts < cur.ts) best.set(key, { id, screen: r.screen, ts, account: Boolean(uid) });
+  }
+  return [...best.values()];
+}
+function lastScreens(steps) {
+  const last = /* @__PURE__ */ new Map();
+  for (const s of steps) {
+    if (s.screen.startsWith("perm:")) continue;
+    const cur = last.get(s.id);
+    if (!cur || s.ts > cur.ts) last.set(s.id, { screen: s.screen, ts: s.ts });
+  }
+  return [...last.entries()].map(([id, v]) => ({ id, screen: v.screen }));
+}
 
-// server/metrics.ts
+// server/users.ts
 var HOUR = 36e5;
 var DAY = 24 * HOUR;
 var IST = 5.5 * HOUR;
-var SESSION_GAP_MS = 5 * 6e4;
-var istDay = (ms) => Math.floor((ms + IST) / DAY);
-var dayStartMs = (day) => day * DAY - IST;
 var t = (iso) => Date.parse(iso);
 var pct = (n, d) => d > 0 ? n / d * 100 : null;
-var ratio = (n, d) => ({ n, d, pct: pct(n, d) });
+var PILOT_DRAFTS = 100;
+var PILOT_ANSWERS = 40;
+var SCREEN_ORDER = [
+  "IntroVideo",
+  "Welcome",
+  "MeetKeefie",
+  "OverlayVideo",
+  "RelationshipSelect",
+  "PersonName",
+  "GenderSelect",
+  "Traits",
+  "OnboardingQuestion",
+  "ProfilePicture",
+  "PhotoUpload",
+  "YourName",
+  "YourGender",
+  "YourAvatar",
+  "TryKeefie",
+  "StartJourney",
+  "PhoneLogin",
+  "Otp",
+  "NotificationPermission",
+  "perm:notifications",
+  "Privacy",
+  "Permissions",
+  "perm:display_over_apps",
+  "perm:accessibility",
+  "perm:accessibility_running",
+  "perm:battery_unrestricted",
+  "Pledge",
+  "FounderNote",
+  "Home"
+];
+var LABELS = {
+  IntroVideo: "Intro video",
+  Welcome: "Welcome",
+  MeetKeefie: "Meet Keefie",
+  OverlayVideo: "Overlay video",
+  RelationshipSelect: "Relationship",
+  PersonName: "Their name",
+  GenderSelect: "Their gender",
+  Traits: "Traits",
+  OnboardingQuestion: "Question",
+  ProfilePicture: "Profile picture",
+  PhotoUpload: "Photo upload",
+  TryKeefie: "Try Keefie demo",
+  StartJourney: "Start journey",
+  PhoneLogin: "Phone number",
+  Otp: "Login code",
+  NotificationPermission: "Notifications screen",
+  Privacy: "Privacy",
+  Permissions: "Permissions screen",
+  Pledge: "Pledge",
+  FounderNote: "Founder note",
+  Home: "Home (setup done)",
+  "perm:notifications": "Notifications on",
+  "perm:display_over_apps": "Display over apps on",
+  "perm:accessibility": "Accessibility on",
+  "perm:accessibility_running": "Accessibility running",
+  "perm:battery_unrestricted": "Battery unrestricted"
+};
+var screenLabel = (s) => LABELS[s] ?? s.replace(/^perm:/, "").replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+var isAct = (e) => e.action === "copied" || e.action === "inserted" || e.action === "sent" && (e.sentOutcome === "as_is" || e.sentOutcome === "edited");
+function buildFunnel(data, filters, teamIds, from, now) {
+  const steps = (data.steps ?? []).filter((s) => {
+    const team = s.account && teamIds.has(s.id);
+    return filters.audience === "internal" ? team : !team;
+  });
+  const first = /* @__PURE__ */ new Map();
+  for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
+  const people = new Set([...first.entries()].filter(([, ms]) => ms >= from && ms <= now).map(([id]) => id));
+  const byScreen = /* @__PURE__ */ new Map();
+  const offsets = /* @__PURE__ */ new Map();
+  for (const s of steps) {
+    if (!people.has(s.id)) continue;
+    (byScreen.get(s.screen) ?? byScreen.set(s.screen, /* @__PURE__ */ new Set()).get(s.screen)).add(s.id);
+    (offsets.get(s.screen) ?? offsets.set(s.screen, []).get(s.screen)).push(t(s.ts) - (first.get(s.id) ?? 0));
+  }
+  if (!people.size) return [];
+  const known = SCREEN_ORDER.filter((s) => byScreen.has(s));
+  const extra = [...byScreen.keys()].filter((s) => !SCREEN_ORDER.includes(s)).sort((a, b) => (quantile(offsets.get(a), 0.5) ?? 0) - (quantile(offsets.get(b), 0.5) ?? 0));
+  const order = known.includes("Home") ? [...known.filter((s) => s !== "Home"), ...extra, "Home"] : [...known, ...extra];
+  const rank = new Map(order.map((s, i) => [s, i]));
+  const stopped = /* @__PURE__ */ new Map();
+  for (const id of people) {
+    if (byScreen.get("Home")?.has(id)) continue;
+    let last = null;
+    for (const s of order) if (!s.startsWith("perm:") && byScreen.get(s)?.has(id) && (last === null || rank.get(s) > rank.get(last))) last = s;
+    if (last) stopped.set(last, (stopped.get(last) ?? 0) + 1);
+  }
+  const start = people.size;
+  let prev = null;
+  return order.map((screen) => {
+    const reached = byScreen.get(screen)?.size ?? 0;
+    const row = {
+      screen,
+      label: screenLabel(screen),
+      reached,
+      pctOfStart: pct(reached, start),
+      // Permissions are a side branch of the Permissions screen, so they compare to it.
+      pctOfPrev: screen.startsWith("perm:") ? pct(reached, byScreen.get("Permissions")?.size ?? 0) : prev === null ? null : pct(reached, prev),
+      stoppedHere: stopped.get(screen) ?? 0,
+      permission: screen.startsWith("perm:")
+    };
+    if (!row.permission) prev = reached;
+    return row;
+  });
+}
+function buildRoster({ data, people, versionOf, from, now }) {
+  const ids = new Set(people.map((p) => p.id));
+  const group = (rows2) => {
+    const m = /* @__PURE__ */ new Map();
+    for (const r of rows2) if (ids.has(r.id)) (m.get(r.id) ?? m.set(r.id, []).get(r.id)).push(r);
+    return m;
+  };
+  const overlayBy = group(data.overlay);
+  const sessionsBy = group(buildSessions(data.overlay.filter((e) => ids.has(e.id)), data.sessions.filter((s) => ids.has(s.id))));
+  const stepsBy = group((data.steps ?? []).filter((s) => s.account));
+  const repliesBy = group(data.chatReplies);
+  const costBy = group(data.aiCost);
+  const activityBy = group(data.activity);
+  const callsBy = group(data.overlayCalls);
+  const today = istDay(now);
+  const monthKey = new Date(now + IST).toISOString().slice(0, 7);
+  const inMonth = (iso) => new Date(t(iso) + IST).toISOString().slice(0, 7) === monthKey;
+  const inRange = (iso) => t(iso) >= from && t(iso) <= now;
+  const rows = people.map((p) => {
+    const events = (overlayBy.get(p.id) ?? []).sort((a, b) => t(a.ts) - t(b.ts));
+    const steps = (stepsBy.get(p.id) ?? []).sort((a, b) => t(a.ts) - t(b.ts));
+    const firstOpenMs = Math.min(t(p.signupAt), ...steps.map((s) => t(s.ts)));
+    const home = steps.find((s) => s.screen === "Home");
+    const drafts = events.filter((e) => e.action === "draft");
+    const delivered = drafts.filter((e) => e.status === "ok");
+    const acts = events.filter(isAct);
+    const firstAct = acts[0] ?? null;
+    const firstReply = (repliesBy.get(p.id) ?? []).map((r2) => r2.at).sort()[0] ?? null;
+    const setupAt = home?.ts ?? [delivered[0]?.ts, firstReply].filter(Boolean).sort()[0] ?? null;
+    let repeatAt = null;
+    let repeat = "na";
+    if (firstAct) {
+      const d0 = istDay(t(firstAct.ts));
+      const later = acts.find((e) => istDay(t(e.ts)) > d0 && t(e.ts) - t(firstAct.ts) <= 7 * DAY);
+      if (later) {
+        repeatAt = later.ts;
+        repeat = "yes";
+      } else repeat = now - t(firstAct.ts) >= 7 * DAY ? "no" : "pending";
+    }
+    const r = events.filter((e) => inRange(e.ts));
+    const rDrafts = r.filter((e) => e.action === "draft");
+    const sent = r.filter((e) => e.action === "sent");
+    const sessions = (sessionsBy.get(p.id) ?? []).filter((s) => s.start >= from && s.start <= now);
+    const shown = sessions.filter((s) => s.ok > 0);
+    const tally = (values) => {
+      const m = /* @__PURE__ */ new Map();
+      for (const v of values) if (v) m.set(v, (m.get(v) ?? 0) + 1);
+      return [...m.entries()].sort((a, b) => b[1] - a[1]).map(([label, n]) => ({ label, n }));
+    };
+    const calls = (callsBy.get(p.id) ?? []).filter((c) => inRange(c.at));
+    const overlayCost = calls.length ? calls.reduce((a, c) => a + (c.cost ?? 0), 0) : rDrafts.reduce((a, e) => a + (e.cost ?? 0), 0);
+    const activeDaySet = /* @__PURE__ */ new Map();
+    for (const a of activityBy.get(p.id) ?? []) {
+      const d = istDay(t(a.hour));
+      activeDaySet.set(d, Math.max(activeDaySet.get(d) ?? 0, a.surface === "overlay" ? 2 : 1));
+    }
+    const lastMs = Math.max(0, ...(activityBy.get(p.id) ?? []).map((a) => Math.min(t(a.hour) + HOUR, now)), ...events.map((e) => t(e.ts)));
+    const replies = (repliesBy.get(p.id) ?? []).filter((x) => inRange(x.at));
+    return {
+      id: p.id,
+      name: p.name,
+      team: p.team,
+      returning: Boolean(p.returning),
+      signupAt: p.signupAt,
+      version: versionOf.get(p.id) ?? null,
+      lastActive: lastMs ? new Date(lastMs).toISOString() : null,
+      activeDays: activeDaySet.size,
+      days: Array.from({ length: 14 }, (_, i) => activeDaySet.get(today - 13 + i) ?? 0),
+      journey: {
+        firstOpen: new Date(firstOpenMs).toISOString(),
+        setupAt,
+        firstDraftAt: delivered[0]?.ts ?? null,
+        firstActAt: firstAct?.ts ?? null,
+        repeatAt,
+        repeat,
+        lastScreen: [...steps].reverse().find((s) => !s.screen.startsWith("perm:"))?.screen ?? null,
+        screens: steps.filter((s) => !s.screen.startsWith("perm:")).length,
+        permissions: steps.filter((s) => s.screen.startsWith("perm:")).map((s) => s.screen.slice(5))
+      },
+      overlay: {
+        sessions: sessions.length,
+        drafts: rDrafts.length,
+        delivered: rDrafts.filter((e) => e.status === "ok").length,
+        failed: rDrafts.filter((e) => e.status === "failed").length,
+        copied: r.filter((e) => e.action === "copied").length,
+        inserted: r.filter((e) => e.action === "inserted").length,
+        sent: {
+          asIs: sent.filter((e) => e.sentOutcome === "as_is").length,
+          edited: sent.filter((e) => e.sentOutcome === "edited").length,
+          own: sent.filter((e) => e.sentOutcome === "own").length
+        },
+        firstTryPct: pct(shown.filter((s) => s.firstUsed).length, shown.length),
+        usedPct: pct(shown.filter((s) => s.used).length, shown.length),
+        medianLatency: quantile(rDrafts.filter((e) => e.status === "ok" && e.latency).map((e) => e.latency), 0.5),
+        cost: overlayCost,
+        apps: tally(sessions.map((s) => appLabel(s.app))),
+        moods: tally(rDrafts.map((e) => e.mood ?? "")),
+        relationships: tally(rDrafts.map((e) => e.relationship ?? ""))
+      },
+      app: { replies: replies.length, cost: (costBy.get(p.id) ?? []).filter((c) => inRange(c.at)).reduce((a, c) => a + c.cost, 0) },
+      quota: {
+        month: monthKey,
+        drafts: drafts.filter((e) => e.status === "ok" && inMonth(e.ts)).length,
+        draftCap: PILOT_DRAFTS,
+        answers: (repliesBy.get(p.id) ?? []).filter((x) => inMonth(x.at)).length,
+        answerCap: PILOT_ANSWERS
+      },
+      flags: []
+    };
+  });
+  const draftCounts = rows.map((u) => u.overlay.drafts).sort((a, b) => a - b);
+  const heavyAt = Math.max(10, quantile(draftCounts, 0.9) ?? 0);
+  for (const u of rows) {
+    const f = u.flags;
+    const o = u.overlay;
+    const share = (list2, keys) => {
+      const total = list2.reduce((a, x) => a + x.n, 0);
+      return total >= 5 ? list2.filter((x) => keys.includes(x.label)).reduce((a, x) => a + x.n, 0) / total : 0;
+    };
+    if (o.drafts >= heavyAt) f.push({ key: "heavy", label: "Heavy user", tone: "purple" });
+    if (share(o.relationships, ["romantic"]) >= 0.6) f.push({ key: "romantic", label: "Mostly romantic chats", tone: "purple" });
+    if (share(o.moods, ["playful", "bold"]) >= 0.5) f.push({ key: "flirty", label: "Playful / bold moods", tone: "purple" });
+    const sends = o.sent.asIs + o.sent.edited + o.sent.own;
+    if (sends >= 4 && (o.sent.edited + o.sent.own) / sends >= 0.5) f.push({ key: "rewrites", label: "Often rewrites drafts", tone: "tan" });
+    if (u.quota.drafts >= u.quota.draftCap * 0.8 || u.quota.answers >= u.quota.answerCap * 0.8) f.push({ key: "cap", label: "Near free cap", tone: "red" });
+    if (o.failed >= 3) f.push({ key: "failures", label: `${o.failed} failed drafts`, tone: "red" });
+    if (!u.journey.setupAt && !u.returning && now - t(u.journey.firstOpen) > DAY)
+      f.push({ key: "stuck", label: `Stuck at ${u.journey.lastScreen ? screenLabel(u.journey.lastScreen) : "setup"}`, tone: "red" });
+    if (u.journey.repeat === "yes") f.push({ key: "repeat", label: "Repeat user", tone: "green" });
+    if (u.lastActive && now - t(u.lastActive) > 3 * DAY && u.activeDays >= 2) f.push({ key: "dormant", label: "Quiet 3+ days", tone: "tan" });
+  }
+  return rows.sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? "") || b.signupAt.localeCompare(a.signupAt));
+}
+function buildScorecard(roster, snap, overlayUsersToday, now) {
+  const cohort = roster.filter((u) => !u.returning);
+  const n = cohort.length;
+  const within = (u, at, hours) => at !== null && t(at) - t(u.journey.firstOpen) <= hours * HOUR;
+  const gate = (key, label, help, hit, d, target, stretch, pending) => ({
+    key,
+    label,
+    help,
+    n: hit,
+    d,
+    pct: pct(hit, d),
+    targetPct: target,
+    stretchPct: stretch,
+    pass: d ? hit / d * 100 >= target : null,
+    ...pending === void 0 ? {} : { pending }
+  });
+  const firstUseful = cohort.filter((u) => within(u, u.journey.firstActAt, 48));
+  const eligible = cohort.filter((u) => u.journey.firstActAt && now - t(u.journey.firstActAt) >= 7 * DAY);
+  const ov = snap.overlay;
+  const ms = (v) => v === null ? "\u2013" : `${(v / 1e3).toFixed(2)}s`;
+  const repeatYes = eligible.filter((u) => u.journey.repeat === "yes").length;
+  const repeatReady = n > 0 && eligible.length >= Math.ceil(n * 0.75);
+  const repeatGate = gate(
+    "repeat",
+    "Return and act again",
+    `Acted again on a later day within 7 days; read once ${Math.ceil(n * 0.75)}+ users are 7 days past their first useful reply and needs ${Math.ceil(n * 0.4)}+ repeaters`,
+    repeatYes,
+    eligible.length,
+    50,
+    60,
+    // Acted, but 7 days have not passed yet: counted once their window closes.
+    cohort.filter((u) => u.journey.firstActAt && !eligible.includes(u)).length
+  );
+  repeatGate.pass = repeatReady ? repeatGate.pass === true && repeatYes >= Math.ceil(n * 0.4) : null;
+  return {
+    cohort: n,
+    gates: [
+      gate("setup", "Finish setup", "Reached Home within 24 h of first open", cohort.filter((u) => within(u, u.journey.setupAt, 24)).length, n, 80, 90),
+      gate("useful", "Get a useful reply", "Acted on a draft within 48 h of first open", firstUseful.length, n, 75, 85),
+      gate("acted", "Act on a draft", "Copied, inserted or sent a draft", cohort.filter((u) => u.journey.firstActAt).length, n, 60, 70),
+      repeatGate
+    ],
+    diagnostics: [
+      { key: "dou", label: "Daily overlay users", value: String(overlayUsersToday), target: "4\u20136", ok: overlayUsersToday >= 4 ? true : null, help: "Unique users with a delivered draft today (IST)" },
+      { key: "spu", label: "Sessions per active user", value: ov.sessionsPerUser.value === null ? "\u2013" : ov.sessionsPerUser.value.toFixed(1), target: "1\u20132", ok: ov.sessionsPerUser.value === null ? null : ov.sessionsPerUser.value >= 1, help: "Per active overlay user per day" },
+      { key: "fda", label: "First draft adoption", value: ov.firstReply.pct === null ? "\u2013" : `${ov.firstReply.pct.toFixed(0)}%`, target: "\u226550%", ok: ov.firstReply.pct === null ? null : ov.firstReply.pct >= 50, help: "Sessions where the first draft was used" },
+      { key: "p50", label: "Median response", value: ms(ov.latency.p50), target: "\u22641.5s", ok: ov.latency.p50 === null ? null : ov.latency.p50 <= 1500, help: "Tap to draft shown" },
+      { key: "p95", label: "P95 response", value: ms(ov.latency.p95), target: "\u22643s", ok: ov.latency.p95 === null ? null : ov.latency.p95 <= 3e3, help: "95% of drafts within this time" },
+      { key: "fail", label: "Failed requests", value: ov.failures.pct === null ? "\u2013" : `${ov.failures.pct.toFixed(1)}%`, target: "<1%", ok: ov.failures.pct === null ? null : ov.failures.pct < 1, help: `${ov.failures.failed} of ${ov.failures.requests} requests` }
+    ],
+    nearCap: roster.filter((u) => u.flags.some((f) => f.key === "cap")).length
+  };
+}
+
+// server/metrics.ts
+var HOUR2 = 36e5;
+var DAY2 = 24 * HOUR2;
+var IST2 = 5.5 * HOUR2;
+var SESSION_GAP_MS = 5 * 6e4;
+var istDay = (ms) => Math.floor((ms + IST2) / DAY2);
+var dayStartMs = (day) => day * DAY2 - IST2;
+var t2 = (iso) => Date.parse(iso);
+var pct2 = (n, d) => d > 0 ? n / d * 100 : null;
+var ratio = (n, d) => ({ n, d, pct: pct2(n, d) });
 var change = (now, before) => now === null || before === null || before === 0 ? null : (now - before) / before * 100;
 function quantile(values, q) {
   if (!values.length) return null;
@@ -561,7 +910,7 @@ function buildSessions(overlay, summaries) {
   const summaryByPanel = new Map(summaries.filter((s) => s.panel).map((s) => [`${s.id}|${s.panel}`, s]));
   const out = [];
   for (const [id, events] of byUser) {
-    events.sort((a, b) => t(a.ts) - t(b.ts));
+    events.sort((a, b) => t2(a.ts) - t2(b.ts));
     let current = null;
     const close = () => {
       if (!current) return;
@@ -577,7 +926,7 @@ function buildSessions(overlay, summaries) {
       current = null;
     };
     for (const e of events) {
-      const at = t(e.ts);
+      const at = t2(e.ts);
       const newPanel = current && e.panel && current.panel && e.panel !== current.panel;
       if (!current || newPanel || at - current.end > SESSION_GAP_MS) {
         close();
@@ -637,18 +986,18 @@ function buildRequests(data, ids) {
     const costs = list2.map((c) => c.cost).filter((c) => c !== null);
     out.push({
       id: list2[0].id,
-      at: Math.min(...list2.map((c) => t(c.at))),
+      at: Math.min(...list2.map((c) => t2(c.at))),
       ok: Boolean(okCall),
       failed: !okCall,
       latency: okCall?.latency ?? null,
       cost: costs.length ? costs.reduce((a, b) => a + b, 0) : null
     });
   }
-  const backendFrom = data.sources.overlayCallsFrom ? t(data.sources.overlayCallsFrom) : Infinity;
+  const backendFrom = data.sources.overlayCallsFrom ? t2(data.sources.overlayCallsFrom) : Infinity;
   for (const e of data.overlay) {
-    if (e.action !== "draft" || !ids.has(e.id) || t(e.ts) >= backendFrom) continue;
+    if (e.action !== "draft" || !ids.has(e.id) || t2(e.ts) >= backendFrom) continue;
     if (e.status !== "ok" && e.status !== "failed") continue;
-    out.push({ id: e.id, at: t(e.ts), ok: e.status === "ok", failed: e.status === "failed", latency: e.latency, cost: e.cost });
+    out.push({ id: e.id, at: t2(e.ts), ok: e.status === "ok", failed: e.status === "failed", latency: e.latency, cost: e.cost });
   }
   return out.sort((a, b) => a.at - b.at);
 }
@@ -656,8 +1005,8 @@ function windowFor(filters, now, dataStart) {
   const startAll = Date.parse(`${dataStart}T00:00:00+05:30`);
   if (filters.range === "all") return { from: startAll, prevFrom: null, label: "All time" };
   const days = filters.range === "7d" ? 7 : 30;
-  const from = Math.max(now - days * DAY, startAll);
-  return { from, prevFrom: from - days * DAY, label: `Last ${days} days` };
+  const from = Math.max(now - days * DAY2, startAll);
+  return { from, prevFrom: from - days * DAY2, label: `Last ${days} days` };
 }
 function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const versionOf = new Map(data.versions.map((v) => [v.id, v.version]));
@@ -670,21 +1019,21 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const ids = new Set(people.map((p) => p.id));
   const names = new Map(people.map((p) => [p.id, p.name]));
   const { from, prevFrom, label } = windowFor(filters, now, data.dataStart);
-  const rangeDays = Math.max(1, (now - from) / DAY);
+  const rangeDays = Math.max(1, (now - from) / DAY2);
   const surfaceOk = (s) => filters.surface === "combined" || filters.surface === (s === "overlay" ? "overlay" : "app");
   const activity = data.activity.filter((a) => ids.has(a.id) && surfaceOk(a.surface));
   const activeBetween = (a, b, surface) => {
     const set = /* @__PURE__ */ new Set();
     for (const r2 of activity) {
-      const h = t(r2.hour);
-      if (h + HOUR > a && h < b && (!surface || r2.surface === surface)) set.add(r2.id);
+      const h = t2(r2.hour);
+      if (h + HOUR2 > a && h < b && (!surface || r2.surface === surface)) set.add(r2.id);
     }
     return set;
   };
-  const dauSet = activeBetween(now - DAY, now);
-  const dauPrev = activeBetween(now - 2 * DAY, now - DAY).size;
-  const wau = activeBetween(now - 7 * DAY, now).size;
-  const mau = activeBetween(now - 30 * DAY, now).size;
+  const dauSet = activeBetween(now - DAY2, now);
+  const dauPrev = activeBetween(now - 2 * DAY2, now - DAY2).size;
+  const wau = activeBetween(now - 7 * DAY2, now).size;
+  const mau = activeBetween(now - 30 * DAY2, now).size;
   const overlayEvents = data.overlay.filter((e) => ids.has(e.id));
   const sessions = buildSessions(overlayEvents, data.sessions.filter((s) => ids.has(s.id)));
   const inRange = (ms) => ms >= from && ms <= now;
@@ -711,8 +1060,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     dailyModel.set(istDay(r2.at), (dailyModel.get(istDay(r2.at)) ?? 0) + requestCost(r2));
   }
   for (const c of data.aiCost) {
-    if (!ids.has(c.id) || !inRange(t(c.at))) continue;
-    const day = istDay(t(c.at));
+    if (!ids.has(c.id) || !inRange(t2(c.at))) continue;
+    const day = istDay(t2(c.at));
     dailyModel.set(day, (dailyModel.get(day) ?? 0) + c.cost);
   }
   const modelUsd = [...dailyModel.values()].reduce((a, b) => a + b, 0);
@@ -729,7 +1078,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const firstReply = /* @__PURE__ */ new Set();
   for (const r2 of data.chatReplies) firstReply.add(r2.id);
   for (const e of data.overlay) if (e.action === "draft" && e.status === "ok") firstReply.add(e.id);
-  const signups = people.filter((p) => !p.returning && inRange(t(p.signupAt)));
+  const signups = people.filter((p) => !p.returning && inRange(t2(p.signupAt)));
   const completed = signups.filter((p) => firstReply.has(p.id));
   const dropped = signups.filter((p) => !firstReply.has(p.id));
   const lastScreen = new Map(data.onboarding.map((o) => [o.id, o.screen]));
@@ -746,11 +1095,11 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const usedSessions = shown.filter((s) => s.used).length;
   const firstUsedNow = shown.filter((s) => s.firstUsed).length;
   const prevShown = prevSessions.filter((s) => s.ok > 0);
-  const firstPrevPct = prevFrom === null ? null : pct(prevShown.filter((s) => s.firstUsed).length, prevShown.length);
+  const firstPrevPct = prevFrom === null ? null : pct2(prevShown.filter((s) => s.firstUsed).length, prevShown.length);
   const activeDays = /* @__PURE__ */ new Map();
   for (const r2 of activity) {
     const set = activeDays.get(r2.id) ?? /* @__PURE__ */ new Set();
-    set.add(istDay(t(r2.hour)));
+    set.add(istDay(t2(r2.hour)));
     activeDays.set(r2.id, set);
   }
   const today = istDay(now);
@@ -758,7 +1107,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const cohorts = /* @__PURE__ */ new Map();
   for (const p of people) {
     if (p.returning) continue;
-    const day = istDay(t(p.signupAt));
+    const day = istDay(t2(p.signupAt));
     if (dayStartMs(weekOf(day) + 7) <= from && filters.range !== "all") continue;
     const list2 = cohorts.get(weekOf(day)) ?? [];
     list2.push(p);
@@ -769,7 +1118,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     let d = 0;
     let anyStarted = false;
     for (const p of members) {
-      const s = istDay(t(p.signupAt));
+      const s = istDay(t2(p.signupAt));
       if (s + startOffset <= today) anyStarted = true;
       if (s + endOffset >= today) continue;
       d += 1;
@@ -783,7 +1132,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     const elapsed = today - weekStart;
     return { kind: "pending", note: elapsed >= 0 && elapsed < startOffset ? `Day ${elapsed}` : "Future" };
   };
-  const fmtDay = (day) => new Date(dayStartMs(day) + IST).toLocaleDateString("en-US", { month: "short", day: "2-digit", timeZone: "UTC" });
+  const fmtDay = (day) => new Date(dayStartMs(day) + IST2).toLocaleDateString("en-US", { month: "short", day: "2-digit", timeZone: "UTC" });
   const rows = [...cohorts.entries()].sort((a, b) => a[0] - b[0]).map(([week, members], index) => {
     const current = week + 6 >= today;
     const d1 = windowCell(members, 1, 1, week);
@@ -806,14 +1155,14 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     d1d += r2.d1.d;
   }
   const drafts = requests.filter((r2) => inRange(r2.at));
-  const userFacing = data.sources.posthogAt ? overlayEvents.filter((e) => e.action === "draft" && (e.status === "ok" || e.status === "failed")).map((e) => ({ id: e.id, at: t(e.ts), ok: e.status === "ok", failed: e.status === "failed", latency: e.latency, cost: e.cost })) : requests;
+  const userFacing = data.sources.posthogAt ? overlayEvents.filter((e) => e.action === "draft" && (e.status === "ok" || e.status === "failed")).map((e) => ({ id: e.id, at: t2(e.ts), ok: e.status === "ok", failed: e.status === "failed", latency: e.latency, cost: e.cost })) : requests;
   const userFacingInRange = userFacing.filter((r2) => inRange(r2.at));
   const okLatency = (list2) => list2.filter((r2) => r2.ok && r2.latency !== null && r2.latency > 0).map((r2) => r2.latency);
   const latencies = okLatency(userFacingInRange);
   const latencySeries = [];
-  const hourNow = Math.floor(now / HOUR) * HOUR;
-  for (let h = hourNow - 23 * HOUR; h <= hourNow; h += HOUR) {
-    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(userFacing.filter((r2) => r2.at >= h && r2.at < h + HOUR)), 0.95) });
+  const hourNow = Math.floor(now / HOUR2) * HOUR2;
+  for (let h = hourNow - 23 * HOUR2; h <= hourNow; h += HOUR2) {
+    latencySeries.push({ hour: new Date(h).toISOString(), p95: quantile(okLatency(userFacing.filter((r2) => r2.at >= h && r2.at < h + HOUR2)), 0.95) });
   }
   const overlayCost = drafts.reduce((a, r2) => a + requestCost(r2), 0);
   const trackedDrafts = drafts.filter((r2) => r2.cost !== null);
@@ -850,13 +1199,13 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     sessions: u.sessions,
     requests: u.requests,
     used: u.used,
-    usedPct: pct(u.used, u.requests),
+    usedPct: pct2(u.used, u.requests),
     app: appLabel([...u.apps.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? ""),
     lastActive: new Date(u.last).toISOString()
   })).sort((a, b) => b.lastActive.localeCompare(a.lastActive));
   const allVersions = versions;
   const versionCounts = /* @__PURE__ */ new Map();
-  const recentlyActive = activeBetween(now - 30 * DAY, now);
+  const recentlyActive = activeBetween(now - 30 * DAY2, now);
   for (const p of people) {
     if (!recentlyActive.has(p.id)) continue;
     const v = versionOf.get(p.id);
@@ -864,7 +1213,11 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   }
   const mainVersion = [...versionCounts.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0], void 0, { numeric: true }))[0]?.[0] ?? null;
   const r = (x) => x.pct;
-  return {
+  const todayStartMs = dayStartMs(today);
+  const overlayUsersToday = new Set(overlayEvents.filter((e) => e.action === "draft" && e.status === "ok" && t2(e.ts) >= todayStartMs).map((e) => e.id)).size;
+  const teamIds = new Set(data.people.filter((p) => p.team).map((p) => p.id));
+  const roster = buildRoster({ data, people, versionOf, from, now });
+  const snapshot = {
     generatedAt: data.generatedAt,
     servedAt: new Date(now).toISOString(),
     stale: data.sourceError !== null,
@@ -885,11 +1238,11 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         value: dauSet.size,
         prev: dauPrev,
         deltaPct: change(dauSet.size, dauPrev),
-        overlay: activeBetween(now - DAY, now, "overlay").size,
-        app: activeBetween(now - DAY, now, "app").size
+        overlay: activeBetween(now - DAY2, now, "overlay").size,
+        app: activeBetween(now - DAY2, now, "app").size
       },
-      wau: { value: wau, pctOfMau: pct(wau, mau) },
-      mau: { value: mau, dauOverMau: pct(dauSet.size, mau) },
+      wau: { value: wau, pctOfMau: pct2(wau, mau) },
+      mau: { value: mau, dauOverMau: pct2(dauSet.size, mau) },
       overlayFrequency: { value: freqNow, prev: freqPrev, deltaPct: change(freqNow, freqPrev) },
       cost: { perActiveUser, modelUsd, infraUsd, activeUsers: rangeActive, series, target: cfg.costTargetPerMau, grossMarginPct, estimated: estimatedCost },
       onboarding: {
@@ -901,8 +1254,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         topDropStep,
         dropSteps
       },
-      replyUse: { pct: pct(usedSessions, shown.length), used: usedSessions, total: shown.length, notUsed: shown.length - usedSessions },
-      retention: { rows, avgD1: pct(d1n, d1d), target: 60 }
+      replyUse: { pct: pct2(usedSessions, shown.length), used: usedSessions, total: shown.length, notUsed: shown.length - usedSessions },
+      retention: { rows, avgD1: pct2(d1n, d1d), target: 60 }
     },
     overlay: {
       sessionsPerUser: {
@@ -912,8 +1265,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         usersToday: new Set(todaySessions.map((s) => s.id)).size
       },
       firstReply: {
-        pct: pct(firstUsedNow, shown.length),
-        deltaPts: firstPrevPct === null || !shown.length ? null : pct(firstUsedNow, shown.length) - firstPrevPct,
+        pct: pct2(firstUsedNow, shown.length),
+        deltaPts: firstPrevPct === null || !shown.length ? null : pct2(firstUsedNow, shown.length) - firstPrevPct,
         used: firstUsedNow,
         total: shown.length
       },
@@ -932,7 +1285,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         estimated: drafts.some((r2) => r2.ok && r2.cost === null),
         deltaPct: change(perRequest, prevPerRequest)
       },
-      failures: { failed, requests: userFacingInRange.length, pct: pct(failed, userFacingInRange.length), slaPct: cfg.failureSlaPct },
+      failures: { failed, requests: userFacingInRange.length, pct: pct2(failed, userFacingInRange.length), slaPct: cfg.failureSlaPct },
       platforms,
       pairedUsers: new Set(sessions.map((s) => s.id)).size,
       taps: {
@@ -944,6 +1297,60 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
       users
     }
   };
+  return {
+    ...snapshot,
+    funnel: buildFunnel(data, filters, teamIds, from, now),
+    scorecard: buildScorecard(roster, snapshot, overlayUsersToday, now),
+    roster
+  };
+}
+
+// server/user-detail.ts
+var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var TTL_MS = 3 * 6e4;
+var cache = /* @__PURE__ */ new Map();
+var isUserId = (id) => Boolean(id && UUID2.test(id));
+async function getUserDetail(cfg, id) {
+  const key = id.toLowerCase();
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.detail;
+  const errors = [];
+  const [person, convo] = await Promise.all([
+    readPerson(cfg, key).catch((e) => {
+      errors.push(`PostHog: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }),
+    readConversations(cfg, key).catch((e) => {
+      errors.push(`Backend: ${e instanceof Error ? e.message : String(e)}`);
+      return { sessions: [], truncated: false };
+    })
+  ]);
+  const detail = { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
+  if (!errors.length) cache.set(key, { at: Date.now(), detail });
+  return detail;
+}
+async function readPerson(cfg, id) {
+  const rows = await hogql(
+    cfg,
+    `SELECT ifNull(toString(properties.$geoip_city_name), '') AS city, ifNull(toString(properties.$geoip_subdivision_1_name), '') AS region,
+            ifNull(toString(properties.$geoip_country_name), '') AS country, ifNull(toString(properties.email), '') AS email
+     FROM persons WHERE id IN (SELECT person_id FROM person_distinct_ids WHERE distinct_id = '${id}') LIMIT 1`
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const v = (s) => s && s !== "null" ? s : null;
+  return { city: v(r.city), region: v(r.region), country: v(r.country), email: v(r.email) };
+}
+async function readConversations(cfg, id) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("backend not configured");
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/conversations?user=${id}`, {
+    headers: { "x-admin-api-key": cfg.backendAdminKey },
+    signal: AbortSignal.timeout(15e3)
+  });
+  if (!response.ok) throw new Error(`conversations ${response.status}`);
+  const body = await response.json();
+  const sessions = (body.data?.sessions ?? []).map((s) => ({ sessionId: s.sessionId, startedAt: s.startedAt, personName: s.personName, messages: (s.messages ?? []).map((m) => ({ role: m.role, content: m.content, at: m.at })) })).sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+  return { sessions, truncated: Boolean(body.data?.truncated) };
 }
 
 // server/handler.ts
@@ -993,6 +1400,12 @@ async function handle(request) {
       console.error("dashboard failed", error);
       return json({ error: "Analytics sources are unavailable right now. Retrying shortly." }, 503);
     }
+  }
+  if (path === "/api/user" && method === "GET") {
+    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    const id = url.searchParams.get("id");
+    if (!isUserId(id)) return json({ error: "id must be a user id" }, 400);
+    return json(await getUserDetail(config(), id));
   }
   return json({ error: "Not found" }, 404);
 }

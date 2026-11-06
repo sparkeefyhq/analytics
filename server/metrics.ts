@@ -15,6 +15,7 @@ import type {
   RetentionRow,
   Snapshot,
 } from './types';
+import { buildFunnel, buildRoster, buildScorecard } from './users';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -427,7 +428,11 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   }
   const mainVersion = [...versionCounts.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0], undefined, { numeric: true }))[0]?.[0] ?? null;
   const r = (x: Ratio) => x.pct;
-  return {
+  const todayStartMs = dayStartMs(today);
+  const overlayUsersToday = new Set(overlayEvents.filter((e) => e.action === 'draft' && e.status === 'ok' && t(e.ts) >= todayStartMs).map((e) => e.id)).size;
+  const teamIds = new Set(data.people.filter((p) => p.team).map((p) => p.id));
+  const roster = buildRoster({ data, people, versionOf, from, now });
+  const snapshot: Omit<Snapshot, 'funnel' | 'scorecard' | 'roster'> = {
     generatedAt: data.generatedAt,
     servedAt: new Date(now).toISOString(),
     stale: data.sourceError !== null,
@@ -506,5 +511,11 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
       },
       users,
     },
+  };
+  return {
+    ...snapshot,
+    funnel: buildFunnel(data, filters, teamIds, from, now),
+    scorecard: buildScorecard(roster, snapshot, overlayUsersToday, now),
+    roster,
   };
 }
