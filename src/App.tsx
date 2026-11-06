@@ -230,7 +230,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return;
     const v = search.trim().toLowerCase();
-    if (['overview', 'home'].includes(v)) return go('overview');
+    if (['investor', 'overview', 'home'].includes(v)) return go('overview');
     if (['onboarding', 'product', 'retention', 'funnel'].includes(v)) return go('onboarding');
     if (v === 'overlay') return go('overlay');
     if (route !== 'overlay' && route !== 'users') go('users');
@@ -238,9 +238,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
 
   const nav = useMemo(
     () => [
-      ['overview', 'Overview', LayoutGrid],
-      ['overlay', 'Overlay', Layers],
       ['onboarding', 'Onboarding', TrendingUp],
+      ['overlay', 'Overlay', Layers],
+      ['overview', 'Investor', LayoutGrid],
       ['users', 'Users', Users],
     ] as const,
     [],
@@ -349,7 +349,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
               PostHog refresh is paused for a few minutes (rate limit). Event numbers are from {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'earlier'}; backend numbers are live.
             </div>
           )}
-          <LiveStrip audience={filters.audience} onActivity={onLiveActivity} person={livePerson} onClear={() => watch(null)} onPick={watch} />
+          {route === 'users' && (
+            <LiveStrip audience={filters.audience} onActivity={onLiveActivity} person={livePerson} onClear={() => watch(null)} onPick={watch} />
+          )}
           {route === 'overview' && <OverviewPage data={data} loading={loading} filters={filters} />}
           {route === 'onboarding' && <ProductPage data={data} loading={loading} filters={filters} />}
           {route === 'overlay' && <OverlayPage data={data} loading={loading} filters={filters} search={search} />}
