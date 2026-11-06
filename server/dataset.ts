@@ -128,11 +128,13 @@ let inflight: Promise<Dataset> | null = null;
 
 const hourOf = (ts: string) => new Date(Math.floor(Date.parse(ts) / 3_600_000) * 3_600_000).toISOString();
 
-function baseFilter(cfg: Config, start: string) {
+export function baseFilter(cfg: Config, start: string) {
   const excluded = [...cfg.excludedIds].filter((id) => UUID.test(id));
   // Test traffic is kept in the rows (tc column) so its ids can be dropped everywhere; system traffic is never read.
   return [
-    `timestamp >= toDateTime('${start}')`,
+    // 6 Nov: always UTC. A bare toDateTime() is read in the project's timezone (IST), so the 1-minute
+    // "recent" read started 5.5 h early and every event of the last 5.5 h was counted twice.
+    `timestamp >= toDateTime('${start}', 'UTC')`,
     'length(distinct_id) = 36',
     `ifNull(toString(properties.traffic_class), '') != 'system'`,
     excluded.length ? `distinct_id NOT IN (${excluded.map((id) => `'${id}'`).join(',')})` : 'true',

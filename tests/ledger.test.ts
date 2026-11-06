@@ -144,3 +144,9 @@ test("6 Nov (john's case): every in-app message counts, including the ones Safet
     { messages: 8, answered: 2, safety: 6, failed: 0 },
   );
 });
+
+test('6 Nov: every PostHog time filter says UTC (a bare toDateTime is read as IST and double counted 5.5 h)', async () => {
+  const { baseFilter } = await import('../server/dataset');
+  const f = baseFilter({ ...cfgFull, excludedIds: new Set() } as never, '2026-11-06 10:00:00');
+  assert.match(f, /toDateTime\('2026-11-06 10:00:00', 'UTC'\)/);
+});
