@@ -385,3 +385,28 @@ th.r, td.r { text-align: right; }
 .roster td:first-child { min-width: 250px; }
 .roster .flags { flex-wrap: nowrap; overflow: hidden; }
 .roster td { padding-top: 12px; padding-bottom: 12px; }
+
+/* Live strip (6 Nov) */
+.live { padding: 16px 20px; margin-bottom: 24px; }
+.live-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.live-head b { font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; font-size: 11px; }
+.live-sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none; animation: live-pulse 1.6s ease-in-out infinite; }
+.live-dot.off { background: var(--muted); animation: none; }
+@keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(58, 174, 135, 0.5); } 50% { box-shadow: 0 0 0 5px rgba(58, 174, 135, 0); } }
+.live-empty { color: var(--muted); font-size: 13px; margin-top: 10px; }
+.live-list { list-style: none; margin: 10px 0 0; padding: 0; max-height: 236px; overflow-y: auto; }
+.live-list li { display: grid; grid-template-columns: minmax(80px, 160px) 1fr auto; gap: 12px; align-items: baseline; padding: 6px 8px; border-radius: 8px; font-size: 13px; line-height: 18px; }
+.live-list li + li { border-top: 1px solid var(--line); border-radius: 0; }
+.live-list .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-list .what { color: var(--ink); min-width: 0; }
+.live-list .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.live-list li.good .what { color: var(--green); }
+.live-list li.bad .what { color: var(--red); }
+.live-list li.new { animation: live-in 1.8s ease-out; }
+@keyframes live-in { 0% { background: var(--green-bg); transform: translateY(-4px); opacity: 0; } 15% { opacity: 1; transform: none; } 100% { background: transparent; } }
+@media (max-width: 640px) {
+  .live-list li { grid-template-columns: 1fr auto; }
+  .live-list .what { grid-column: 1 / -1; grid-row: 2; }
+}
+@media (prefers-reduced-motion: reduce) { .live-dot, .live-list li.new { animation: none; } }

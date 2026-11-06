@@ -1,5 +1,5 @@
 import { Check, Copy, ExternalLink, MessageSquare, Search, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filters, RosterUser, Snapshot, UserDetail } from '../../server/types';
 import { Skel } from '../components/parts';
 import { ago, downloadCsv, int, pct, secs, usd } from '../format';
@@ -228,6 +228,20 @@ function UserPanel({ user: u, onClose }: { user: RosterUser; onClose: () => void
       removeEventListener('keydown', onKey);
     };
   }, [u.id, onClose]);
+  // 6 Nov (live): when this person does something new, re-read their chats in place, no skeleton.
+  const firstActive = useRef(u.lastActive);
+  useEffect(() => {
+    if (u.lastActive === firstActive.current) return;
+    firstActive.current = u.lastActive;
+    let live = true;
+    fetch(`/api/user?id=${u.id}`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: UserDetail | null) => live && d && setDetail(d))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [u.id, u.lastActive]);
 
   const o = u.overlay;
   const total = sends(u);

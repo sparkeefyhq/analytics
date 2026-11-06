@@ -169,6 +169,72 @@ function funnelAfter(steps, cut, newSince) {
   return steps.filter((s) => (first.get(s.id) ?? 0) >= cut && (!s.account || newSince.has(s.id)));
 }
 
+// server/ledger.ts
+var LEDGER_OVERLAP_MS = 3e4;
+var state = {
+  overlay: /* @__PURE__ */ new Map(),
+  funnel: /* @__PURE__ */ new Map(),
+  links: /* @__PURE__ */ new Map(),
+  cursor: (/* @__PURE__ */ new Date(0)).toISOString(),
+  readAt: 0,
+  available: true
+};
+var zip = (columns, row) => Object.fromEntries(columns.map((c, i) => [c, row[i]]));
+function applyPage(page, into = state) {
+  for (const r of page.overlay) {
+    const row = zip(page.columns.overlay, r);
+    into.overlay.set(row.id, row);
+  }
+  for (const r of page.funnel) {
+    const row = zip(page.columns.funnel, r);
+    into.funnel.set(row.id, row);
+  }
+  for (const r of page.links) into.links.set(String(r[0]), String(r[1]).toLowerCase());
+}
+async function refreshLedger(cfg) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) return { ok: false, error: "backend not configured" };
+  try {
+    for (let page = 0; page < 50; page += 1) {
+      const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/events?since=${encodeURIComponent(state.cursor)}&limit=20000`, {
+        headers: { "x-admin-api-key": cfg.backendAdminKey },
+        signal: AbortSignal.timeout(15e3)
+      });
+      if (response.status === 404) {
+        state.available = false;
+        return { ok: false, error: "ledger not deployed" };
+      }
+      if (!response.ok) throw new Error(`ledger ${response.status}`);
+      const body = await response.json();
+      if (!body.data) throw new Error("ledger: empty response");
+      applyPage(body.data);
+      state.available = true;
+      if (body.data.more) {
+        state.cursor = new Date(Date.parse(body.data.until) - 1).toISOString();
+        continue;
+      }
+      state.cursor = new Date(Math.max(0, Date.parse(body.data.until) - LEDGER_OVERLAP_MS)).toISOString();
+      break;
+    }
+    state.readAt = Date.now();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+function ledgerView() {
+  const overlay = [...state.overlay.values()];
+  const funnel = [...state.funnel.values()];
+  const min = (xs) => xs.length ? xs.reduce((a, b) => b < a ? b : a) : null;
+  return {
+    overlay,
+    funnel,
+    links: state.links,
+    overlayFrom: min(overlay.map((r) => r.at)),
+    funnelFrom: min(funnel.map((r) => r.at)),
+    readAt: state.readAt
+  };
+}
+
 // server/posthog.ts
 async function hogql(cfg, query) {
   if (!cfg.posthogApiKey) throw new Error("POSTHOG_PERSONAL_API_KEY is not set");
@@ -275,10 +341,10 @@ async function pool(tasks, limit) {
 }
 var HISTORY_MS = 15 * 6e4;
 var RECENT_MS = 6e4;
-var BACKEND_MS = 15e3;
+var BACKEND_MS = 5e3;
 var BACKOFF_MS = 5 * 6e4;
 var OVERLAP_MS = 2 * 6e4;
-var state = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
+var state2 = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
 var inflight = null;
 var hourOf = (ts) => new Date(Math.floor(Date.parse(ts) / 36e5) * 36e5).toISOString();
 function baseFilter(cfg, start) {
@@ -396,6 +462,57 @@ function merge(history, recent) {
     steps: [...history.raw.steps, ...recent.steps]
   };
 }
+function knownNames() {
+  return new Map((state2.backend?.data.members ?? []).map((m) => [m.id.toLowerCase(), m.name]));
+}
+var ms = (ts) => Date.parse(ts.includes("T") || ts.includes("Z") ? ts : `${ts.replace(" ", "T")}Z`);
+function withLedger(raw, ledger) {
+  const tc = (value) => value === "internal" ? "internal" : "";
+  const overlayFrom = ledger.overlayFrom === null ? Infinity : Date.parse(ledger.overlayFrom);
+  const funnelFrom = ledger.funnelFrom === null ? Infinity : Date.parse(ledger.funnelFrom);
+  const userOf = (f) => f.user ?? ledger.links.get(f.distinct) ?? "";
+  const overlay = [
+    ...raw.overlay.filter((r) => ms(r.ts) < overlayFrom),
+    ...ledger.overlay.filter((r) => r.action !== "session").map((r) => ({
+      id: r.user,
+      ts: r.at,
+      tc: tc(r.tc),
+      action: r.action,
+      status: r.status ?? "",
+      app: r.app,
+      latency: r.latency,
+      cost: r.cost,
+      panel: r.panel ?? "",
+      outcome: r.outcome ?? "",
+      mood: r.moodApplied ?? r.mood ?? "",
+      rel: r.relationship ?? ""
+    }))
+  ];
+  const sessions = [
+    ...raw.sessions.filter((r) => ms(r.ts) < overlayFrom),
+    ...ledger.overlay.filter((r) => r.action === "session").map((r) => ({
+      id: r.user,
+      ts: r.at,
+      tc: tc(r.tc),
+      panel: r.panel ?? "",
+      taps: r.taps,
+      firstTry: r.firstTry === null ? null : r.firstTry ? 1 : 0,
+      used: r.used === null ? null : r.used ? 1 : 0,
+      app: r.app
+    }))
+  ];
+  const steps = [...raw.steps.filter((r) => ms(r.ts) < funnelFrom)];
+  const activity = [...raw.activity];
+  for (const f of ledger.funnel) {
+    const uid = userOf(f);
+    if (f.event === "onboarding_step" && f.screen) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: f.screen, ts: f.at });
+    else if (f.event === "onboarding_permission" && f.granted === true && f.permission) steps.push({ pid: uid || f.distinct, uid, did: f.distinct, screen: `perm:${f.permission}`, ts: f.at });
+    if (uid && APP_EVENTS.includes(f.event) && Date.parse(f.at) >= funnelFrom) {
+      activity.push({ id: uid, hour: hourOf(f.at), tc: tc(f.tc), n: 1, version: f.appVersion ?? "" });
+    }
+  }
+  return { overlay, sessions, steps, activity };
+}
 async function getDataset(cfg) {
   if (!inflight) inflight = refresh(cfg).finally(() => inflight = null);
   return inflight;
@@ -404,44 +521,51 @@ var lastBuilt = null;
 async function refresh(cfg) {
   const now = Date.now();
   const start = /^\d{4}-\d{2}-\d{2}$/.test(cfg.dataStart) ? cfg.dataStart : "2026-09-11";
-  const posthogAllowed = now >= state.backoffUntil;
+  const posthogAllowed = now >= state2.backoffUntil;
   let changed = false;
-  if (!state.backend || now - state.backend.at >= BACKEND_MS) {
-    try {
-      state.backend = { at: now, data: await fetchBackend(cfg) };
+  if (!state2.backend || now - state2.backend.at >= BACKEND_MS) {
+    const [backendResult, ledgerResult] = await Promise.allSettled([fetchBackend(cfg), refreshLedger(cfg)]);
+    if (backendResult.status === "fulfilled") {
+      state2.backend = { at: now, data: backendResult.value };
       changed = true;
-    } catch (error) {
-      if (!state.backend) throw error;
-      console.error("backend refresh failed", error);
+    } else {
+      if (!state2.backend) throw backendResult.reason;
+      console.error("backend refresh failed", backendResult.reason);
     }
+    if (ledgerResult.status === "fulfilled" && ledgerResult.value.ok) changed = true;
+    else if (ledgerResult.status === "fulfilled" && ledgerResult.value.error !== "ledger not deployed") console.error("ledger refresh failed", ledgerResult.value.error);
   }
   if (posthogAllowed) {
     try {
-      if (!state.history || now - state.history.at >= HISTORY_MS) {
+      if (!state2.history || now - state2.history.at >= HISTORY_MS) {
         const raw2 = await queryHistory(cfg, start);
-        state.history = { at: Date.now(), since: now - OVERLAP_MS, raw: raw2 };
-        state.recent = { at: Date.now(), raw: { overlay: [], activity: [], sessions: [], steps: [] } };
+        state2.history = { at: Date.now(), since: now - OVERLAP_MS, raw: raw2 };
+        state2.recent = { at: Date.now(), raw: { overlay: [], activity: [], sessions: [], steps: [] } };
         changed = true;
-      } else if (!state.recent || now - state.recent.at >= RECENT_MS) {
-        state.recent = { at: Date.now(), raw: await queryRecent(cfg, state.history.since) };
+      } else if (!state2.recent || now - state2.recent.at >= RECENT_MS) {
+        state2.recent = { at: Date.now(), raw: await queryRecent(cfg, state2.history.since) };
         changed = true;
       }
-      state.lastError = null;
+      state2.lastError = null;
     } catch (error) {
-      state.lastError = error instanceof Error ? error.message : String(error);
-      state.backoffUntil = now + BACKOFF_MS;
+      state2.lastError = error instanceof Error ? error.message : String(error);
+      state2.backoffUntil = now + BACKOFF_MS;
       console.error("posthog refresh failed; backing off", error);
     }
   }
-  if (!state.backend) throw new Error(state.lastError ?? "No data yet");
+  if (!state2.backend) throw new Error(state2.lastError ?? "No data yet");
   if (!changed && lastBuilt) return lastBuilt.data;
   const empty = { overlay: [], activity: [], sessions: [], steps: [] };
-  const raw = state.history ? merge(state.history, state.recent?.raw ?? null) : empty;
-  const posthogAt = state.history ? Math.max(state.history.at, state.recent?.at ?? 0) : null;
-  const built = assemble(cfg, start, state.backend.data, raw, {
+  const raw = withLedger(state2.history ? merge(state2.history, state2.recent?.raw ?? null) : empty, ledgerView());
+  const posthogAt = state2.history ? Math.max(state2.history.at, state2.recent?.at ?? 0) : null;
+  const built = assemble(cfg, start, state2.backend.data, raw, {
     posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
-    backendAt: new Date(state.backend.at).toISOString(),
-    error: state.lastError
+    backendAt: new Date(state2.backend.at).toISOString(),
+    error: state2.lastError,
+    ledgerFrom: (() => {
+      const v = ledgerView();
+      return [v.overlayFrom, v.funnelFrom].filter((x) => x !== null).sort()[0] ?? null;
+    })()
   });
   const data = applyCountFrom(built, cfg.countFrom);
   lastBuilt = { at: now, data };
@@ -512,7 +636,8 @@ function assemble(cfg, start, backend, raw, fresh) {
     sources: {
       posthogAt: fresh.posthogAt,
       backendAt: fresh.backendAt,
-      overlayCallsFrom: backend.overlay?.length ? backend.overlay.reduce((min, c) => c.at < min ? c.at : min, backend.overlay[0].at) : null
+      overlayCallsFrom: backend.overlay?.length ? backend.overlay.reduce((min, c) => c.at < min ? c.at : min, backend.overlay[0].at) : null,
+      ledgerFrom: fresh.ledgerFrom
     }
   };
 }
@@ -563,6 +688,34 @@ function lastScreens(steps) {
     if (!cur || s.ts > cur.ts) last.set(s.id, { screen: s.screen, ts: s.ts });
   }
   return [...last.entries()].map(([id, v]) => ({ id, screen: v.screen }));
+}
+
+// server/live.ts
+var LIVE_OVERLAP_MS = 15e3;
+function filterLive(rows, cfg, audience) {
+  const cut = cfg.countFrom ? Date.parse(cfg.countFrom) : Number.NEGATIVE_INFINITY;
+  return rows.filter((r) => {
+    const id = r.user.toLowerCase();
+    if (cfg.excludedIds.has(id)) return false;
+    if (Number.isFinite(cut) && Date.parse(r.at) < cut) return false;
+    return audience === "internal" ? cfg.teamIds.has(id) : !cfg.teamIds.has(id);
+  });
+}
+async function getLive(cfg, since, audience, names) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("backend not configured");
+  const parsed = since ? Date.parse(since) : Number.NaN;
+  const from = new Date((Number.isFinite(parsed) ? parsed : Date.now() - 10 * 6e4) - LIVE_OVERLAP_MS).toISOString();
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/live?since=${encodeURIComponent(from)}`, {
+    headers: { "x-admin-api-key": cfg.backendAdminKey },
+    signal: AbortSignal.timeout(8e3)
+  });
+  if (!response.ok) throw new Error(`live ${response.status}`);
+  const body = await response.json();
+  const rows = filterLive(Array.isArray(body.data?.rows) ? body.data.rows : [], cfg, audience).map((r) => ({
+    ...r,
+    name: r.name ?? names.get(r.user.toLowerCase()) ?? null
+  }));
+  return { now: body.data?.now ?? (/* @__PURE__ */ new Date()).toISOString(), rows, truncated: Boolean(body.data?.truncated) };
 }
 
 // server/users.ts
@@ -641,7 +794,7 @@ function buildFunnel(data, filters, teamIds, from, now) {
   });
   const first = /* @__PURE__ */ new Map();
   for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
-  const people = new Set([...first.entries()].filter(([, ms]) => ms >= from && ms <= now).map(([id]) => id));
+  const people = new Set([...first.entries()].filter(([, ms2]) => ms2 >= from && ms2 <= now).map(([id]) => id));
   const byScreen = /* @__PURE__ */ new Map();
   const offsets = /* @__PURE__ */ new Map();
   for (const s of steps) {
@@ -831,7 +984,7 @@ function buildScorecard(roster, snap, overlayUsersToday, now) {
   const firstUseful = cohort.filter((u) => within(u, u.journey.firstActAt, 48));
   const eligible = cohort.filter((u) => u.journey.firstActAt && now - t(u.journey.firstActAt) >= 7 * DAY);
   const ov = snap.overlay;
-  const ms = (v) => v === null ? "\u2013" : `${(v / 1e3).toFixed(2)}s`;
+  const ms2 = (v) => v === null ? "\u2013" : `${(v / 1e3).toFixed(2)}s`;
   const repeatYes = eligible.filter((u) => u.journey.repeat === "yes").length;
   const repeatReady = n > 0 && eligible.length >= Math.ceil(n * 0.75);
   const repeatGate = gate(
@@ -858,8 +1011,8 @@ function buildScorecard(roster, snap, overlayUsersToday, now) {
       { key: "dou", label: "Daily overlay users", value: String(overlayUsersToday), target: "4\u20136", ok: overlayUsersToday >= 4 ? true : null, help: "Unique users with a delivered draft today (IST)" },
       { key: "spu", label: "Sessions per active user", value: ov.sessionsPerUser.value === null ? "\u2013" : ov.sessionsPerUser.value.toFixed(1), target: "1\u20132", ok: ov.sessionsPerUser.value === null ? null : ov.sessionsPerUser.value >= 1, help: "Per active overlay user per day" },
       { key: "fda", label: "First draft adoption", value: ov.firstReply.pct === null ? "\u2013" : `${ov.firstReply.pct.toFixed(0)}%`, target: "\u226550%", ok: ov.firstReply.pct === null ? null : ov.firstReply.pct >= 50, help: "Sessions where the first draft was used" },
-      { key: "p50", label: "Median response", value: ms(ov.latency.p50), target: "\u22641.5s", ok: ov.latency.p50 === null ? null : ov.latency.p50 <= 1500, help: "Tap to draft shown" },
-      { key: "p95", label: "P95 response", value: ms(ov.latency.p95), target: "\u22643s", ok: ov.latency.p95 === null ? null : ov.latency.p95 <= 3e3, help: "95% of drafts within this time" },
+      { key: "p50", label: "Median response", value: ms2(ov.latency.p50), target: "\u22641.5s", ok: ov.latency.p50 === null ? null : ov.latency.p50 <= 1500, help: "Tap to draft shown" },
+      { key: "p95", label: "P95 response", value: ms2(ov.latency.p95), target: "\u22643s", ok: ov.latency.p95 === null ? null : ov.latency.p95 <= 3e3, help: "95% of drafts within this time" },
       { key: "fail", label: "Failed requests", value: ov.failures.pct === null ? "\u2013" : `${ov.failures.pct.toFixed(1)}%`, target: "<1%", ok: ov.failures.pct === null ? null : ov.failures.pct < 1, help: `${ov.failures.failed} of ${ov.failures.requests} requests` }
     ],
     nearCap: roster.filter((u) => u.flags.some((f) => f.key === "cap")).length
@@ -871,7 +1024,7 @@ var HOUR2 = 36e5;
 var DAY2 = 24 * HOUR2;
 var IST2 = 5.5 * HOUR2;
 var SESSION_GAP_MS = 5 * 6e4;
-var istDay = (ms) => Math.floor((ms + IST2) / DAY2);
+var istDay = (ms2) => Math.floor((ms2 + IST2) / DAY2);
 var dayStartMs = (day) => day * DAY2 - IST2;
 var t2 = (iso) => Date.parse(iso);
 var pct2 = (n, d) => d > 0 ? n / d * 100 : null;
@@ -1036,8 +1189,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const mau = activeBetween(now - 30 * DAY2, now).size;
   const overlayEvents = data.overlay.filter((e) => ids.has(e.id));
   const sessions = buildSessions(overlayEvents, data.sessions.filter((s) => ids.has(s.id)));
-  const inRange = (ms) => ms >= from && ms <= now;
-  const inPrev = (ms) => prevFrom !== null && ms >= prevFrom && ms < from;
+  const inRange = (ms2) => ms2 >= from && ms2 <= now;
+  const inPrev = (ms2) => prevFrom !== null && ms2 >= prevFrom && ms2 < from;
   const rangeSessions = sessions.filter((s) => inRange(s.start));
   const prevSessions = sessions.filter((s) => inPrev(s.start));
   const frequency = (list2) => {
@@ -1225,7 +1378,8 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
       posthog: !data.sources.posthogAt ? "down" : data.sourceError ? "stale" : "live",
       posthogAt: data.sources.posthogAt,
       backendAt: data.sources.backendAt,
-      overlayCalls: data.sources.overlayCallsFrom ? "backend" : "posthog"
+      overlayCalls: data.sources.overlayCallsFrom ? "backend" : "posthog",
+      ledgerFrom: data.sources.ledgerFrom ?? null
     },
     filters,
     rangeLabel: label,
@@ -1308,15 +1462,17 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
 // server/user-detail.ts
 var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TTL_MS = 3 * 6e4;
-var cache = /* @__PURE__ */ new Map();
+var personCache = /* @__PURE__ */ new Map();
 var isUserId = (id) => Boolean(id && UUID2.test(id));
 async function getUserDetail(cfg, id) {
   const key = id.toLowerCase();
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.detail;
+  const hit = personCache.get(key);
   const errors = [];
   const [person, convo] = await Promise.all([
-    readPerson(cfg, key).catch((e) => {
+    hit && Date.now() - hit.at < TTL_MS ? Promise.resolve(hit.person) : readPerson(cfg, key).then((p) => {
+      personCache.set(key, { at: Date.now(), person: p });
+      return p;
+    }).catch((e) => {
       errors.push(`PostHog: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }),
@@ -1325,9 +1481,7 @@ async function getUserDetail(cfg, id) {
       return { sessions: [], truncated: false };
     })
   ]);
-  const detail = { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
-  if (!errors.length) cache.set(key, { at: Date.now(), detail });
-  return detail;
+  return { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
 }
 async function readPerson(cfg, id) {
   const rows = await hogql(
@@ -1399,6 +1553,16 @@ async function handle(request) {
     } catch (error) {
       console.error("dashboard failed", error);
       return json({ error: "Analytics sources are unavailable right now. Retrying shortly." }, 503);
+    }
+  }
+  if (path === "/api/live" && method === "GET") {
+    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    const audience = pick(url.searchParams.get("audience"), ["external", "internal"], "external");
+    try {
+      return json(await getLive(config(), url.searchParams.get("since"), audience, knownNames()));
+    } catch (error) {
+      console.error("live failed", error);
+      return json({ error: "Live feed unavailable" }, 503);
     }
   }
   if (path === "/api/user" && method === "GET") {

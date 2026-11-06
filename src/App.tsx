@@ -2,6 +2,7 @@ import { ChevronDown, Download, Layers, LayoutGrid, Search, TrendingUp, Users } 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Audience, Filters, Range, Snapshot, Surface } from '../server/types';
 import { ago, downloadCsv } from './format';
+import { LiveStrip } from './components/live';
 import { Login } from './pages/Login';
 import { OverlayPage } from './pages/Overlay';
 import { OverviewPage } from './pages/Overview';
@@ -144,6 +145,15 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       clearInterval(clock);
       document.removeEventListener('visibilitychange', onVisible);
     };
+  }, [load]);
+
+  // Live: something new happened -> re-read the numbers now (throttled), not at the next 15 s tick.
+  const lastLive = useRef(0);
+  const onLiveActivity = useCallback(() => {
+    const now = Date.now();
+    if (now - lastLive.current < 4_000) return;
+    lastLive.current = now;
+    load();
   }, [load]);
 
   const selectUser = useCallback((id: string | null) => {
@@ -310,7 +320,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
           {error && <div className="banner">{data ? `Showing the last good numbers. ${error}` : error}</div>}
           {!error && data?.sources.posthog === 'down' && (
             <div className="banner">
-              PostHog is not reachable. Accounts, onboarding, activity, cost, latency and failures are live from the backend; reply use, apps and taps are paused until PostHog is back.
+              {data.sources.ledgerFrom
+                ? 'PostHog is not reachable. Everything since our own ledger started is live from the backend; only older history waits for PostHog.'
+                : 'PostHog is not reachable. Accounts, onboarding, activity, cost, latency and failures are live from the backend; reply use, apps and taps are paused until PostHog is back.'}
             </div>
           )}
           {!error && data?.sources.posthog === 'stale' && (
@@ -318,6 +330,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
               PostHog refresh is paused for a few minutes (rate limit). Event numbers are from {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'earlier'}; backend numbers are live.
             </div>
           )}
+          <LiveStrip audience={filters.audience} onActivity={onLiveActivity} />
           {route === 'overview' && <OverviewPage data={data} loading={loading} filters={filters} />}
           {route === 'onboarding' && <ProductPage data={data} loading={loading} filters={filters} />}
           {route === 'overlay' && <OverlayPage data={data} loading={loading} filters={filters} search={search} />}

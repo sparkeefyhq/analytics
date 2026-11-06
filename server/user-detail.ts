@@ -2,7 +2,8 @@
  * /api/user?id=: what the detail panel loads on demand for one person (never for the whole list):
  *  - their in-app Wingman conversations, from the backend's admin conversation reader,
  *  - where they are (PostHog person: city / region / country) and their email if they gave one.
- * Cached per person for a few minutes so opening the panel twice costs no extra PostHog query.
+ * Location is cached per person for a few minutes (it costs a PostHog query); conversations are
+ * read fresh every time (one small Postgres read) so a new chat shows up right away (6 Nov).
  */
 import type { Config } from './config';
 import { hogql } from './posthog';
@@ -10,28 +11,32 @@ import type { UserDetail } from './types';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TTL_MS = 3 * 60_000;
-const cache = new Map<string, { at: number; detail: UserDetail }>();
+const personCache = new Map<string, { at: number; person: UserDetail['person'] }>();
 
 export const isUserId = (id: string | null): id is string => Boolean(id && UUID.test(id));
 
 export async function getUserDetail(cfg: Config, id: string): Promise<UserDetail> {
   const key = id.toLowerCase();
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.detail;
+  const hit = personCache.get(key);
   const errors: string[] = [];
   const [person, convo] = await Promise.all([
-    readPerson(cfg, key).catch((e) => {
-      errors.push(`PostHog: ${e instanceof Error ? e.message : String(e)}`);
-      return null;
-    }),
+    hit && Date.now() - hit.at < TTL_MS
+      ? Promise.resolve(hit.person)
+      : readPerson(cfg, key)
+          .then((p) => {
+            personCache.set(key, { at: Date.now(), person: p });
+            return p;
+          })
+          .catch((e) => {
+            errors.push(`PostHog: ${e instanceof Error ? e.message : String(e)}`);
+            return null;
+          }),
     readConversations(cfg, key).catch((e) => {
       errors.push(`Backend: ${e instanceof Error ? e.message : String(e)}`);
       return { sessions: [], truncated: false };
     }),
   ]);
-  const detail: UserDetail = { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
-  if (!errors.length) cache.set(key, { at: Date.now(), detail });
-  return detail;
+  return { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
 }
 
 async function readPerson(cfg: Config, id: string): Promise<UserDetail['person']> {

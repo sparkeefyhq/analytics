@@ -1,6 +1,7 @@
 import { clearCookie, emailAllowed, getSession, normaliseEmail, passwordMatches, sessionCookie } from './auth';
 import { config } from './config';
-import { getDataset } from './dataset';
+import { getDataset, knownNames } from './dataset';
+import { getLive } from './live';
 import { computeSnapshot } from './metrics';
 import { pendingSync } from './posthog-sync';
 import { getUserDetail, isUserId } from './user-detail';
@@ -62,6 +63,17 @@ export async function handle(request: Request): Promise<Response> {
     } catch (error) {
       console.error('dashboard failed', error);
       return json({ error: 'Analytics sources are unavailable right now. Retrying shortly.' }, 503);
+    }
+  }
+
+  if (path === '/api/live' && method === 'GET') {
+    if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
+    const audience = pick<Audience>(url.searchParams.get('audience'), ['external', 'internal'], 'external');
+    try {
+      return json(await getLive(config(), url.searchParams.get('since'), audience, knownNames()));
+    } catch (error) {
+      console.error('live failed', error);
+      return json({ error: 'Live feed unavailable' }, 503);
     }
   }
 

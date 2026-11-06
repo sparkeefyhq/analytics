@@ -57,6 +57,8 @@ export interface Dataset {
     backendAt: string;
     /** First backend overlay call; from here on overlay requests/latency/cost come from the backend. */
     overlayCallsFrom: string | null;
+    /** 6 Nov: first row of our own ledger (overlay use, sessions, onboarding); from here on, not PostHog. */
+    ledgerFrom?: string | null;
   };
 }
 
@@ -114,7 +116,7 @@ export interface Snapshot {
   generatedAt: string;
   servedAt: string;
   stale: boolean;
-  sources: { posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog' };
+  sources: { posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog'; ledgerFrom?: string | null };
   filters: Filters;
   rangeLabel: string;
   /** Analytics reset time, when set: every number counts from here. */
