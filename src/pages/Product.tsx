@@ -15,7 +15,9 @@ const CHECKPOINTS = [
   { label: 'Meet Keefie', start: 'IntroVideo', event: 'MeetKeefie' },
   { label: 'Create their profile', start: 'OverlayVideo', event: 'ProfilePicture' },
   { label: 'Try the demo', start: 'TryKeefie', event: 'TryKeefie' },
-  { label: 'Log in', start: 'PhoneLogin', event: 'PhoneLogin' },
+  // Logged in = reached the first screen after sign-in. Google sign-in skips PhoneLogin/Otp, so
+  // counting PhoneLogin showed 2 of the 5 people who actually signed in (7 Nov live data).
+  { label: 'Log in', start: 'PhoneLogin', event: 'NotificationPermission' },
   { label: 'Permissions', start: 'NotificationPermission', event: 'Permissions' },
   { label: 'Reach Home', start: 'Home', event: 'Home' },
 ];
