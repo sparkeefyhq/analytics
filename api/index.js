@@ -28,14 +28,14 @@ var decode = (value) => {
   return new TextDecoder().decode(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
 };
 async function hmac(value) {
-  const key = await crypto.subtle.importKey(
+  const key2 = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret("SPARKEEFY_SESSION_SECRET")),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"]
   );
-  return b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
+  return b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key2, new TextEncoder().encode(value))));
 }
 async function sha256(value) {
   return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))));
@@ -286,9 +286,9 @@ function oneReplyPerTurn(facts) {
       out.push({ id: f.user, at: f.at });
       continue;
     }
-    const key = `${f.user.toLowerCase()}|${f.request}`;
-    const seen = firstByTurn.get(key);
-    if (!seen || Date.parse(f.at) < Date.parse(seen.at)) firstByTurn.set(key, f);
+    const key2 = `${f.user.toLowerCase()}|${f.request}`;
+    const seen = firstByTurn.get(key2);
+    if (!seen || Date.parse(f.at) < Date.parse(seen.at)) firstByTurn.set(key2, f);
   }
   for (const f of firstByTurn.values()) out.push({ id: f.user, at: f.at });
   return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
@@ -702,11 +702,11 @@ function appHours(rows) {
 function overlayHours(rows) {
   const counts = /* @__PURE__ */ new Map();
   for (const r of rows) {
-    const key = `${r.id}|${new Date(Math.floor(Date.parse(r.ts) / HOUR_MS) * HOUR_MS).toISOString()}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    const key2 = `${r.id}|${new Date(Math.floor(Date.parse(r.ts) / HOUR_MS) * HOUR_MS).toISOString()}`;
+    counts.set(key2, (counts.get(key2) ?? 0) + 1);
   }
-  return [...counts.entries()].map(([key, n]) => {
-    const [id, hour] = key.split("|");
+  return [...counts.entries()].map(([key2, n]) => {
+    const [id, hour] = key2.split("|");
     return { id, hour, surface: "overlay", n };
   });
 }
@@ -728,9 +728,9 @@ function reduceSteps(rows) {
     const uid = uidOf.get(r.pid);
     const id = uid ?? `anon:${r.pid}`;
     const ts = new Date(r.ts.includes("T") || r.ts.includes("Z") ? r.ts : `${r.ts.replace(" ", "T")}Z`).toISOString();
-    const key = `${id}|${r.screen}`;
-    const cur = best.get(key);
-    if (!cur || ts < cur.ts) best.set(key, { id, screen: r.screen, ts, account: Boolean(uid) });
+    const key2 = `${id}|${r.screen}`;
+    const cur = best.get(key2);
+    if (!cur || ts < cur.ts) best.set(key2, { id, screen: r.screen, ts, account: Boolean(uid) });
   }
   return [...best.values()];
 }
@@ -1052,8 +1052,8 @@ function buildScorecard(roster, snap, overlayUsersToday, now) {
   const cohort = roster.filter((u) => !u.returning);
   const n = cohort.length;
   const within = (u, at, hours) => at !== null && t(at) - t(u.journey.firstOpen) <= hours * HOUR;
-  const gate = (key, label, help, hit, d, target, stretch, pending) => ({
-    key,
+  const gate = (key2, label, help, hit, d, target, stretch, pending) => ({
+    key: key2,
     label,
     help,
     n: hit,
@@ -1415,7 +1415,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   }
   const totalRequests = drafts.length;
   const appRequests = [...byApp.values()].reduce((a, v) => a + v.requests, 0);
-  const platforms = [...byApp.entries()].filter(([, v]) => v.requests > 0 || v.users.size > 0).map(([key, v]) => ({ key, label: appLabel(key), users: v.users.size, requests: v.requests, share: appRequests ? v.requests / appRequests * 100 : 0 })).sort((a, b) => b.requests - a.requests || b.users - a.users);
+  const platforms = [...byApp.entries()].filter(([, v]) => v.requests > 0 || v.users.size > 0).map(([key2, v]) => ({ key: key2, label: appLabel(key2), users: v.users.size, requests: v.requests, share: appRequests ? v.requests / appRequests * 100 : 0 })).sort((a, b) => b.requests - a.requests || b.users - a.users);
   const todayStart = dayStartMs(today);
   const todaySessions = sessions.filter((s) => s.start >= todayStart);
   const tapValues = rangeSessions.map((s) => s.taps ?? 0);
@@ -1543,29 +1543,136 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   };
 }
 
+// server/truth.ts
+var LAUNCH_AT = "2026-11-05T20:48:16.000Z";
+var SETTLE_MS = 9e4;
+var READ_MS = 3e4;
+var state3 = {
+  at: 0,
+  raw: null,
+  error: null,
+  firstSeen: /* @__PURE__ */ new Map(),
+  logged: /* @__PURE__ */ new Set(),
+  last: null
+};
+var inflight2 = null;
+function truthFrom(cfg) {
+  const cf = cfg.countFrom ? Date.parse(cfg.countFrom) : Number.NaN;
+  return Number.isFinite(cf) && cf > Date.parse(LAUNCH_AT) ? new Date(cf).toISOString() : LAUNCH_AT;
+}
+async function read(cfg) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("backend not configured");
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/truth?from=${encodeURIComponent(truthFrom(cfg))}`, {
+    headers: { "x-admin-api-key": cfg.backendAdminKey },
+    signal: AbortSignal.timeout(2e4)
+  });
+  if (response.status === 404) throw new Error("database check not deployed on the backend yet");
+  if (!response.ok) throw new Error(`database check ${response.status}`);
+  const body = await response.json();
+  if (!body.data || !Array.isArray(body.data.accounts)) throw new Error("database check: unexpected response");
+  state3.raw = body.data;
+  state3.error = null;
+}
+async function refresh2(cfg, force) {
+  if (!force && state3.raw && Date.now() - state3.at < READ_MS) return;
+  if (!inflight2)
+    inflight2 = read(cfg).catch((e) => {
+      state3.error = e instanceof Error ? e.message : String(e);
+    }).finally(() => {
+      state3.at = Date.now();
+      inflight2 = null;
+    });
+  await inflight2;
+}
+function fullRoster(data, cfg, now) {
+  const base = { range: "all", surface: "combined", version: "all" };
+  return [
+    ...computeSnapshot(data, { ...base, audience: "external" }, cfg, now).roster,
+    ...computeSnapshot(data, { ...base, audience: "internal" }, cfg, now).roster
+  ];
+}
+var key = (d) => `${d.user}|${d.field}|${d.dashboard}|${d.database}`;
+function compareTruth(roster, raw, cfg, firstSeen, now) {
+  const lc = (s) => s.toLowerCase();
+  const accounts = raw.accounts.map((a) => ({ ...a, id: lc(a.id) })).filter((a) => !cfg.excludedIds.has(a.id) && !a.testTraffic);
+  const inDb = new Set(accounts.map((a) => a.id));
+  const shown = new Map(roster.map((u) => [lc(u.id), u]));
+  const diffs = [];
+  const push = (user, field, dashboard, database) => diffs.push({ user, field, dashboard, database });
+  for (const a of accounts) {
+    const u = shown.get(a.id);
+    if (!u) {
+      push(a.id, "on the dashboard", "missing", a.newSinceFrom ? "signed up" : "active");
+      continue;
+    }
+    if (u.returning === a.newSinceFrom) push(a.id, "new signup", u.returning ? "returning" : "new", a.newSinceFrom ? "new" : "returning");
+    const pairs = [
+      ["overlay drafts", u.overlay.drafts, a.overlay.drafts],
+      ["copied", u.overlay.copied, a.overlay.copied],
+      ["inserted", u.overlay.inserted, a.overlay.inserted],
+      ["sent as-is", u.overlay.sent.asIs, a.overlay.sent.asIs],
+      ["sent edited", u.overlay.sent.edited, a.overlay.sent.edited],
+      ["sent own words", u.overlay.sent.own, a.overlay.sent.own]
+    ];
+    if (u.app.messages !== null && u.app.messages !== void 0) pairs.push(["in-app messages", u.app.messages, a.app.turns]);
+    for (const [field, d, db] of pairs) if (d !== db) push(a.id, field, d, db);
+  }
+  for (const id of shown.keys()) if (!inDb.has(id)) push(id, "in the database", "shown", "not found");
+  const keys = new Set(diffs.map(key));
+  for (const k of [...firstSeen.keys()]) if (!keys.has(k)) firstSeen.delete(k);
+  for (const k of keys) if (!firstSeen.has(k)) firstSeen.set(k, now);
+  const lasting = diffs.filter((d) => now - (firstSeen.get(key(d)) ?? now) >= SETTLE_MS);
+  return { status: diffs.length === 0 ? "ok" : lasting.length ? "mismatch" : "settling", diffs: lasting.length ? lasting : diffs };
+}
+async function checkTruth(cfg, data, force = false, now = Date.now()) {
+  await refresh2(cfg, force);
+  if (!state3.raw) return state3.last = { status: "down", checkedAt: null, from: null, error: state3.error, diffs: [] };
+  let result;
+  try {
+    result = compareTruth(fullRoster(data, cfg, now), state3.raw, cfg, state3.firstSeen, now);
+  } catch (e) {
+    return state3.last = { status: "down", checkedAt: null, from: state3.raw.from, error: e instanceof Error ? e.message : String(e), diffs: [] };
+  }
+  if (result.status === "mismatch") {
+    const fresh = result.diffs.filter((d) => !state3.logged.has(key(d)));
+    if (fresh.length) console.error("analytics differs from the production database", JSON.stringify(fresh.slice(0, 20)));
+    for (const d of fresh) state3.logged.add(key(d));
+  } else state3.logged.clear();
+  return state3.last = {
+    status: state3.error ? "down" : result.status,
+    checkedAt: new Date(state3.at).toISOString(),
+    from: state3.raw.from,
+    error: state3.error,
+    diffs: result.diffs
+  };
+}
+function lastTruth() {
+  return state3.last;
+}
+
 // server/user-detail.ts
 var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TTL_MS = 3 * 6e4;
 var personCache = /* @__PURE__ */ new Map();
 var isUserId = (id) => Boolean(id && UUID2.test(id));
 async function getUserDetail(cfg, id) {
-  const key = id.toLowerCase();
-  const hit = personCache.get(key);
+  const key2 = id.toLowerCase();
+  const hit = personCache.get(key2);
   const errors = [];
   const [person, convo] = await Promise.all([
-    hit && Date.now() - hit.at < TTL_MS ? Promise.resolve(hit.person) : readPerson(cfg, key).then((p) => {
-      personCache.set(key, { at: Date.now(), person: p });
+    hit && Date.now() - hit.at < TTL_MS ? Promise.resolve(hit.person) : readPerson(cfg, key2).then((p) => {
+      personCache.set(key2, { at: Date.now(), person: p });
       return p;
     }).catch((e) => {
       errors.push(`PostHog: ${e instanceof Error ? e.message : String(e)}`);
       return null;
     }),
-    readConversations(cfg, key).catch((e) => {
+    readConversations(cfg, key2).catch((e) => {
       errors.push(`Backend: ${e instanceof Error ? e.message : String(e)}`);
       return { sessions: [], truncated: false };
     })
   ]);
-  return { id: key, person, conversations: convo.sessions, truncated: convo.truncated, errors };
+  return { id: key2, person, conversations: convo.sessions, truncated: convo.truncated, errors };
 }
 async function readPerson(cfg, id) {
   const rows = await hogql(
@@ -1631,6 +1738,9 @@ async function handle(request) {
     try {
       const data = await getDataset(config());
       const body = computeSnapshot(data, filters, config());
+      await Promise.race([checkTruth(config(), data), new Promise((r) => setTimeout(r, 3e3))]);
+      const truth = lastTruth();
+      body.sources.database = truth ? { status: truth.status, checkedAt: truth.checkedAt, differences: truth.status === "mismatch" ? truth.diffs.length : 0 } : null;
       const sync = pendingSync();
       if (sync) await Promise.race([sync, new Promise((r) => setTimeout(r, 8e3))]);
       return json(body);
@@ -1648,6 +1758,15 @@ async function handle(request) {
     } catch (error) {
       console.error("live failed", error);
       return json({ error: "Live feed unavailable" }, 503);
+    }
+  }
+  if (path === "/api/truth" && method === "GET") {
+    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    try {
+      return json(await checkTruth(config(), await getDataset(config()), url.searchParams.get("fresh") === "1"));
+    } catch (error) {
+      console.error("truth failed", error);
+      return json({ status: "down", checkedAt: null, from: null, error: "Dashboard data unavailable", diffs: [] }, 503);
     }
   }
   if (path === "/api/user" && method === "GET") {
