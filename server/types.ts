@@ -64,7 +64,7 @@ export interface Dataset {
   };
 }
 
-export type Range = '7d' | '30d' | 'all';
+export type Range = '1d' | '7d' | '30d' | 'all';
 export type Surface = 'combined' | 'overlay' | 'app';
 export type Audience = 'external' | 'internal';
 

@@ -1240,9 +1240,9 @@ function buildRequests(data, ids) {
 function windowFor(filters, now, dataStart) {
   const startAll = Date.parse(`${dataStart}T00:00:00+05:30`);
   if (filters.range === "all") return { from: startAll, prevFrom: null, label: "All time" };
-  const days = filters.range === "7d" ? 7 : 30;
+  const days = { "1d": 1, "7d": 7, "30d": 30 }[filters.range];
   const from = Math.max(now - days * DAY2, startAll);
-  return { from, prevFrom: from - days * DAY2, label: `Last ${days} days` };
+  return { from, prevFrom: from - days * DAY2, label: days === 1 ? "Last 24 hours" : `Last ${days} days` };
 }
 function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const versionOf = new Map(data.versions.map((v) => [v.id, v.version]));
@@ -1623,7 +1623,7 @@ async function handle(request) {
   if (path === "/api/dashboard" && method === "GET") {
     if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
     const filters = {
-      range: pick(url.searchParams.get("range"), ["7d", "30d", "all"], "30d"),
+      range: pick(url.searchParams.get("range"), ["1d", "7d", "30d", "all"], "30d"),
       surface: pick(url.searchParams.get("surface"), ["combined", "overlay", "app"], "combined"),
       audience: pick(url.searchParams.get("audience"), ["external", "internal"], "external"),
       version: /^(all|\d+(\.\d+){0,3})$/.test(url.searchParams.get("version") ?? "") ? url.searchParams.get("version") : "all"

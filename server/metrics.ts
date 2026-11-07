@@ -181,9 +181,9 @@ export function buildRequests(data: Dataset, ids: Set<string>): OverlayRequest[]
 function windowFor(filters: Filters, now: number, dataStart: string) {
   const startAll = Date.parse(`${dataStart}T00:00:00+05:30`);
   if (filters.range === 'all') return { from: startAll, prevFrom: null as number | null, label: 'All time' };
-  const days = filters.range === '7d' ? 7 : 30;
+  const days = { '1d': 1, '7d': 7, '30d': 30 }[filters.range];
   const from = Math.max(now - days * DAY, startAll);
-  return { from, prevFrom: from - days * DAY, label: `Last ${days} days` };
+  return { from, prevFrom: from - days * DAY, label: days === 1 ? 'Last 24 hours' : `Last ${days} days` };
 }
 
 export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Config, 'infraMonthlyUsd' | 'revenueMonthlyUsd' | 'costTargetPerMau' | 'onboardingBenchmark' | 'latencySlaMs' | 'failureSlaPct'>, now = Date.now()): Snapshot {

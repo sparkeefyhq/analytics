@@ -48,7 +48,7 @@ export async function handle(request: Request): Promise<Response> {
   if (path === '/api/dashboard' && method === 'GET') {
     if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
     const filters: Filters = {
-      range: pick<Range>(url.searchParams.get('range'), ['7d', '30d', 'all'], '30d'),
+      range: pick<Range>(url.searchParams.get('range'), ['1d', '7d', '30d', 'all'], '30d'),
       surface: pick<Surface>(url.searchParams.get('surface'), ['combined', 'overlay', 'app'], 'combined'),
       audience: pick<Audience>(url.searchParams.get('audience'), ['external', 'internal'], 'external'),
       version: /^(all|\d+(\.\d+){0,3})$/.test(url.searchParams.get('version') ?? '') ? (url.searchParams.get('version') as string) : 'all',

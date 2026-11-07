@@ -15,7 +15,7 @@ export function OverviewPage({ data }: Props) {
   if (!data) return <OverviewSkeleton />;
   const o = data.overview;
   const surfaceNote = data.filters.surface === 'combined' ? '' : data.filters.surface === 'overlay' ? ' · overlay only' : ' · in-app only';
-  const audienceNote = data.filters.audience === 'internal' ? 'TEAM ACCOUNTS ONLY' : `${data.latestVersion ? `V${data.latestVersion}` : ''} PRODUCTION LIVE`;
+  const audienceNote = data.filters.audience === 'internal' ? 'TEAM ACCOUNTS ONLY' : `${data.latestVersion ? `V${data.latestVersion}` : ''} PRODUCTION COHORT`;
   const costOk = o.cost.perActiveUser !== null && o.cost.perActiveUser <= o.cost.target;
   const dropText =
     o.onboarding.total === 0
@@ -30,54 +30,62 @@ export function OverviewPage({ data }: Props) {
         <span className="badge-purple">Founder Telemetry</span>
         <span className="muted-cap">{audienceNote}</span>
       </div>
-      <h1>Overview</h1>
-      <p className="sub">Founder &amp; Investor Summary{surfaceNote}</p>
+      <h1>Investor</h1>
+      <p className="sub">Pilot progress and product usage{surfaceNote}</p>
 
-      <div className="grid g4" style={{ marginTop: 40 }}>
-        <div className="card">
-          <div className="card-label">Daily active users <span className="sdot" style={{ background: 'var(--green)' }} /></div>
-          <div className="value-row">
-            <span className="big">{int(o.dau.value)}</span>
-            <Delta value={o.dau.deltaPct} />
+      <section className="section" aria-label="User activity">
+        <h2 className="section-label">User activity</h2>
+        <div className="grid g4">
+          <div className="card">
+            <div className="card-label">Daily Active Users (DAU) <span className="sdot" style={{ background: 'var(--green)' }} /></div>
+            <div className="value-row">
+              <span className="big">{int(o.dau.value)}</span>
+              <Delta value={o.dau.deltaPct} />
+            </div>
+            <div className="note" title="People can appear in both breakdown counts. The headline counts each person once." style={{ fontSize: 13, color: 'var(--ink)', opacity: 0.8 }}>
+              Overlay: {o.dau.overlay} · In-app: {o.dau.app}
+            </div>
+            <div className="small-muted" style={{ marginTop: 2 }}>Unique users in the last 24 hours</div>
           </div>
-          <div className="note" style={{ fontSize: 13, color: 'var(--ink)', opacity: 0.8 }}>
-            Overlay: {o.dau.overlay} · In-app: {o.dau.app}
+          <div className="card">
+            <div className="card-label">Weekly Active Users (WAU) <span className="sdot" style={{ background: '#e4d6c2' }} /></div>
+            <div className="value-row">
+              <span className="big">{int(o.wau.value)}</span>
+              {o.wau.pctOfMau != null && <span className="pill purple" title="Weekly active users as a share of monthly active users">{pct(o.wau.pctOfMau, 0)} of MAU</span>}
+            </div>
+            <div className="note" style={{ fontSize: 13 }}>Unique users in the last 7 days</div>
           </div>
-          <div className="small-muted" style={{ marginTop: 2 }}>(Deduped, trailing 24h)</div>
+          <div className="card">
+            <div className="card-label">Monthly Active Users (MAU) <span className="sdot" style={{ background: '#e4d6c2' }} /></div>
+            <div className="value-row">
+              <span className="big">{int(o.mau.value)}</span>
+              {o.mau.dauOverMau != null && <span className="pill tan mono" title="Daily active users as a share of monthly active users">DAU/MAU {pct(o.mau.dauOverMau)}</span>}
+            </div>
+            <div className="note" style={{ fontSize: 13 }}>Unique users in the last 30 days</div>
+          </div>
+          <div className="card">
+            <div className="card-label">Overlay sessions per active user <span className="sdot" style={{ background: 'var(--purple)' }} /></div>
+            <div className="value-row" style={{ gap: 6 }}>
+              <span className="big purple">{dec(o.overlayFrequency.value)}</span>
+              <span className="unit">/ day</span>
+            </div>
+            <div className="note" style={{ fontSize: 13 }}>
+              {o.overlayFrequency.value === null ? 'No overlay sessions in this range' : 'Daily average'}
+              {o.overlayFrequency.deltaPct !== null && <> · <Delta value={o.overlayFrequency.deltaPct} /></>}
+            </div>
+          </div>
         </div>
-        <div className="card">
-          <div className="card-label">Weekly active users <span className="sdot" style={{ background: '#e4d6c2' }} /></div>
-          <div className="value-row">
-            <span className="big">{int(o.wau.value)}</span>
-            <span className="pill purple">{pct(o.wau.pctOfMau, 0)} of MAU</span>
-          </div>
-          <div className="note" style={{ fontSize: 13 }}>Trailing 7 consecutive days</div>
-        </div>
-        <div className="card">
-          <div className="card-label">Monthly active users <span className="sdot" style={{ background: '#e4d6c2' }} /></div>
-          <div className="value-row">
-            <span className="big">{int(o.mau.value)}</span>
-            <span className="pill tan mono">DAU/MAU {pct(o.mau.dauOverMau)}</span>
-          </div>
-          <div className="note" style={{ fontSize: 13 }}>30-day cohort footprint</div>
-        </div>
-        <div className="card">
-          <div className="card-label">Daily overlay frequency <span className="sdot" style={{ background: 'var(--purple)' }} /></div>
-          <div className="value-row" style={{ gap: 6 }}>
-            <span className="big purple">{dec(o.overlayFrequency.value)}</span>
-            <span className="unit">sessions / day</span>
-          </div>
-          <div className="note" style={{ fontSize: 13 }}>
-            {o.overlayFrequency.value === null ? 'No overlay sessions in this range' : o.overlayFrequency.value >= 3 ? 'High habitual stickiness' : o.overlayFrequency.value >= 1.5 ? 'Building a habit' : 'Occasional use'}
-            {o.overlayFrequency.deltaPct !== null && <> · <Delta value={o.overlayFrequency.deltaPct} /></>}
-          </div>
-        </div>
-      </div>
+      </section>
 
       <Scorecard data={data} />
 
-      <div className="grid g3" style={{ marginTop: 32 }}>
-        <div className="card rich">
+      <div style={{ marginTop: 32 }}>
+        <RetentionTable data={data} variant="founder" />
+      </div>
+      <details className="section">
+        <summary className="section-label onboarding-disclosure">Cost and reply details</summary>
+      <div className="grid g3" style={{ marginTop: 12 }}>
+        <div className="card rich" data-benchmark={o.cost.perActiveUser === null ? undefined : costOk}>
           <div className="rc-head">
             <span className="rc-icon"><CreditCard /></span>
             <div>
@@ -105,11 +113,11 @@ export function OverviewPage({ data }: Props) {
           </div>
         </div>
 
-        <div className="card rich">
+        <div className="card rich" data-benchmark={o.onboarding.pct === null ? undefined : o.onboarding.pct >= o.onboarding.benchmark}>
           <div className="rc-head">
             <span className="rc-icon"><CircleArrowRight /></span>
             <div>
-              <div className="rc-title">Onboarding completion</div>
+              <div className="rc-title">New accounts with a first reply</div>
               <div className="rc-sub">First Launch to First Reply</div>
             </div>
             <span className="tag-purple">{o.onboarding.completed} / {o.onboarding.total} Completed</span>
@@ -117,9 +125,10 @@ export function OverviewPage({ data }: Props) {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 20 }}>
             <div>
               <div className="big-36">{pct(o.onboarding.pct)}</div>
-              <div className="note-13" style={{ marginTop: 6 }}>Benchmark: {pct(o.onboarding.benchmark)}</div>
+
             </div>
             <Donut value={o.onboarding.pct} />
+            <span className="benchmark-edge">Target {pct(o.onboarding.benchmark)}</span>
           </div>
           <div className="foot">
             <div className="divider" />
@@ -132,7 +141,7 @@ export function OverviewPage({ data }: Props) {
             <span className="rc-icon"><Zap /></span>
             <div>
               <div className="rc-title">Overlay reply-use rate</div>
-              <div className="rc-sub">Assisted Acceptance</div>
+              <div className="rc-sub">Recorded draft actions</div>
             </div>
             <span className="tag-green">{o.replyUse.used} / {o.replyUse.total} Replies</span>
           </div>
@@ -148,9 +157,7 @@ export function OverviewPage({ data }: Props) {
         </div>
       </div>
 
-      <div style={{ marginTop: 32 }}>
-        <RetentionTable data={data} variant="founder" />
-      </div>
+      </details>
     </>
   );
 }
