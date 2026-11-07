@@ -61,6 +61,9 @@ export interface Dataset {
     overlayCallsFrom: string | null;
     /** 6 Nov: first row of our own ledger (overlay use, sessions, onboarding); from here on, not PostHog. */
     ledgerFrom?: string | null;
+    /** 7 Nov (audit): the latest backend summary / ledger refresh failed and older numbers are shown. */
+    backendError?: string | null;
+    ledgerError?: string | null;
   };
 }
 
@@ -120,6 +123,8 @@ export interface Snapshot {
   stale: boolean;
   sources: {
     posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog'; ledgerFrom?: string | null;
+    /** 7 Nov (audit): 'stale' = the latest backend or ledger refresh failed; older backend numbers are shown. */
+    backend?: 'live' | 'stale';
     /** 7 Nov: this dashboard vs. the production database, person by person, launch onwards. */
     database?: { status: 'ok' | 'settling' | 'mismatch' | 'down'; checkedAt: string | null; differences: number } | null;
   };

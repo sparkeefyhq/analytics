@@ -15,8 +15,14 @@ const personCache = new Map<string, { at: number; person: UserDetail['person'] }
 
 export const isUserId = (id: string | null): id is string => Boolean(id && UUID.test(id));
 
-export async function getUserDetail(cfg: Config, id: string): Promise<UserDetail> {
+export async function getUserDetail(cfg: Config, id: string, access: { private: boolean } = { private: true }): Promise<UserDetail> {
   const key = id.toLowerCase();
+  // 7 Nov (audit): members outside CONTROL_CONVERSATION_EMAILS see location only: no chats, no email, no read.
+  if (!access.private) {
+    const hit = personCache.get(key);
+    const person = hit && Date.now() - hit.at < TTL_MS ? hit.person : await readPerson(cfg, key).catch(() => null);
+    return { id: key, person: person ? { ...person, email: null } : null, conversations: [], truncated: false, errors: ['Conversations are limited to named team members.'] };
+  }
   const hit = personCache.get(key);
   const errors: string[] = [];
   const [person, convo] = await Promise.all([

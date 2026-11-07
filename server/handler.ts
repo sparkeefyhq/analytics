@@ -1,4 +1,4 @@
-import { clearCookie, emailAllowed, getSession, normaliseEmail, passwordMatches, sessionCookie } from './auth';
+import { canSeeConversations, clearCookie, emailAllowed, getSession, normaliseEmail, passwordMatches, sessionCookie } from './auth';
 import { config } from './config';
 import { getDataset, knownNames } from './dataset';
 import { getLive } from './live';
@@ -95,10 +95,11 @@ export async function handle(request: Request): Promise<Response> {
   }
 
   if (path === '/api/user' && method === 'GET') {
-    if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
+    const session = await getSession(request);
+    if (!session) return json({ error: 'Sign in required' }, 401);
     const id = url.searchParams.get('id');
     if (!isUserId(id)) return json({ error: 'id must be a user id' }, 400);
-    return json(await getUserDetail(config(), id));
+    return json(await getUserDetail(config(), id, { private: canSeeConversations(session.email) }));
   }
 
   return json({ error: 'Not found' }, 404);
