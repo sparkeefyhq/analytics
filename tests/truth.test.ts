@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { LAUNCH_AT, SETTLE_MS, compareTruth, truthFrom, type TruthAccount, type TruthRaw } from '../server/truth';
+import { LAUNCH_AT, SETTLE_MS, compareFrom, compareTruth, truthFrom, type TruthAccount, type TruthRaw } from '../server/truth';
 import type { RosterUser } from '../server/types';
 
 // 7 Nov (Rahul): the dashboard checked against the production database, person by person, launch onwards.
@@ -42,6 +42,13 @@ test('the check never looks before the official launch', () => {
   assert.equal(truthFrom({ countFrom: null }), LAUNCH_AT);
   assert.equal(truthFrom({ countFrom: '2026-09-11T00:00:00Z' }), LAUNCH_AT);
   assert.equal(truthFrom({ countFrom: '2026-11-07T00:00:00Z' }), '2026-11-07T00:00:00.000Z');
+});
+
+test('the compared window starts at the Postgres ledger when that is later than launch', () => {
+  // 7 Nov: overlay rows before 6 Nov 16:26 IST exist only in PostHog; the database cannot check them.
+  assert.equal(compareFrom({ countFrom: null }, '2026-11-06T10:56:07.580Z'), '2026-11-06T10:56:07.580Z');
+  assert.equal(compareFrom({ countFrom: null }, '2026-11-01T00:00:00Z'), LAUNCH_AT);
+  assert.equal(compareFrom({ countFrom: null }, null), LAUNCH_AT);
 });
 
 test('matching dashboard and database is ok (team accounts included on both sides)', () => {

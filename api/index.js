@@ -1560,9 +1560,14 @@ function truthFrom(cfg) {
   const cf = cfg.countFrom ? Date.parse(cfg.countFrom) : Number.NaN;
   return Number.isFinite(cf) && cf > Date.parse(LAUNCH_AT) ? new Date(cf).toISOString() : LAUNCH_AT;
 }
-async function read(cfg) {
+function compareFrom(cfg, ledgerOverlayFrom) {
+  const launch = truthFrom(cfg);
+  const ledger = ledgerOverlayFrom ? Date.parse(ledgerOverlayFrom) : Number.NaN;
+  return Number.isFinite(ledger) && ledger > Date.parse(launch) ? new Date(ledger).toISOString() : launch;
+}
+async function read(cfg, from) {
   if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("backend not configured");
-  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/truth?from=${encodeURIComponent(truthFrom(cfg))}`, {
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/truth?from=${encodeURIComponent(from)}`, {
     headers: { "x-admin-api-key": cfg.backendAdminKey },
     signal: AbortSignal.timeout(2e4)
   });
@@ -1573,10 +1578,10 @@ async function read(cfg) {
   state3.raw = body.data;
   state3.error = null;
 }
-async function refresh2(cfg, force) {
-  if (!force && state3.raw && Date.now() - state3.at < READ_MS) return;
+async function refresh2(cfg, from, force) {
+  if (!force && state3.raw && state3.raw.from === from && Date.now() - state3.at < READ_MS) return;
   if (!inflight2)
-    inflight2 = read(cfg).catch((e) => {
+    inflight2 = read(cfg, from).catch((e) => {
       state3.error = e instanceof Error ? e.message : String(e);
     }).finally(() => {
       state3.at = Date.now();
@@ -1584,11 +1589,12 @@ async function refresh2(cfg, force) {
     });
   await inflight2;
 }
-function fullRoster(data, cfg, now) {
+function fullRoster(data, cfg, from, now) {
+  const windowed = applyCountFrom(data, from);
   const base = { range: "all", surface: "combined", version: "all" };
   return [
-    ...computeSnapshot(data, { ...base, audience: "external" }, cfg, now).roster,
-    ...computeSnapshot(data, { ...base, audience: "internal" }, cfg, now).roster
+    ...computeSnapshot(windowed, { ...base, audience: "external" }, cfg, now).roster,
+    ...computeSnapshot(windowed, { ...base, audience: "internal" }, cfg, now).roster
   ];
 }
 var key = (d) => `${d.user}|${d.field}|${d.dashboard}|${d.database}`;
@@ -1625,11 +1631,12 @@ function compareTruth(roster, raw, cfg, firstSeen, now) {
   return { status: diffs.length === 0 ? "ok" : lasting.length ? "mismatch" : "settling", diffs: lasting.length ? lasting : diffs };
 }
 async function checkTruth(cfg, data, force = false, now = Date.now()) {
-  await refresh2(cfg, force);
+  const from = compareFrom(cfg, ledgerView().overlayFrom);
+  await refresh2(cfg, from, force);
   if (!state3.raw) return state3.last = { status: "down", checkedAt: null, from: null, error: state3.error, diffs: [] };
   let result;
   try {
-    result = compareTruth(fullRoster(data, cfg, now), state3.raw, cfg, state3.firstSeen, now);
+    result = compareTruth(fullRoster(data, cfg, state3.raw.from, now), state3.raw, cfg, state3.firstSeen, now);
   } catch (e) {
     return state3.last = { status: "down", checkedAt: null, from: state3.raw.from, error: e instanceof Error ? e.message : String(e), diffs: [] };
   }
