@@ -118,7 +118,11 @@ export interface Snapshot {
   generatedAt: string;
   servedAt: string;
   stale: boolean;
-  sources: { posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog'; ledgerFrom?: string | null };
+  sources: {
+    posthog: 'live' | 'stale' | 'down'; posthogAt: string | null; backendAt: string; overlayCalls: 'backend' | 'posthog'; ledgerFrom?: string | null;
+    /** 7 Nov: this dashboard vs. the production database, person by person, launch onwards. */
+    database?: { status: 'ok' | 'settling' | 'mismatch' | 'down'; checkedAt: string | null; differences: number } | null;
+  };
   filters: Filters;
   rangeLabel: string;
   /** Analytics reset time, when set: every number counts from here. */

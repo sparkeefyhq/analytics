@@ -4,7 +4,7 @@ import { getDataset, knownNames } from './dataset';
 import { getLive } from './live';
 import { computeSnapshot } from './metrics';
 import { pendingSync } from './posthog-sync';
-import { getTruthReport, logFeedback, removeFeedback } from './truth';
+import { checkTruth, lastTruth } from './truth';
 import { getUserDetail, isUserId } from './user-detail';
 import type { Audience, Filters, Range, Surface } from './types';
 
@@ -57,6 +57,10 @@ export async function handle(request: Request): Promise<Response> {
     try {
       const data = await getDataset(config());
       const body = computeSnapshot(data, filters, config());
+      // 7 Nov: compare with the production database (re-read at most every 30 s; bounded wait).
+      await Promise.race([checkTruth(config(), data), new Promise((r) => setTimeout(r, 3000))]);
+      const truth = lastTruth();
+      body.sources.database = truth ? { status: truth.status, checkedAt: truth.checkedAt, differences: truth.status === 'mismatch' ? truth.diffs.length : 0 } : null;
       // Finish a running PostHog account sync before the serverless instance is frozen (bounded wait).
       const sync = pendingSync();
       if (sync) await Promise.race([sync, new Promise((r) => setTimeout(r, 8000))]);
@@ -79,42 +83,15 @@ export async function handle(request: Request): Promise<Response> {
     }
   }
 
-  // 7 Nov: this dashboard checked against the production database, person by person.
+  // 7 Nov: the full result of the production-database check (for verification scripts; no page uses it).
   if (path === '/api/truth' && method === 'GET') {
     if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
     try {
-      const data = await getDataset(config());
-      return json(await getTruthReport(config(), data, url.searchParams.get('fresh') === '1'));
+      return json(await checkTruth(config(), await getDataset(config()), url.searchParams.get('fresh') === '1'));
     } catch (error) {
       console.error('truth failed', error);
-      return json({ status: 'down', error: 'Dashboard data unavailable', diffs: [], database: null, dashboard: null, feedback: [], checkedAt: null, databaseAt: null, from: null }, 503);
+      return json({ status: 'down', checkedAt: null, from: null, error: 'Dashboard data unavailable', diffs: [] }, 503);
     }
-  }
-
-  // 7 Nov: founder feedback log (WhatsApp, calls), recorded under the signed-in email.
-  if (path === '/api/feedback' && method === 'POST') {
-    const session = await getSession(request);
-    if (!session) return json({ error: 'Sign in required' }, 401);
-    let body: Record<string, unknown> = {};
-    try {
-      body = await request.json();
-    } catch {
-      return json({ error: 'Send JSON' }, 400);
-    }
-    const out = await logFeedback(config(), session.email, body);
-    return json(out.body, out.status);
-  }
-
-  if (path === '/api/feedback/remove' && method === 'POST') {
-    if (!(await getSession(request))) return json({ error: 'Sign in required' }, 401);
-    let body: { id?: unknown } = {};
-    try {
-      body = await request.json();
-    } catch {
-      /* empty body */
-    }
-    const out = await removeFeedback(config(), typeof body.id === 'string' ? body.id : '');
-    return json({ removed: out.status === 200 }, out.status === 200 ? 200 : out.status);
   }
 
   if (path === '/api/user' && method === 'GET') {

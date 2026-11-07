@@ -283,6 +283,8 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
                 <br />
                 PostHog {data.sources.posthogAt ? ago(data.sources.posthogAt) : 'unavailable'} · Backend {ago(data.sources.backendAt)}
                 <br />
+                {data.sources.database?.status === 'ok' && <>Prod database ✓ matches{data.sources.database.checkedAt ? ` · ${ago(data.sources.database.checkedAt)}` : ''}<br /></>}
+                {data.sources.database?.status === 'mismatch' && <>Prod database: {data.sources.database.differences} {data.sources.database.differences === 1 ? 'difference' : 'differences'}<br /></>}
               </>
             ) : lastOk ? null : 'Connecting… '}
             <a href="#" onClick={(e) => { e.preventDefault(); fetch('/api/logout', { method: 'POST' }).then(onSignedOut); }}>Sign out</a>

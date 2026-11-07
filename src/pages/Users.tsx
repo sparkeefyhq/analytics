@@ -2,7 +2,6 @@ import { Check, Copy, ExternalLink, MessageSquare, Search, X } from 'lucide-reac
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Filters, RosterUser, Snapshot, UserDetail } from '../../server/types';
 import { Skel } from '../components/parts';
-import { TruthPanel, useTruth } from '../components/truth';
 import { ago, downloadCsv, int, pct, secs, usd } from '../format';
 import { screenLabelOf } from '../labels';
 
@@ -36,7 +35,6 @@ export function UsersPage({ data, filters, search, selected, onSelect, watching 
   const [q, setQ] = useState('');
   const [view, setView] = useState<View>('all');
   const [sort, setSort] = useState<Sort>('recent');
-  const truth = useTruth();
   useEffect(() => setQ(search), [search]);
 
   const rows = useMemo(() => {
@@ -81,9 +79,7 @@ export function UsersPage({ data, filters, search, selected, onSelect, watching 
         {filters.audience === 'internal' ? 'Team accounts only.' : 'Real people outside the team.'} Every account in this audience, with setup, first value, adoption and repeat status. Click a row for the full profile.
       </p>
 
-      <TruthPanel report={truth.report} reload={truth.reload} roster={data.roster} />
-
-      <div className="chip-tabs" role="tablist" style={{ marginTop: 16 }}>
+      <div className="chip-tabs" role="tablist">
         {([['all', 'All'], ['attention', 'Needs attention'], ['active', 'Active today'], ['repeat', 'Repeat users'], ['stuck', 'Setup not done']] as [View, string][]).map(([v, label]) => (
           <button key={v} role="tab" aria-selected={view === v} className={view === v ? 'on' : ''} onClick={() => setView(v)}>
             {label} <b>{counts[v]}</b>
