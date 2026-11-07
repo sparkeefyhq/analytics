@@ -34,10 +34,19 @@ export function humanStep(step: string | null) {
     .replace(/^\w/, (c) => c.toUpperCase());
 }
 
+/**
+ * 7 Nov (audit): a text cell starting with = + - @ (or tab / CR) runs as a formula in Excel or
+ * Sheets; names and labels come from users, so such cells get a leading apostrophe. Numbers stay numbers.
+ */
+export function csvCell(v: string | number | null): string {
+  if (v === null) return '';
+  let text = String(v);
+  if (typeof v === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
 export function downloadCsv(name: string, rows: (string | number | null)[][]) {
-  const text = rows
-    .map((r) => r.map((v) => (v === null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v))).join(','))
-    .join('\n');
+  const text = rows.map((r) => r.map(csvCell).join(',')).join('\n');
   const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
   const a = document.createElement('a');
   a.href = url;

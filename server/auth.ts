@@ -65,6 +65,18 @@ function sameString(a: string, b: string): boolean {
 }
 
 export const normaliseEmail = (email: string) => email.trim().toLowerCase();
+
+/**
+ * 7 Nov (audit): who may read people's in-app conversations and email in the detail panel.
+ * CONTROL_CONVERSATION_EMAILS (comma list) narrows it; unset = every signed-in member (as before).
+ */
+export function canSeeConversations(email: string): boolean {
+  const list = (process.env.CONTROL_CONVERSATION_EMAILS ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return list.length === 0 || list.includes(normaliseEmail(email));
+}
 export const emailAllowed = (email: string) => allowed().has(normaliseEmail(email));
 
 export async function passwordMatches(candidate: string): Promise<boolean> {

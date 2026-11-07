@@ -435,9 +435,10 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
   const snapshot: Omit<Snapshot, 'funnel' | 'scorecard' | 'roster'> = {
     generatedAt: data.generatedAt,
     servedAt: new Date(now).toISOString(),
-    stale: data.sourceError !== null,
+    stale: data.sourceError !== null || Boolean(data.sources.backendError) || Boolean(data.sources.ledgerError),
     sources: {
       posthog: !data.sources.posthogAt ? 'down' : data.sourceError ? 'stale' : 'live',
+      backend: data.sources.backendError || data.sources.ledgerError ? 'stale' : 'live',
       posthogAt: data.sources.posthogAt,
       backendAt: data.sources.backendAt,
       overlayCalls: data.sources.overlayCallsFrom ? 'backend' : 'posthog',

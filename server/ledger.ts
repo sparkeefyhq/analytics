@@ -32,6 +32,7 @@ const state = {
   cursor: new Date(0).toISOString(),
   readAt: 0,
   available: true,
+  lastError: null as string | null,
 };
 
 type Page = {
@@ -73,6 +74,7 @@ export async function refreshLedger(cfg: Config): Promise<{ ok: boolean; error?:
       // An older backend (before the ledger) answers 404: PostHog stays the source, nothing breaks.
       if (response.status === 404) {
         state.available = false;
+        state.lastError = null;
         return { ok: false, error: 'ledger not deployed' };
       }
       if (!response.ok) throw new Error(`ledger ${response.status}`);
@@ -81,18 +83,27 @@ export async function refreshLedger(cfg: Config): Promise<{ ok: boolean; error?:
       applyPage(body.data);
       state.available = true;
       if (body.data.more) {
-        state.cursor = new Date(Date.parse(body.data.until) - 1).toISOString();
+        const next = new Date(Date.parse(body.data.until) - 1).toISOString();
+        // 7 Nov (audit): a page that doesn't move the cursor forward would repeat forever; stop and say so.
+        if (!(Date.parse(next) > Date.parse(state.cursor))) throw new Error('ledger cursor did not advance');
+        state.cursor = next;
         continue;
       }
       state.cursor = new Date(Math.max(0, Date.parse(body.data.until) - LEDGER_OVERLAP_MS)).toISOString();
-      break;
+      state.readAt = Date.now();
+      state.lastError = null;
+      return { ok: true };
     }
-    state.readAt = Date.now();
-    return { ok: true };
+    // 7 Nov (audit): still more pages after the cap = only part of the history is loaded. Not "up to date".
+    throw new Error('ledger partially read (page cap reached)');
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    state.lastError = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: state.lastError };
   }
 }
+
+/** The last ledger refresh error, or null when the latest refresh read everything. */
+export const ledgerError = (): string | null => state.lastError;
 
 export interface LedgerView {
   overlay: LedgerOverlay[];
@@ -126,4 +137,5 @@ export function resetLedger(): void {
   state.cursor = new Date(0).toISOString();
   state.readAt = 0;
   state.available = true;
+  state.lastError = null;
 }

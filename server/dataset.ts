@@ -14,7 +14,7 @@
  */
 import { applyCountFrom } from './count-from';
 import type { Config } from './config';
-import { type LedgerView, ledgerView, refreshLedger } from './ledger';
+import { type LedgerView, ledgerError, ledgerView, refreshLedger } from './ledger';
 import { hogql, isRateLimit } from './posthog';
 import { oneReplyPerTurn } from './replies';
 import { type AccountClass, syncAccountClasses } from './posthog-sync';
@@ -127,7 +127,9 @@ const state: {
   backend: { at: number; data: Awaited<ReturnType<typeof fetchBackend>> } | null;
   backoffUntil: number;
   lastError: string | null;
-} = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
+  /** 7 Nov (audit): the latest backend summary read failed (older summary kept). */
+  backendError: string | null;
+} = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null, backendError: null };
 let inflight: Promise<Dataset> | null = null;
 
 const hourOf = (ts: string) => new Date(Math.floor(Date.parse(ts) / 3_600_000) * 3_600_000).toISOString();
@@ -344,11 +346,17 @@ async function refresh(cfg: Config): Promise<Dataset> {
     const [backendResult, ledgerResult] = await Promise.allSettled([fetchBackend(cfg), refreshLedger(cfg)]);
     if (backendResult.status === 'fulfilled') {
       state.backend = { at: now, data: backendResult.value };
+      state.backendError = null;
       changed = true;
     } else {
       if (!state.backend) throw backendResult.reason;
+      const message = backendResult.reason instanceof Error ? backendResult.reason.message : String(backendResult.reason);
+      if (state.backendError !== message) changed = true;
+      state.backendError = message;
       console.error('backend refresh failed', backendResult.reason);
     }
+    // A failed ledger read changes what the dashboard must say about freshness, so rebuild.
+    if (ledgerResult.status === 'fulfilled' && !ledgerResult.value.ok && ledgerResult.value.error !== 'ledger not deployed') changed = true;
     if (ledgerResult.status === 'fulfilled' && ledgerResult.value.ok) changed = true;
     else if (ledgerResult.status === 'fulfilled' && ledgerResult.value.error !== 'ledger not deployed') console.error('ledger refresh failed', ledgerResult.value.error);
   }
@@ -382,6 +390,8 @@ async function refresh(cfg: Config): Promise<Dataset> {
     posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
     backendAt: new Date(state.backend.at).toISOString(),
     error: state.lastError,
+    backendError: state.backendError,
+    ledgerError: ledgerError(),
     ledgerFrom: (() => {
       const v = ledgerView();
       return [v.overlayFrom, v.funnelFrom].filter((x): x is string => x !== null).sort()[0] ?? null;
@@ -397,7 +407,7 @@ export function assemble(
   start: string,
   backend: Awaited<ReturnType<typeof fetchBackend>>,
   raw: Raw,
-  fresh: { posthogAt: string | null; backendAt: string; error: string | null; ledgerFrom: string | null },
+  fresh: { posthogAt: string | null; backendAt: string; error: string | null; ledgerFrom: string | null; backendError?: string | null; ledgerError?: string | null },
 ): Dataset {
   const { overlay, activity, sessions } = raw;
   const steps = reduceSteps(raw.steps);
@@ -477,6 +487,8 @@ export function assemble(
         ? backend.overlay.reduce((min, c) => (c.at < min ? c.at : min), backend.overlay[0].at)
         : null,
       ledgerFrom: fresh.ledgerFrom,
+      backendError: fresh.backendError ?? null,
+      ledgerError: fresh.ledgerError ?? null,
     },
   };
 }

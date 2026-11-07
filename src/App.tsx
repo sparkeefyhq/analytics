@@ -48,7 +48,14 @@ export function App() {
   }, []);
   if (auth === 'checking') return <div className="login"><div className="skeleton" style={{ width: 380, height: 300 }} /></div>;
   if (auth === 'out') return <Login onDone={() => setAuth('in')} />;
-  return <Shell onSignedOut={() => setAuth('out')} />;
+  return (
+    <Shell
+      onSignedOut={() => {
+        clearSavedData();
+        setAuth('out');
+      }}
+    />
+  );
 }
 
 function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: [T, string][]; onChange: (v: T) => void; label: string }) {
@@ -61,6 +68,15 @@ function Seg<T extends string>({ value, options, onChange, label }: { value: T; 
       ))}
     </div>
   );
+}
+
+/** 7 Nov (audit): saved snapshots hold the roster; a signed-out browser must not keep them. */
+function clearSavedData() {
+  try {
+    for (const key of Object.keys(localStorage)) if (key.startsWith('kcp:')) localStorage.removeItem(key);
+  } catch {
+    /* no storage: nothing saved */
+  }
 }
 
 function Shell({ onSignedOut }: { onSignedOut: () => void }) {
@@ -145,7 +161,11 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       setError(null);
       setLastOk(Date.now());
     } catch (e) {
-      if (id === req.current) setError(e instanceof Error ? e.message : 'Could not load analytics.');
+      if (id === req.current) {
+        setError(e instanceof Error ? e.message : 'Could not load analytics.');
+        // 7 Nov (audit): never leave numbers for other filters on screen under the new filter labels.
+        setData((cur) => (cur && cur.filters.audience === filters.audience && cur.filters.range === filters.range && cur.filters.surface === filters.surface && cur.filters.version === filters.version ? cur : null));
+      }
     } finally {
       if (id === req.current) setLoading(false);
     }
@@ -180,7 +200,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
     setUser(id);
   }, [filters]);
 
-  const syncState = error ? (data ? 'stale' : 'down') : data && data.sources.posthog !== 'live' ? 'stale' : 'ok';
+  const syncState = error ? (data ? 'stale' : 'down') : data && (data.sources.posthog !== 'live' || data.sources.backend === 'stale') ? 'stale' : 'ok';
   const versionLabel = filters.version === 'all' ? 'All builds' : `v${filters.version}`;
 
   const exportCsv = () => {

@@ -47,6 +47,10 @@ function sameString(a, b) {
   return diff === 0;
 }
 var normaliseEmail = (email) => email.trim().toLowerCase();
+function canSeeConversations(email) {
+  const list2 = (process.env.CONTROL_CONVERSATION_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return list2.length === 0 || list2.includes(normaliseEmail(email));
+}
 var emailAllowed = (email) => allowed().has(normaliseEmail(email));
 async function passwordMatches(candidate) {
   return sameString(await sha256(candidate), await sha256(secret("SPARKEEFY_LOGIN_PASSWORD")));
@@ -188,7 +192,8 @@ var state = {
   links: /* @__PURE__ */ new Map(),
   cursor: (/* @__PURE__ */ new Date(0)).toISOString(),
   readAt: 0,
-  available: true
+  available: true,
+  lastError: null
 };
 var zip = (columns, row) => Object.fromEntries(columns.map((c, i) => [c, row[i]]));
 function applyPage(page, into = state) {
@@ -212,6 +217,7 @@ async function refreshLedger(cfg) {
       });
       if (response.status === 404) {
         state.available = false;
+        state.lastError = null;
         return { ok: false, error: "ledger not deployed" };
       }
       if (!response.ok) throw new Error(`ledger ${response.status}`);
@@ -220,18 +226,23 @@ async function refreshLedger(cfg) {
       applyPage(body.data);
       state.available = true;
       if (body.data.more) {
-        state.cursor = new Date(Date.parse(body.data.until) - 1).toISOString();
+        const next = new Date(Date.parse(body.data.until) - 1).toISOString();
+        if (!(Date.parse(next) > Date.parse(state.cursor))) throw new Error("ledger cursor did not advance");
+        state.cursor = next;
         continue;
       }
       state.cursor = new Date(Math.max(0, Date.parse(body.data.until) - LEDGER_OVERLAP_MS)).toISOString();
-      break;
+      state.readAt = Date.now();
+      state.lastError = null;
+      return { ok: true };
     }
-    state.readAt = Date.now();
-    return { ok: true };
+    throw new Error("ledger partially read (page cap reached)");
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    state.lastError = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: state.lastError };
   }
 }
+var ledgerError = () => state.lastError;
 function ledgerView() {
   const overlay = [...state.overlay.values()];
   const funnel = [...state.funnel.values()];
@@ -385,7 +396,7 @@ var BACKEND_MS = 5e3;
 var BACKOFF_MS = 5 * 6e4;
 var RETRY_SOON_MS = 3e4;
 var OVERLAP_MS = 2 * 6e4;
-var state2 = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null };
+var state2 = { history: null, recent: null, backend: null, backoffUntil: 0, lastError: null, backendError: null };
 var inflight = null;
 var hourOf = (ts) => new Date(Math.floor(Date.parse(ts) / 36e5) * 36e5).toISOString();
 function baseFilter(cfg, start) {
@@ -580,11 +591,16 @@ async function refresh(cfg) {
     const [backendResult, ledgerResult] = await Promise.allSettled([fetchBackend(cfg), refreshLedger(cfg)]);
     if (backendResult.status === "fulfilled") {
       state2.backend = { at: now, data: backendResult.value };
+      state2.backendError = null;
       changed = true;
     } else {
       if (!state2.backend) throw backendResult.reason;
+      const message = backendResult.reason instanceof Error ? backendResult.reason.message : String(backendResult.reason);
+      if (state2.backendError !== message) changed = true;
+      state2.backendError = message;
       console.error("backend refresh failed", backendResult.reason);
     }
+    if (ledgerResult.status === "fulfilled" && !ledgerResult.value.ok && ledgerResult.value.error !== "ledger not deployed") changed = true;
     if (ledgerResult.status === "fulfilled" && ledgerResult.value.ok) changed = true;
     else if (ledgerResult.status === "fulfilled" && ledgerResult.value.error !== "ledger not deployed") console.error("ledger refresh failed", ledgerResult.value.error);
   }
@@ -615,6 +631,8 @@ async function refresh(cfg) {
     posthogAt: posthogAt === null ? null : new Date(posthogAt).toISOString(),
     backendAt: new Date(state2.backend.at).toISOString(),
     error: state2.lastError,
+    backendError: state2.backendError,
+    ledgerError: ledgerError(),
     ledgerFrom: (() => {
       const v = ledgerView();
       return [v.overlayFrom, v.funnelFrom].filter((x) => x !== null).sort()[0] ?? null;
@@ -691,7 +709,9 @@ function assemble(cfg, start, backend, raw, fresh) {
       posthogAt: fresh.posthogAt,
       backendAt: fresh.backendAt,
       overlayCallsFrom: backend.overlay?.length ? backend.overlay.reduce((min, c) => c.at < min ? c.at : min, backend.overlay[0].at) : null,
-      ledgerFrom: fresh.ledgerFrom
+      ledgerFrom: fresh.ledgerFrom,
+      backendError: fresh.backendError ?? null,
+      ledgerError: fresh.ledgerError ?? null
     }
   };
 }
@@ -1456,9 +1476,10 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   const snapshot = {
     generatedAt: data.generatedAt,
     servedAt: new Date(now).toISOString(),
-    stale: data.sourceError !== null,
+    stale: data.sourceError !== null || Boolean(data.sources.backendError) || Boolean(data.sources.ledgerError),
     sources: {
       posthog: !data.sources.posthogAt ? "down" : data.sourceError ? "stale" : "live",
+      backend: data.sources.backendError || data.sources.ledgerError ? "stale" : "live",
       posthogAt: data.sources.posthogAt,
       backendAt: data.sources.backendAt,
       overlayCalls: data.sources.overlayCallsFrom ? "backend" : "posthog",
@@ -1662,8 +1683,13 @@ var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TTL_MS = 3 * 6e4;
 var personCache = /* @__PURE__ */ new Map();
 var isUserId = (id) => Boolean(id && UUID2.test(id));
-async function getUserDetail(cfg, id) {
+async function getUserDetail(cfg, id, access = { private: true }) {
   const key2 = id.toLowerCase();
+  if (!access.private) {
+    const hit2 = personCache.get(key2);
+    const person2 = hit2 && Date.now() - hit2.at < TTL_MS ? hit2.person : await readPerson(cfg, key2).catch(() => null);
+    return { id: key2, person: person2 ? { ...person2, email: null } : null, conversations: [], truncated: false, errors: ["Conversations are limited to named team members."] };
+  }
   const hit = personCache.get(key2);
   const errors = [];
   const [person, convo] = await Promise.all([
@@ -1777,10 +1803,11 @@ async function handle(request) {
     }
   }
   if (path === "/api/user" && method === "GET") {
-    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    const session = await getSession(request);
+    if (!session) return json({ error: "Sign in required" }, 401);
     const id = url.searchParams.get("id");
     if (!isUserId(id)) return json({ error: "id must be a user id" }, 400);
-    return json(await getUserDetail(config(), id));
+    return json(await getUserDetail(config(), id, { private: canSeeConversations(session.email) }));
   }
   return json({ error: "Not found" }, 404);
 }
