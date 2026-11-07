@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { applyCountFrom } from '../server/count-from';
 import { computeSnapshot } from '../server/metrics';
 import type { Dataset } from '../server/types';
+import { SCREEN_ORDER } from '../server/users';
 
 const cfg = { infraMonthlyUsd: 0, revenueMonthlyUsd: 0, costTargetPerMau: 0.4, onboardingBenchmark: 45, latencySlaMs: 3000, failureSlaPct: 3 };
 const NOW = Date.parse('2026-11-20T06:30:00.000Z'); // 12:00 IST
@@ -153,4 +154,13 @@ test('roster drafts count only taps that reached the model (7 Nov: Karan 6 shown
   const snap = computeSnapshot(dataset({ people: [{ id: A, name: 'A', signupAt: at(D), team: false }], overlay }), filters, cfg, NOW);
   const a = snap.roster.find((u) => u.id === A)!;
   assert.deepEqual([a.overlay.drafts, a.overlay.delivered, a.overlay.failed], [2, 1, 1]);
+});
+
+test('7 Nov: SCREEN_ORDER follows the app (own profile after sign-in, demo before it)', () => {
+  const at = (s: string) => SCREEN_ORDER.indexOf(s);
+  assert.ok(at('ProfilePicture') < at('TryKeefie'));
+  assert.ok(at('TryKeefie') < at('StartJourney'));
+  assert.ok(at('StartJourney') < at('PhoneLogin') && at('PhoneLogin') < at('Otp'));
+  assert.ok(at('Otp') < at('YourName') && at('YourName') < at('YourGender') && at('YourGender') < at('YourAvatar'));
+  assert.ok(at('YourAvatar') < at('NotificationPermission'));
 });

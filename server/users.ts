@@ -26,11 +26,16 @@ const pct = (n: number, d: number) => (d > 0 ? (n / d) * 100 : null);
 export const PILOT_DRAFTS = 100;
 export const PILOT_ANSWERS = 40;
 
-/** Keefie onboarding in app order (Android build 7). Unknown screens go after, by median time. */
+/**
+ * Keefie onboarding in app order (Android build 7). Unknown screens go after, by median time.
+ * 7 Nov: the user's own profile (YourName/YourGender/YourAvatar) comes after sign-in, not before the
+ * demo (ProfilePicture -> TryKeefie -> StartJourney -> PhoneLogin/Otp or Google -> YourName). The old
+ * order made the funnel drop to 6 and climb back to 10.
+ */
 export const SCREEN_ORDER = [
   'IntroVideo', 'Welcome', 'MeetKeefie', 'OverlayVideo', 'RelationshipSelect', 'PersonName', 'GenderSelect', 'Traits',
-  'OnboardingQuestion', 'ProfilePicture', 'PhotoUpload', 'YourName', 'YourGender', 'YourAvatar', 'TryKeefie', 'StartJourney',
-  'PhoneLogin', 'Otp', 'NotificationPermission', 'perm:notifications', 'Privacy', 'Permissions', 'perm:display_over_apps',
+  'OnboardingQuestion', 'ProfilePicture', 'PhotoUpload', 'TryKeefie', 'StartJourney',
+  'PhoneLogin', 'Otp', 'YourName', 'YourGender', 'YourAvatar', 'NotificationPermission', 'perm:notifications', 'Privacy', 'Permissions', 'perm:display_over_apps',
   'perm:accessibility', 'perm:accessibility_running', 'perm:battery_unrestricted', 'Pledge', 'FounderNote', 'Home',
 ];
 
