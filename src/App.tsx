@@ -20,7 +20,7 @@ function readFilters(): Filters {
   const q = new URLSearchParams(location.search);
   const one = <T extends string>(k: string, ok: T[], d: T) => (ok.includes(q.get(k) as T) ? (q.get(k) as T) : d);
   return {
-    range: one<Range>('range', ['7d', '30d', 'all'], '30d'),
+    range: one<Range>('range', ['1d', '7d', '30d', 'all'], '30d'),
     surface: one<Surface>('surface', ['combined', 'overlay', 'app'], 'combined'),
     audience: one<Audience>('audience', ['external', 'internal'], 'external'),
     version: q.get('version') || 'all',
@@ -309,7 +309,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
             onChange={(surface) => setF({ surface })}
             options={route === 'overview' ? [['combined', 'Combined Surfaces'], ['overlay', 'Overlay Only'], ['app', 'In-App']] : [['combined', 'Combined'], ['overlay', 'Overlay'], ['app', 'In-App']]}
           />
-          <Seg<Range> label="Range" value={filters.range} onChange={(range) => setF({ range })} options={[['7d', '7D'], ['30d', '30D'], ['all', 'All Time']]} />
+          <Seg<Range> label="Range" value={filters.range} onChange={(range) => setF({ range })} options={[['1d', '1D'], ['7d', '7D'], ['30d', '30D'], ['all', 'All Time']]} />
           <Seg<Audience> label="Audience" value={filters.audience} onChange={(audience) => setF({ audience })} options={[['external', 'External'], ['internal', 'Internal']]} />
           <div className="cohort">
             <button onClick={() => setCohortOpen((o) => !o)} aria-expanded={cohortOpen}>
