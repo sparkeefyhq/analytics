@@ -203,3 +203,39 @@ test('with PostHog down, backend numbers still compute and the snapshot says so'
   assert.equal(s.overview.dau.value, 1);
   assert.equal(s.overview.onboarding.completed, 1);
 });
+
+test('onboarding drops split into stopped before Home and reached Home without a reply', () => {
+  const step = (id: string, screen: string) => ({ id, screen, ts: at(3 * 24 * H), account: true });
+  const data = dataset({
+    people: [
+      { id: 'a', name: null, signupAt: at(3 * 24 * H), team: false }, // replied
+      { id: 'b', name: null, signupAt: at(3 * 24 * H), team: false }, // stuck at permissions
+      { id: 'c', name: null, signupAt: at(3 * 24 * H), team: false }, // reached Home, never tried
+    ],
+    chatReplies: [{ id: 'a', at: at(2 * 24 * H) }],
+    onboarding: [{ id: 'b', screen: 'Permissions' }, { id: 'c', screen: 'Home' }],
+    steps: [step('a', 'Home'), step('b', 'Permissions'), step('c', 'Home')],
+  });
+  const o = computeSnapshot(data, { range: '30d', surface: 'combined', audience: 'external', version: 'all' }, cfg, NOW).overview.onboarding;
+  assert.deepEqual(
+    { setupDone: o.setupDone, before: o.droppedBeforeHome, after: o.droppedAfterHome, top: o.topDropStep },
+    { setupDone: 2, before: 1, after: 1, top: 'Permissions' },
+  );
+});
+
+test('sessions per active user-day counts days people were active but skipped the overlay', () => {
+  const data = dataset({
+    people: [
+      { id: 'u1', name: null, signupAt: at(10 * 24 * H), team: false },
+      { id: 'u2', name: null, signupAt: at(10 * 24 * H), team: false },
+    ],
+    overlay: [draft('u1', 2 * H, { panel: 'p1' }), draft('u1', 1 * H, { panel: 'p2' })],
+    activity: [
+      { id: 'u1', hour: hourAgo(2), surface: 'overlay', n: 2 },
+      { id: 'u2', hour: hourAgo(2), surface: 'app', n: 1 },
+    ],
+  });
+  const s = computeSnapshot(data, { range: '1d', surface: 'combined', audience: 'external', version: 'all' }, cfg, NOW).overlay.sessionsPerUser;
+  assert.equal(s.value, 2); // u1: 2 sessions on 1 overlay day
+  assert.equal(s.perActiveDay, 1); // 2 sessions over 2 active user-days
+});

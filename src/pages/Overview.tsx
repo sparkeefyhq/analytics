@@ -22,7 +22,10 @@ export function OverviewPage({ data }: Props) {
       ? 'No signups in this range'
       : o.onboarding.dropped === 0
         ? 'Every new account reached a first reply'
-        : `${o.onboarding.dropped} without a first reply${o.onboarding.topDropStep ? ` · most stop at ${humanStep(o.onboarding.topDropStep)} (${o.onboarding.dropSteps.find((d) => d.step === o.onboarding.topDropStep)?.count ?? 0})` : ''}`;
+        : [
+            `${o.onboarding.droppedBeforeHome} stopped before Home${o.onboarding.topDropStep ? ` (most at ${humanStep(o.onboarding.topDropStep)}, ${o.onboarding.dropSteps.find((d) => d.step === o.onboarding.topDropStep)?.count ?? 0})` : ''}`,
+            `${o.onboarding.droppedAfterHome} reached Home, no reply yet`,
+          ].join(' · ');
 
   return (
     <>
@@ -64,13 +67,13 @@ export function OverviewPage({ data }: Props) {
             <div className="note" style={{ fontSize: 13 }}>Unique users in the last 30 days</div>
           </div>
           <div className="card">
-            <div className="card-label">Overlay sessions per active user <span className="sdot" style={{ background: 'var(--purple)' }} /></div>
+            <div className="card-label">Overlay sessions per overlay day <span className="sdot" style={{ background: 'var(--purple)' }} /></div>
             <div className="value-row" style={{ gap: 6 }}>
               <span className="big purple">{dec(o.overlayFrequency.value)}</span>
               <span className="unit">/ day</span>
             </div>
             <div className="note" style={{ fontSize: 13 }}>
-              {o.overlayFrequency.value === null ? 'No overlay sessions in this range' : 'Daily average'}
+              {o.overlayFrequency.value === null ? 'No overlay sessions in this range' : `Per user, on days they used it · ${dec(data.overlay.sessionsPerUser.perActiveDay)} per active user-day`}
               {o.overlayFrequency.deltaPct !== null && <> · <Delta value={o.overlayFrequency.deltaPct} /></>}
             </div>
           </div>
@@ -120,12 +123,12 @@ export function OverviewPage({ data }: Props) {
               <div className="rc-title">New accounts with a first reply</div>
               <div className="rc-sub">First Launch to First Reply</div>
             </div>
-            <span className="tag-purple">{o.onboarding.completed} / {o.onboarding.total} Completed</span>
+            <span className="tag-purple">{o.onboarding.completed} / {o.onboarding.total} Replied</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 20 }}>
             <div>
               <div className="big-36">{pct(o.onboarding.pct)}</div>
-
+              <div className="small-muted">Setup done: {o.onboarding.setupDone} / {o.onboarding.total}</div>
             </div>
             <Donut value={o.onboarding.pct} />
             <span className="benchmark-edge">Target {pct(o.onboarding.benchmark)}</span>

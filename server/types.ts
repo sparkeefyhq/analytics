@@ -147,6 +147,12 @@ export interface Snapshot {
       total: number;
       benchmark: number;
       dropped: number;
+      /** New accounts that reached Home (or a first reply, for builds without screen events). */
+      setupDone: number;
+      /** No first reply and never reached Home: a setup problem. */
+      droppedBeforeHome: number;
+      /** Reached Home but no first reply yet: an activation problem. */
+      droppedAfterHome: number;
       topDropStep: string | null;
       /** Last onboarding screen seen by accounts that have not reached a first reply. */
       dropSteps: { step: string; count: number }[];
@@ -155,7 +161,8 @@ export interface Snapshot {
     retention: { rows: RetentionRow[]; avgD1: number | null; target: number };
   };
   overlay: {
-    sessionsPerUser: { value: number | null; deltaPct: number | null; sessionsToday: number; usersToday: number };
+    /** value = sessions per user on days they used the overlay; perActiveDay = per active user-day, any surface. */
+    sessionsPerUser: { value: number | null; perActiveDay: number | null; deltaPct: number | null; sessionsToday: number; usersToday: number };
     firstReply: { pct: number | null; deltaPts: number | null; used: number; total: number };
     latency: { p50: number | null; p95: number | null; p99: number | null; slaMs: number; series: { hour: string; p95: number | null }[] };
     cost: {
@@ -178,6 +185,8 @@ export interface Snapshot {
   funnel: FunnelStep[];
   /** 6 Nov: installs seen only mid-onboarding (their anonymous id changed); not counted as starts. */
   funnelPartial?: number;
+  /** Starters in range that never signed in (reinstalls and pre-login test runs land here). */
+  funnelUnlinked?: { started: number; unlinked: number };
   /** Phase 1 benchmark (BENCHMARK - Phase 1, 20 users): the four gates to expand 20 -> 50. */
   scorecard: Scorecard;
   /** Users tab: one row per account in this audience, with everything the detail panel shows. */

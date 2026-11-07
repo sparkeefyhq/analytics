@@ -14,6 +14,7 @@ export function Funnel({ data }: { data: Snapshot }) {
         <span className="tc-help">
           {start ? `${int(start)} started onboarding in this range${worst ? ` · most last seen at: ${worst.label} (${worst.stoppedHere})` : ''}` : 'No one started onboarding in this range.'}
           {data.funnelPartial ? ` · ${int(data.funnelPartial)} seen mid-flow only, excluded from starts` : ''}
+          {data.funnelUnlinked?.unlinked ? ` · ${int(data.funnelUnlinked.unlinked)} of ${int(data.funnelUnlinked.started)} starters never signed in (reinstalls and pre-login test runs count here)` : ''}
         </span>
       </div>
       {f.length > 0 && (

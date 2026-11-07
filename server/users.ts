@@ -63,6 +63,26 @@ export function funnelPartial(data: Dataset, filters: Filters, teamIds: Set<stri
   return [...first.entries()].filter(([id, ms]) => ms >= from && ms <= now && !entered.has(id)).length;
 }
 
+/**
+ * 7 Nov: people who started onboarding in range and never signed in. Before sign-in an install is only
+ * an anonymous id, so a reinstall, cleared app data or a team test run without logging in each count
+ * here as a real starter who dropped. Shown next to the funnel so a small cohort isn't misread.
+ */
+export function funnelUnlinked(data: Dataset, filters: Filters, teamIds: Set<string>, from: number, now: number): { started: number; unlinked: number } {
+  const steps = (data.steps ?? []).filter((s) => {
+    const team = s.account && teamIds.has(s.id);
+    return filters.audience === 'internal' ? team : !team;
+  });
+  const entered = new Set(steps.filter((s) => ENTRY_SCREENS.has(s.screen)).map((s) => s.id));
+  const first = new Map<string, { ms: number; account: boolean }>();
+  for (const s of steps) {
+    const cur = first.get(s.id);
+    first.set(s.id, { ms: Math.min(cur?.ms ?? Infinity, t(s.ts)), account: (cur?.account ?? false) || s.account });
+  }
+  const started = [...first.entries()].filter(([id, v]) => v.ms >= from && v.ms <= now && entered.has(id));
+  return { started: started.length, unlinked: started.filter(([, v]) => !v.account).length };
+}
+
 export function buildFunnel(data: Dataset, filters: Filters, teamIds: Set<string>, from: number, now: number): FunnelStep[] {
   const steps = (data.steps ?? []).filter((s) => {
     const team = s.account && teamIds.has(s.id);
@@ -313,7 +333,7 @@ export function buildScorecard(roster: RosterUser[], snap: Pick<Snapshot, 'overl
     ],
     diagnostics: [
       { key: 'dou', label: 'Daily overlay users', value: String(overlayUsersToday), target: '4–6', ok: overlayUsersToday >= 4 ? true : null, help: 'Unique users with a delivered draft today (IST)' },
-      { key: 'spu', label: 'Sessions per active user', value: ov.sessionsPerUser.value === null ? '–' : ov.sessionsPerUser.value.toFixed(1), target: '1–2', ok: ov.sessionsPerUser.value === null ? null : ov.sessionsPerUser.value >= 1, help: 'Per active overlay user per day' },
+      { key: 'spu', label: 'Sessions per overlay day', value: ov.sessionsPerUser.value === null ? '–' : ov.sessionsPerUser.value.toFixed(1), target: '1–2', ok: ov.sessionsPerUser.value === null ? null : ov.sessionsPerUser.value >= 1, help: 'Per active overlay user per day' },
       { key: 'fda', label: 'First draft adoption', value: ov.firstReply.pct === null ? '–' : `${ov.firstReply.pct.toFixed(0)}%`, target: '≥50%', ok: ov.firstReply.pct === null ? null : ov.firstReply.pct >= 50, help: 'Sessions where the first draft was used' },
       { key: 'p50', label: 'Median response', value: ms(ov.latency.p50), target: '≤1.5s', ok: ov.latency.p50 === null ? null : ov.latency.p50 <= 1500, help: 'Tap to draft shown' },
       { key: 'p95', label: 'P95 response', value: ms(ov.latency.p95), target: '≤3s', ok: ov.latency.p95 === null ? null : ov.latency.p95 <= 3000, help: '95% of drafts within this time' },

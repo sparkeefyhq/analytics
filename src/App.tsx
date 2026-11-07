@@ -193,7 +193,8 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       downloadCsv(`keefie-overlay-${stamp}.csv`, [
         ...head,
         ['Metric', 'Value'],
-        ['Sessions per active user per day', ov.sessionsPerUser.value],
+        ['Sessions per user per overlay day', ov.sessionsPerUser.value],
+        ['Sessions per active user-day', ov.sessionsPerUser.perActiveDay],
         ['First-reply use rate %', ov.firstReply.pct],
         ['P50 latency ms', ov.latency.p50],
         ['P95 latency ms', ov.latency.p95],

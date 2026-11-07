@@ -97,12 +97,12 @@ export function OverlayPage({ data, search }: Props) {
             <div className="note">Unique users who got a draft today (IST)</div>
           </div>
           <div className="card overlay-benchmark-card">
-            <div className="card-label">Sessions per active user</div>
+            <div className="card-label">Sessions per overlay day</div>
             <div className="value-row">
               <span className="big">{dec(ov.sessionsPerUser.value)}</span>
               <Target value={ov.sessionsPerUser.value} label="1–2" min={1} max={2} />
             </div>
-            <div className="note">Sessions per user per day</div>
+            <div className="note">On days they used the overlay · {dec(ov.sessionsPerUser.perActiveDay)} per active user-day (any surface)</div>
           </div>
           <div className="card overlay-benchmark-card">
             <Star className="overlay-feature-star" aria-hidden="true" size={20} fill="currentColor" />

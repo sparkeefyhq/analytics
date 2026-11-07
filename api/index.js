@@ -855,6 +855,20 @@ function funnelPartial(data, filters, teamIds, from, now) {
   for (const s of steps) first.set(s.id, Math.min(first.get(s.id) ?? Infinity, t(s.ts)));
   return [...first.entries()].filter(([id, ms2]) => ms2 >= from && ms2 <= now && !entered.has(id)).length;
 }
+function funnelUnlinked(data, filters, teamIds, from, now) {
+  const steps = (data.steps ?? []).filter((s) => {
+    const team = s.account && teamIds.has(s.id);
+    return filters.audience === "internal" ? team : !team;
+  });
+  const entered = new Set(steps.filter((s) => ENTRY_SCREENS.has(s.screen)).map((s) => s.id));
+  const first = /* @__PURE__ */ new Map();
+  for (const s of steps) {
+    const cur = first.get(s.id);
+    first.set(s.id, { ms: Math.min(cur?.ms ?? Infinity, t(s.ts)), account: (cur?.account ?? false) || s.account });
+  }
+  const started = [...first.entries()].filter(([id, v]) => v.ms >= from && v.ms <= now && entered.has(id));
+  return { started: started.length, unlinked: started.filter(([, v]) => !v.account).length };
+}
 function buildFunnel(data, filters, teamIds, from, now) {
   const steps = (data.steps ?? []).filter((s) => {
     const team = s.account && teamIds.has(s.id);
@@ -1092,7 +1106,7 @@ function buildScorecard(roster, snap, overlayUsersToday, now) {
     ],
     diagnostics: [
       { key: "dou", label: "Daily overlay users", value: String(overlayUsersToday), target: "4\u20136", ok: overlayUsersToday >= 4 ? true : null, help: "Unique users with a delivered draft today (IST)" },
-      { key: "spu", label: "Sessions per active user", value: ov.sessionsPerUser.value === null ? "\u2013" : ov.sessionsPerUser.value.toFixed(1), target: "1\u20132", ok: ov.sessionsPerUser.value === null ? null : ov.sessionsPerUser.value >= 1, help: "Per active overlay user per day" },
+      { key: "spu", label: "Sessions per overlay day", value: ov.sessionsPerUser.value === null ? "\u2013" : ov.sessionsPerUser.value.toFixed(1), target: "1\u20132", ok: ov.sessionsPerUser.value === null ? null : ov.sessionsPerUser.value >= 1, help: "Per active overlay user per day" },
       { key: "fda", label: "First draft adoption", value: ov.firstReply.pct === null ? "\u2013" : `${ov.firstReply.pct.toFixed(0)}%`, target: "\u226550%", ok: ov.firstReply.pct === null ? null : ov.firstReply.pct >= 50, help: "Sessions where the first draft was used" },
       { key: "p50", label: "Median response", value: ms2(ov.latency.p50), target: "\u22641.5s", ok: ov.latency.p50 === null ? null : ov.latency.p50 <= 1500, help: "Tap to draft shown" },
       { key: "p95", label: "P95 response", value: ms2(ov.latency.p95), target: "\u22643s", ok: ov.latency.p95 === null ? null : ov.latency.p95 <= 3e3, help: "95% of drafts within this time" },
@@ -1281,6 +1295,12 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     return userDays.size ? list2.length / userDays.size : null;
   };
   const freqNow = frequency(rangeSessions);
+  const activeUserDays = /* @__PURE__ */ new Set();
+  for (const r2 of activity) {
+    const h = t2(r2.hour);
+    if (h + HOUR2 > from && h < now) activeUserDays.add(`${r2.id}|${istDay(Math.max(h, from))}`);
+  }
+  const perActiveDay = activeUserDays.size ? rangeSessions.length / activeUserDays.size : null;
   const freqPrev = prevFrom === null ? null : frequency(prevSessions);
   const firstDay = istDay(from);
   const lastDay = istDay(now);
@@ -1323,10 +1343,12 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     const s = lastScreen.get(p.id);
     if (s) dropCounts.set(s, (dropCounts.get(s) ?? 0) + 1);
   }
+  const reachedHome = new Set((data.steps ?? []).filter((s) => s.account && s.screen === "Home").map((s) => s.id));
+  const droppedAfterHome = dropped.filter((p) => reachedHome.has(p.id)).length;
   const dropSteps = [...dropCounts.entries()].sort((a, b) => b[1] - a[1]).map(([step, count]) => ({ step, count }));
   const unknownDrops = dropped.length - dropSteps.reduce((a, d) => a + d.count, 0);
   if (unknownDrops > 0) dropSteps.push({ step: "", count: unknownDrops });
-  const topDropStep = dropSteps.find((d) => d.step)?.step ?? null;
+  const topDropStep = dropSteps.find((d) => d.step && d.step !== "Home")?.step ?? null;
   const shown = rangeSessions.filter((s) => s.ok > 0);
   const usedSessions = shown.filter((s) => s.used).length;
   const firstUsedNow = shown.filter((s) => s.firstUsed).length;
@@ -1488,6 +1510,9 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
         total: signups.length,
         benchmark: cfg.onboardingBenchmark,
         dropped: dropped.length,
+        setupDone: signups.filter((p) => reachedHome.has(p.id) || firstReply.has(p.id)).length,
+        droppedBeforeHome: dropped.length - droppedAfterHome,
+        droppedAfterHome,
         topDropStep,
         dropSteps
       },
@@ -1498,6 +1523,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
       sessionsPerUser: {
         value: freqNow,
         deltaPct: change(freqNow, freqPrev),
+        perActiveDay,
         sessionsToday: todaySessions.length,
         usersToday: new Set(todaySessions.map((s) => s.id)).size
       },
@@ -1538,6 +1564,7 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
     ...snapshot,
     funnel: buildFunnel(data, filters, teamIds, from, now),
     funnelPartial: funnelPartial(data, filters, teamIds, from, now),
+    funnelUnlinked: funnelUnlinked(data, filters, teamIds, from, now),
     scorecard: buildScorecard(roster, snapshot, overlayUsersToday, now),
     roster
   };

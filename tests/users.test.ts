@@ -154,3 +154,19 @@ test('roster drafts count only taps that reached the model (7 Nov: Karan 6 shown
   const a = snap.roster.find((u) => u.id === A)!;
   assert.deepEqual([a.overlay.drafts, a.overlay.delivered, a.overlay.failed], [2, 1, 1]);
 });
+
+test('funnelUnlinked counts starters that never signed in', async () => {
+  const { funnelUnlinked } = await import('../server/users');
+  const NOW2 = Date.parse('2026-11-05T06:30:00.000Z');
+  const ts = new Date(NOW2 - 3_600_000).toISOString();
+  const data = {
+    steps: [
+      { id: 'acct', screen: 'IntroVideo', ts, account: true },
+      { id: 'acct', screen: 'Home', ts, account: true },
+      { id: 'anon:1', screen: 'IntroVideo', ts, account: false },
+      { id: 'anon:2', screen: 'Welcome', ts, account: false },
+      { id: 'anon:3', screen: 'Traits', ts, account: false }, // mid-flow only: not a starter
+    ],
+  } as unknown as Parameters<typeof funnelUnlinked>[0];
+  assert.deepEqual(funnelUnlinked(data, { range: '7d', surface: 'combined', audience: 'external', version: 'all' }, new Set(), NOW2 - 7 * 86_400_000, NOW2), { started: 3, unlinked: 2 });
+});

@@ -15,7 +15,7 @@ import type {
   RetentionRow,
   Snapshot,
 } from './types';
-import { buildFunnel, funnelPartial, buildRoster, buildScorecard } from './users';
+import { buildFunnel, funnelPartial, funnelUnlinked, buildRoster, buildScorecard } from './users';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -232,6 +232,14 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
     return userDays.size ? list.length / userDays.size : null;
   };
   const freqNow = frequency(rangeSessions);
+  // 7 Nov: frequency above divides by days a person used the overlay, so it can't show people who were
+  // active and skipped it. This one divides by every active user-day (any surface) in the range.
+  const activeUserDays = new Set<string>();
+  for (const r of activity) {
+    const h = t(r.hour);
+    if (h + HOUR > from && h < now) activeUserDays.add(`${r.id}|${istDay(Math.max(h, from))}`);
+  }
+  const perActiveDay = activeUserDays.size ? rangeSessions.length / activeUserDays.size : null;
   const freqPrev = prevFrom === null ? null : frequency(prevSessions);
 
   // Cost: overlay reply requests + in-app model calls (backend telemetry); never double counted.
@@ -279,10 +287,14 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
     const s = lastScreen.get(p.id);
     if (s) dropCounts.set(s, (dropCounts.get(s) ?? 0) + 1);
   }
+  // 7 Nov (Sarthak: "onboarding drop-off is shit"): an account without a first reply either stopped
+  // before Home (setup problem) or finished setup and never tried Keefie (activation problem).
+  const reachedHome = new Set((data.steps ?? []).filter((s) => s.account && s.screen === 'Home').map((s) => s.id));
+  const droppedAfterHome = dropped.filter((p) => reachedHome.has(p.id)).length;
   const dropSteps = [...dropCounts.entries()].sort((a, b) => b[1] - a[1]).map(([step, count]) => ({ step, count }));
   const unknownDrops = dropped.length - dropSteps.reduce((a, d) => a + d.count, 0);
   if (unknownDrops > 0) dropSteps.push({ step: '', count: unknownDrops });
-  const topDropStep = dropSteps.find((d) => d.step)?.step ?? null;
+  const topDropStep = dropSteps.find((d) => d.step && d.step !== 'Home')?.step ?? null;
 
   // Reply use: of sessions where Keefie showed a reply, how many ended with it inserted/copied.
   const shown = rangeSessions.filter((s) => s.ok > 0);
@@ -467,6 +479,9 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
         total: signups.length,
         benchmark: cfg.onboardingBenchmark,
         dropped: dropped.length,
+        setupDone: signups.filter((p) => reachedHome.has(p.id) || firstReply.has(p.id)).length,
+        droppedBeforeHome: dropped.length - droppedAfterHome,
+        droppedAfterHome,
         topDropStep,
         dropSteps,
       },
@@ -477,6 +492,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
       sessionsPerUser: {
         value: freqNow,
         deltaPct: change(freqNow, freqPrev),
+        perActiveDay,
         sessionsToday: todaySessions.length,
         usersToday: new Set(todaySessions.map((s) => s.id)).size,
       },
@@ -517,6 +533,7 @@ export function computeSnapshot(data: Dataset, filters: Filters, cfg: Pick<Confi
     ...snapshot,
     funnel: buildFunnel(data, filters, teamIds, from, now),
     funnelPartial: funnelPartial(data, filters, teamIds, from, now),
+    funnelUnlinked: funnelUnlinked(data, filters, teamIds, from, now),
     scorecard: buildScorecard(roster, snapshot, overlayUsersToday, now),
     roster,
   };
