@@ -1037,8 +1037,8 @@ function buildRoster({ data, people, versionOf, from, now }) {
     if (o.drafts >= heavyAt) f.push({ key: "heavy", label: "Heavy user", tone: "purple" });
     if (share(o.relationships, ["romantic"]) >= 0.6) f.push({ key: "romantic", label: "Mostly romantic chats", tone: "purple" });
     if (share(o.moods, ["playful", "bold"]) >= 0.5) f.push({ key: "flirty", label: "Playful / bold moods", tone: "purple" });
-    const sends = o.sent.asIs + o.sent.edited + o.sent.own;
-    if (sends >= 4 && (o.sent.edited + o.sent.own) / sends >= 0.5) f.push({ key: "rewrites", label: "Often rewrites drafts", tone: "tan" });
+    const sends2 = o.sent.asIs + o.sent.edited + o.sent.own;
+    if (sends2 >= 4 && (o.sent.edited + o.sent.own) / sends2 >= 0.5) f.push({ key: "rewrites", label: "Often rewrites drafts", tone: "tan" });
     if (u.quota.drafts >= u.quota.draftCap * 0.8 || u.quota.answers >= u.quota.answerCap * 0.8) f.push({ key: "cap", label: "Near free cap", tone: "red" });
     if (o.failed >= 3) f.push({ key: "failures", label: `${o.failed} failed drafts`, tone: "red" });
     if (!u.journey.setupAt && !u.returning && now - t(u.journey.firstOpen) > DAY)
@@ -1543,6 +1543,156 @@ function computeSnapshot(data, filters, cfg, now = Date.now()) {
   };
 }
 
+// server/truth.ts
+var SETTLE_MS = 9e4;
+var READ_MS = 2e4;
+var state3 = {
+  at: 0,
+  raw: null,
+  error: null,
+  firstSeen: /* @__PURE__ */ new Map()
+};
+var inflight2 = null;
+async function read(cfg) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error("Backend URL/admin key not set");
+  const from = cfg.countFrom ?? `${cfg.dataStart}T00:00:00Z`;
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/truth?from=${encodeURIComponent(from)}`, {
+    headers: { "x-admin-api-key": cfg.backendAdminKey },
+    signal: AbortSignal.timeout(2e4)
+  });
+  if (response.status === 404) throw new Error("Database check not deployed on the backend yet");
+  if (!response.ok) throw new Error(`Database check ${response.status}`);
+  const body = await response.json();
+  if (!body.data || !Array.isArray(body.data.accounts)) throw new Error("Database check: unexpected response");
+  state3.raw = body.data;
+  state3.error = null;
+}
+async function getTruth(cfg, force = false) {
+  if (force || !state3.raw || Date.now() - state3.at >= READ_MS) {
+    if (!inflight2)
+      inflight2 = read(cfg).catch((e) => {
+        state3.error = e instanceof Error ? e.message : String(e);
+      }).finally(() => {
+        state3.at = Date.now();
+        inflight2 = null;
+      });
+    await inflight2;
+  }
+  return { raw: state3.raw, error: state3.error };
+}
+var sends = (s) => s.asIs + s.edited + s.own;
+function fullRoster(data, cfg, now) {
+  const base = { range: "all", surface: "combined", version: "all" };
+  return [
+    ...computeSnapshot(data, { ...base, audience: "external" }, cfg, now).roster,
+    ...computeSnapshot(data, { ...base, audience: "internal" }, cfg, now).roster
+  ];
+}
+function compareTruth(roster, raw, cfg, firstSeen, now) {
+  const lc = (s) => s.toLowerCase();
+  const accounts = raw.accounts.map((a) => ({ ...a, id: lc(a.id) })).filter((a) => !cfg.excludedIds.has(a.id) && !a.testTraffic);
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const shown = new Map(roster.map((u) => [lc(u.id), u]));
+  const diffs = [];
+  const push = (user, name, field, dashboard, database) => diffs.push({ user, name, field, dashboard, database });
+  for (const a of accounts) {
+    const u = shown.get(a.id);
+    if (!u) {
+      push(a.id, a.name, "on the dashboard", "missing", a.newSinceFrom ? "signed up" : "active");
+      continue;
+    }
+    if (u.returning === a.newSinceFrom) push(a.id, a.name, "new signup", u.returning ? "returning" : "new", a.newSinceFrom ? "new" : "returning");
+    const pairs = [
+      ["overlay drafts", u.overlay.drafts, a.overlay.drafts],
+      ["copied", u.overlay.copied, a.overlay.copied],
+      ["inserted", u.overlay.inserted, a.overlay.inserted],
+      ["sent as-is", u.overlay.sent.asIs, a.overlay.sent.asIs],
+      ["sent edited", u.overlay.sent.edited, a.overlay.sent.edited],
+      ["sent own words", u.overlay.sent.own, a.overlay.sent.own]
+    ];
+    if (u.app.messages !== null && u.app.messages !== void 0) pairs.push(["in-app messages", u.app.messages, a.app.turns]);
+    for (const [field, d, db] of pairs) if (d !== db) push(a.id, u.name ?? a.name, field, d, db);
+  }
+  for (const [id, u] of shown) if (!byId.has(id)) push(id, u.name, "in the database", "shown", "not found");
+  const keys = new Set(diffs.map((d) => `${d.user}|${d.field}|${d.dashboard}|${d.database}`));
+  for (const k of [...firstSeen.keys()]) if (!keys.has(k)) firstSeen.delete(k);
+  for (const k of keys) if (!firstSeen.has(k)) firstSeen.set(k, now);
+  const lasting = diffs.filter((d) => now - (firstSeen.get(`${d.user}|${d.field}|${d.dashboard}|${d.database}`) ?? now) >= SETTLE_MS);
+  const status = diffs.length === 0 ? "ok" : lasting.length ? "mismatch" : "settling";
+  const team = (id) => cfg.teamIds.has(id) || byId.get(id)?.internalTraffic === true || shown.get(id)?.team === true;
+  const real = accounts.filter((a) => !team(a.id));
+  const realIds = new Set(real.map((a) => a.id));
+  const hiddenAccount = (id) => id !== null && !realIds.has(lc(id));
+  const installs = raw.installs.filter((i) => !i.internal && !hiddenAccount(i.account));
+  const noAccount = installs.filter((i) => i.account === null);
+  const stopped = /* @__PURE__ */ new Map();
+  for (const i of noAccount) if (!i.reachedHome) stopped.set(i.lastStep ?? "unknown", (stopped.get(i.lastStep ?? "unknown") ?? 0) + 1);
+  const used = (a) => a.overlay.drafts + a.overlay.notADraft > 0 || a.app.turns + a.app.userMessages > 0;
+  const realShown = roster.filter((u) => !u.team);
+  const names = new Map(accounts.map((a) => [a.id, a.name]));
+  return {
+    status,
+    databaseAt: raw.generatedAt,
+    from: raw.from,
+    diffs: lasting.length ? lasting : diffs,
+    database: {
+      installs: installs.length,
+      signups: real.filter((a) => a.newSinceFrom).length,
+      activeAccounts: real.length,
+      returning: real.filter((a) => !a.newSinceFrom).length,
+      guests: noAccount.filter((i) => i.reachedHome).length,
+      installedNoAccount: noAccount.length,
+      stoppedAt: [...stopped.entries()].sort((a, b) => b[1] - a[1]).map(([step, n]) => ({ step, n })),
+      usedOverlay: real.filter((a) => a.overlay.drafts + a.overlay.notADraft > 0).length,
+      usedChat: real.filter((a) => a.app.turns + a.app.userMessages > 0).length,
+      signedUpNotUsed: real.filter((a) => a.newSinceFrom && !used(a)).map((a) => ({ id: a.id, name: a.name, lastStep: a.lastStep, reachedHome: a.reachedHome, signupAt: a.signupAt })),
+      drafts: real.reduce((s, a) => s + a.overlay.drafts, 0),
+      sends: real.reduce((s, a) => s + sends(a.overlay.sent), 0)
+    },
+    dashboard: {
+      signups: realShown.filter((u) => !u.returning).length,
+      activeAccounts: realShown.length,
+      drafts: realShown.reduce((s, u) => s + u.overlay.drafts, 0),
+      sends: realShown.reduce((s, u) => s + sends(u.overlay.sent), 0)
+    },
+    feedback: raw.feedback.map((f) => ({ ...f, name: f.user ? names.get(lc(f.user)) ?? null : null }))
+  };
+}
+async function getTruthReport(cfg, data, force = false, now = Date.now()) {
+  const { raw, error } = await getTruth(cfg, force);
+  if (!raw) return { status: "down", checkedAt: null, databaseAt: null, from: null, error, diffs: [], database: null, dashboard: null, feedback: [] };
+  const report = compareTruth(fullRoster(data, cfg, now), raw, cfg, state3.firstSeen, now);
+  return { ...report, status: error ? "down" : report.status, checkedAt: new Date(state3.at).toISOString(), error };
+}
+async function logFeedback(cfg, recordedBy, body) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) return { status: 503, body: { error: "Backend not configured" } };
+  const str2 = (v) => typeof v === "string" ? v : "";
+  const response = await fetch(`${cfg.backendUrl}/api/admin/feedback/log`, {
+    method: "POST",
+    headers: { "x-admin-api-key": cfg.backendAdminKey, "content-type": "application/json" },
+    body: JSON.stringify({ user: str2(body.user), contact: str2(body.contact), source: str2(body.source), quote: str2(body.quote), summary: str2(body.summary), at: str2(body.at), recordedBy }),
+    signal: AbortSignal.timeout(15e3)
+  });
+  if (response.ok) await getTruth(cfg, true);
+  const text = await response.text();
+  try {
+    return { status: response.status, body: JSON.parse(text) };
+  } catch {
+    return { status: response.status, body: { error: text.slice(0, 200) } };
+  }
+}
+async function removeFeedback(cfg, id) {
+  if (!cfg.backendUrl || !cfg.backendAdminKey) return { status: 503 };
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return { status: 400 };
+  const response = await fetch(`${cfg.backendUrl}/api/admin/feedback/log/${id}`, {
+    method: "DELETE",
+    headers: { "x-admin-api-key": cfg.backendAdminKey },
+    signal: AbortSignal.timeout(15e3)
+  });
+  if (response.ok) await getTruth(cfg, true);
+  return { status: response.status };
+}
+
 // server/user-detail.ts
 var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TTL_MS = 3 * 6e4;
@@ -1649,6 +1799,38 @@ async function handle(request) {
       console.error("live failed", error);
       return json({ error: "Live feed unavailable" }, 503);
     }
+  }
+  if (path === "/api/truth" && method === "GET") {
+    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    try {
+      const data = await getDataset(config());
+      return json(await getTruthReport(config(), data, url.searchParams.get("fresh") === "1"));
+    } catch (error) {
+      console.error("truth failed", error);
+      return json({ status: "down", error: "Dashboard data unavailable", diffs: [], database: null, dashboard: null, feedback: [], checkedAt: null, databaseAt: null, from: null }, 503);
+    }
+  }
+  if (path === "/api/feedback" && method === "POST") {
+    const session = await getSession(request);
+    if (!session) return json({ error: "Sign in required" }, 401);
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "Send JSON" }, 400);
+    }
+    const out = await logFeedback(config(), session.email, body);
+    return json(out.body, out.status);
+  }
+  if (path === "/api/feedback/remove" && method === "POST") {
+    if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+    }
+    const out = await removeFeedback(config(), typeof body.id === "string" ? body.id : "");
+    return json({ removed: out.status === 200 }, out.status === 200 ? 200 : out.status);
   }
   if (path === "/api/user" && method === "GET") {
     if (!await getSession(request)) return json({ error: "Sign in required" }, 401);
