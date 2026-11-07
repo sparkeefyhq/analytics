@@ -9,13 +9,17 @@
  *  - the same people are new signups (vs. returning);
  *  - drafts, copies, inserts, sends (as-is/edited/own) and in-app messages match.
  *
- * Only launch-onwards data is compared (COUNT_FROM, never earlier than the official launch),
- * the same window every page uses. A difference must be seen in reads at least SETTLE_MS
+ * Only the window both sides recorded is compared: from the later of the launch (COUNT_FROM,
+ * never earlier than the official launch) and the first row of our Postgres overlay ledger
+ * (6 Nov 16:26 IST). Before the ledger existed, overlay numbers came from PostHog only, so the
+ * database has nothing to check them against (7 Nov: team accounts tested in that window). A difference must be seen in reads at least SETTLE_MS
  * apart before it counts: a row written between the two reads is not a bug. A lasting
  * difference is written to the server log with the person id and both numbers, and the
  * sidebar status says "Database: N differences" instead of "Database ✓".
  */
 import type { Config } from './config';
+import { applyCountFrom } from './count-from';
+import { ledgerView } from './ledger';
 import { computeSnapshot } from './metrics';
 import type { Dataset, RosterUser } from './types';
 
@@ -70,9 +74,16 @@ export function truthFrom(cfg: Pick<Config, 'countFrom'>): string {
   return Number.isFinite(cf) && cf > Date.parse(LAUNCH_AT) ? new Date(cf).toISOString() : LAUNCH_AT;
 }
 
-async function read(cfg: Config): Promise<void> {
+/** Start of the compared window: launch, or the first Postgres overlay row if that is later. */
+export function compareFrom(cfg: Pick<Config, 'countFrom'>, ledgerOverlayFrom: string | null): string {
+  const launch = truthFrom(cfg);
+  const ledger = ledgerOverlayFrom ? Date.parse(ledgerOverlayFrom) : Number.NaN;
+  return Number.isFinite(ledger) && ledger > Date.parse(launch) ? new Date(ledger).toISOString() : launch;
+}
+
+async function read(cfg: Config, from: string): Promise<void> {
   if (!cfg.backendUrl || !cfg.backendAdminKey) throw new Error('backend not configured');
-  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/truth?from=${encodeURIComponent(truthFrom(cfg))}`, {
+  const response = await fetch(`${cfg.backendUrl}/api/admin/analytics/v2/truth?from=${encodeURIComponent(from)}`, {
     headers: { 'x-admin-api-key': cfg.backendAdminKey },
     signal: AbortSignal.timeout(20_000),
   });
@@ -84,10 +95,10 @@ async function read(cfg: Config): Promise<void> {
   state.error = null;
 }
 
-async function refresh(cfg: Config, force: boolean): Promise<void> {
-  if (!force && state.raw && Date.now() - state.at < READ_MS) return;
+async function refresh(cfg: Config, from: string, force: boolean): Promise<void> {
+  if (!force && state.raw && state.raw.from === from && Date.now() - state.at < READ_MS) return;
   if (!inflight)
-    inflight = read(cfg)
+    inflight = read(cfg, from)
       .catch((e) => {
         state.error = e instanceof Error ? e.message : String(e);
       })
@@ -98,12 +109,16 @@ async function refresh(cfg: Config, force: boolean): Promise<void> {
   await inflight;
 }
 
-/** Everyone (team + real), launch onwards: what every page is built from. */
-function fullRoster(data: Dataset, cfg: Config, now: number): RosterUser[] {
+/**
+ * Everyone (team + real), counted over the compared window only. Same dataset and same code as
+ * every page; the window is cut with the same rule the launch cutoff uses (applyCountFrom).
+ */
+function fullRoster(data: Dataset, cfg: Config, from: string, now: number): RosterUser[] {
+  const windowed = applyCountFrom(data, from);
   const base = { range: 'all', surface: 'combined', version: 'all' } as const;
   return [
-    ...computeSnapshot(data, { ...base, audience: 'external' }, cfg, now).roster,
-    ...computeSnapshot(data, { ...base, audience: 'internal' }, cfg, now).roster,
+    ...computeSnapshot(windowed, { ...base, audience: 'external' }, cfg, now).roster,
+    ...computeSnapshot(windowed, { ...base, audience: 'internal' }, cfg, now).roster,
   ];
 }
 
@@ -154,11 +169,12 @@ export function compareTruth(
 
 /** Re-reads the database at most every READ_MS and compares. Never throws. */
 export async function checkTruth(cfg: Config, data: Dataset, force = false, now = Date.now()): Promise<TruthStatus> {
-  await refresh(cfg, force);
+  const from = compareFrom(cfg, ledgerView().overlayFrom);
+  await refresh(cfg, from, force);
   if (!state.raw) return (state.last = { status: 'down', checkedAt: null, from: null, error: state.error, diffs: [] });
   let result: { status: 'ok' | 'settling' | 'mismatch'; diffs: TruthDiff[] };
   try {
-    result = compareTruth(fullRoster(data, cfg, now), state.raw, cfg, state.firstSeen, now);
+    result = compareTruth(fullRoster(data, cfg, state.raw.from, now), state.raw, cfg, state.firstSeen, now);
   } catch (e) {
     return (state.last = { status: 'down', checkedAt: null, from: state.raw.from, error: e instanceof Error ? e.message : String(e), diffs: [] });
   }
