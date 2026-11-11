@@ -11,7 +11,7 @@ import { csvCell } from '../src/format';
 
 const cfg = {
   posthogHost: '', posthogProjectId: '', posthogApiKey: '', posthogProjectApiKey: '', posthogIngestHost: '',
-  backendUrl: 'https://backend.test', backendAdminKey: 'k', teamIds: new Set<string>(), excludedIds: new Set<string>(),
+  backendUrl: 'https://backend.test', backendAdminKey: 'k', overlayChatsDbUrl: '', teamIds: new Set<string>(), excludedIds: new Set<string>(),
   infraMonthlyUsd: 0, revenueMonthlyUsd: 0, costTargetPerMau: 0.4, onboardingBenchmark: 45, latencySlaMs: 3000, failureSlaPct: 3,
   dataStart: '2026-09-11', countFrom: '',
 };

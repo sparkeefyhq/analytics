@@ -37,6 +37,8 @@ export function config() {
     posthogIngestHost: (env.POSTHOG_INGEST_HOST ?? 'https://us.i.posthog.com').replace(/\/$/, ''),
     backendUrl: (env.V2_SPARKEEFY_BACKEND_URL ?? '').replace(/\/$/, ''),
     backendAdminKey: env.V2_SPARKEEFY_BACKEND_ADMIN_KEY ?? '',
+    /** 11 Nov: read-only prod Postgres URL for the founder overlay chat reader only (Supabase pooler). */
+    overlayChatsDbUrl: env.OVERLAY_CHATS_DB_URL ?? '',
     /** Team accounts: shown only under "Internal", never mixed into real numbers. */
     teamIds: new Set([...list(env.TEAM_USER_IDS), ...list(env.CONTROL_V2_INTERNAL_USER_IDS), ...TEAM_TEST_ACCOUNTS]),
     /** Smoke leftovers, Play reviewer and test-lab accounts: never counted anywhere. */

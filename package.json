@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "vite",
     "build:api": "node scripts/build-api.mjs",
@@ -14,6 +16,7 @@
   },
   "dependencies": {
     "lucide-react": "0.468.0",
+    "postgres": "^4.1.1",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },

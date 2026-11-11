@@ -15,7 +15,7 @@ const NOW = Date.parse('2026-11-06T12:00:00Z');
 const t = (min: number) => new Date(Date.parse('2026-11-06T10:00:00Z') + min * 60_000).toISOString();
 const cfgFull = {
   posthogHost: '', posthogProjectId: '', posthogApiKey: '', posthogProjectApiKey: '', posthogIngestHost: '',
-  backendUrl: '', backendAdminKey: '', teamIds: new Set<string>(), excludedIds: new Set<string>(),
+  backendUrl: '', backendAdminKey: '', overlayChatsDbUrl: '', teamIds: new Set<string>(), excludedIds: new Set<string>(),
   infraMonthlyUsd: 0, revenueMonthlyUsd: 0, costTargetPerMau: 0.4, onboardingBenchmark: 45, latencySlaMs: 3000, failureSlaPct: 3,
   dataStart: '2026-09-11', countFrom: COUNT_FROM,
 };
