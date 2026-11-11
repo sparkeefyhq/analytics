@@ -1,18 +1,19 @@
-import { ChevronDown, Download, Layers, LayoutGrid, Search, TrendingUp, Users } from 'lucide-react';
+import { ChevronDown, Download, Layers, LayoutGrid, MessageSquare, Search, TrendingUp, Users } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Audience, Filters, Range, Snapshot, Surface } from '../server/types';
 import { ago, downloadCsv } from './format';
 import { LiveStrip, type LivePerson } from './components/live';
+import { FounderChatsPage } from './pages/FounderChats';
 import { Login } from './pages/Login';
 import { OverlayPage } from './pages/Overlay';
 import { OverviewPage } from './pages/Overview';
 import { ProductPage } from './pages/Product';
 import { UsersPage } from './pages/Users';
 
-type Route = 'overview' | 'overlay' | 'onboarding' | 'users';
-const PATHS: Record<Route, string> = { overview: '/', overlay: '/overlay', onboarding: '/onboarding', users: '/users' };
+type Route = 'overview' | 'overlay' | 'onboarding' | 'users' | 'chats';
+const PATHS: Record<Route, string> = { overview: '/', overlay: '/overlay', onboarding: '/onboarding', users: '/users', chats: '/chats' };
 const routeOf = (path: string): Route =>
-  path.startsWith('/overlay') ? 'overlay' : path.startsWith('/onboarding') ? 'onboarding' : path.startsWith('/users') ? 'users' : 'overview';
+  path.startsWith('/overlay') ? 'overlay' : path.startsWith('/onboarding') ? 'onboarding' : path.startsWith('/users') ? 'users' : path.startsWith('/chats') ? 'chats' : 'overview';
 /** Live: the page re-reads every 15 s while visible (backend rows are at most 15 s old, PostHog rows 60 s). */
 const REFRESH_MS = 15_000;
 
@@ -40,18 +41,25 @@ function urlFor(route: Route, f: Filters, user?: string | null) {
 
 export function App() {
   const [auth, setAuth] = useState<'checking' | 'in' | 'out'>('checking');
-  useEffect(() => {
+  const [founder, setFounder] = useState(false);
+  const loadSession = useCallback(() => {
     fetch('/api/session', { credentials: 'same-origin' })
       .then((r) => r.json())
-      .then((b: { authenticated: boolean }) => setAuth(b.authenticated ? 'in' : 'out'))
+      .then((b: { authenticated: boolean; founder?: boolean }) => {
+        setFounder(Boolean(b.founder));
+        setAuth(b.authenticated ? 'in' : 'out');
+      })
       .catch(() => setAuth('out'));
   }, []);
+  useEffect(() => { loadSession(); }, [loadSession]);
   if (auth === 'checking') return <div className="login"><div className="skeleton" style={{ width: 380, height: 300 }} /></div>;
-  if (auth === 'out') return <Login onDone={() => setAuth('in')} />;
+  if (auth === 'out') return <Login onDone={loadSession} />;
   return (
     <Shell
+      founder={founder}
       onSignedOut={() => {
         clearSavedData();
+        setFounder(false);
         setAuth('out');
       }}
     />
@@ -79,7 +87,7 @@ function clearSavedData() {
   }
 }
 
-function Shell({ onSignedOut }: { onSignedOut: () => void }) {
+function Shell({ founder, onSignedOut }: { founder: boolean; onSignedOut: () => void }) {
   const [route, setRoute] = useState<Route>(routeOf(location.pathname));
   const [filters, setFilters] = useState<Filters>(readFilters);
   const [data, setData] = useState<Snapshot | null>(null);
@@ -262,8 +270,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
       ['overlay', 'Overlay', Layers],
       ['overview', 'Investor', LayoutGrid],
       ['users', 'Users', Users],
+      ...(founder ? [['chats', 'Chats', MessageSquare] as const] : []),
     ] as const,
-    [],
+    [founder],
   );
 
   return (
@@ -388,6 +397,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
               onWatch={watch}
             />
           )}
+          {route === 'chats' && (founder ? <FounderChatsPage /> : <OverviewPage data={data} loading={loading} filters={filters} />)}
         </main>
       </div>
     </div>

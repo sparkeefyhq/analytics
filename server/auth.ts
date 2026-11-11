@@ -77,6 +77,23 @@ export function canSeeConversations(email: string): boolean {
     .filter(Boolean);
   return list.length === 0 || list.includes(normaliseEmail(email));
 }
+/**
+ * 11 Nov (Sarthak): the overlay chat reader shows real users' WhatsApp /
+ * Instagram / Snapchat threads for training. It is founder-only — tighter than
+ * canSeeConversations — so it never reaches the rest of the team even though
+ * everyone shares one dashboard password (each member signs in with their own
+ * email, which is what we check here). CONTROL_FOUNDER_EMAILS (comma list)
+ * overrides; unset = the founder only.
+ */
+const DEFAULT_FOUNDERS = ['sarthakverma0802@gmail.com'];
+export function canSeeOverlayChats(email: string): boolean {
+  const list = (process.env.CONTROL_FOUNDER_EMAILS ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const founders = list.length > 0 ? list : DEFAULT_FOUNDERS;
+  return founders.includes(normaliseEmail(email));
+}
 export const emailAllowed = (email: string) => allowed().has(normaliseEmail(email));
 
 export async function passwordMatches(candidate: string): Promise<boolean> {
