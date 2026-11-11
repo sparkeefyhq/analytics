@@ -6633,24 +6633,26 @@ function view(known, get) {
 // server/overlay-chats.ts
 var MAX_CHATS = 200;
 var norm = (text3) => text3.replace(/\s+/g, " ").trim().toLowerCase();
-var client = null;
-function db(cfg) {
+async function withDb(cfg, run2) {
   if (!cfg.overlayChatsDbUrl) throw new Error("overlay chat database not configured");
-  if (!client) {
-    client = src_default(cfg.overlayChatsDbUrl, {
-      max: 1,
-      idle_timeout: 20,
-      connect_timeout: 15,
-      prepare: false,
-      ssl: "require"
-    });
+  const sql = src_default(cfg.overlayChatsDbUrl, { max: 1, idle_timeout: 5, connect_timeout: 10, prepare: false, ssl: "require" });
+  let timer;
+  try {
+    return await Promise.race([
+      run2(sql),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("overlay chat database timed out")), 25e3);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    void sql.end({ timeout: 1 }).catch(() => void 0);
   }
-  return client;
 }
 var isUuid = (v) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 async function fetchOverlayChatUsers(cfg) {
-  const sql = db(cfg);
-  const rows = await sql`
+  return withDb(cfg, async (sql) => {
+    const rows = await sql`
     SELECT p.user_id::text AS user_id,
            p.name,
            (SELECT e.traffic_class FROM overlay_usage_events e
@@ -6665,36 +6667,37 @@ async function fetchOverlayChatUsers(cfg) {
      GROUP BY p.user_id, p.name
      ORDER BY MAX(m.updated_at) DESC NULLS LAST
   `;
-  return rows.map((r) => ({
-    userId: r.user_id,
-    name: r.name,
-    trafficClass: r.traffic_class,
-    chats: Number(r.chats),
-    lines: Number(r.lines ?? 0),
-    apps: (r.apps ?? []).filter((a) => typeof a === "string"),
-    lastActivity: r.last_activity ? new Date(r.last_activity).toISOString() : null
-  }));
+    return rows.map((r) => ({
+      userId: r.user_id,
+      name: r.name,
+      trafficClass: r.traffic_class,
+      chats: Number(r.chats),
+      lines: Number(r.lines ?? 0),
+      apps: (r.apps ?? []).filter((a) => typeof a === "string"),
+      lastActivity: r.last_activity ? new Date(r.last_activity).toISOString() : null
+    }));
+  });
 }
 async function fetchOverlayUserChats(cfg, userId) {
   if (!isUuid(userId)) throw new Error("user must be a uuid");
-  const sql = db(cfg);
-  const [profile, chats, drafts, usage] = await Promise.all([
-    sql`SELECT name FROM user_profiles WHERE user_id = ${userId}`,
-    sql`
+  const { profile, chats, drafts, usage } = await withDb(cfg, async (sql) => {
+    const profile2 = await sql`SELECT name FROM user_profiles WHERE user_id = ${userId}`;
+    const chats2 = await sql`
       SELECT source_app, title_hash, lines, updated_at, expires_at
         FROM overlay_chat_memory
        WHERE owner_user_id = ${userId}
        ORDER BY updated_at DESC
-       LIMIT ${MAX_CHATS + 1}`,
-    sql`
+       LIMIT 201`;
+    const drafts2 = await sql`
       SELECT reply FROM overlay_eval_captures
-       WHERE owner_user_id = ${userId} AND reply IS NOT NULL AND reply <> ''`,
-    sql`
+       WHERE owner_user_id = ${userId} AND reply IS NOT NULL AND reply <> ''`;
+    const usage2 = await sql`
       SELECT action, COUNT(*)::int AS n
         FROM overlay_usage_events
        WHERE owner_user_id = ${userId} AND action IN ('draft', 'inserted', 'sent')
-       GROUP BY action`
-  ]);
+       GROUP BY action`;
+    return { profile: profile2, chats: chats2, drafts: drafts2, usage: usage2 };
+  });
   const draftTexts = new Set(drafts.map((d2) => norm(d2.reply ?? "")).filter((t3) => t3.length > 0));
   const truncated = chats.length > MAX_CHATS;
   const kept = truncated ? chats.slice(0, MAX_CHATS) : chats;
@@ -6807,7 +6810,7 @@ function compareTruth(roster, raw, cfg, firstSeen, now2) {
       ["sent own words", u.overlay.sent.own, a.overlay.sent.own]
     ];
     if (u.app.messages !== null && u.app.messages !== void 0) pairs.push(["in-app messages", u.app.messages, a.app.turns]);
-    for (const [field2, d2, db2] of pairs) if (d2 !== db2) push(a.id, field2, d2, db2);
+    for (const [field2, d2, db] of pairs) if (d2 !== db) push(a.id, field2, d2, db);
   }
   for (const id of shown.keys()) if (!inDb.has(id)) push(id, "in the database", "shown", "not found");
   const keys = new Set(diffs.map(key2));

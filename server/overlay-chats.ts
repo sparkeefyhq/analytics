@@ -52,25 +52,36 @@ const MAX_CHATS = 200;
 /** Collapse whitespace + case so "ok  Cool" and "ok cool" match. */
 const norm = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
 
-let client: ReturnType<typeof postgres> | null = null;
-function db(cfg: Config) {
+type Sql = ReturnType<typeof postgres>;
+
+/**
+ * 11 Nov fix: the first version kept one shared connection and ran the per-user queries in
+ * parallel. Through the Supabase transaction pooler that stalled (every /api/overlay-chats call
+ * timed out at 60 s) and the stuck connection blocked the roster too. Now: a fresh connection per
+ * request, queries one after another, and a hard 25 s ceiling so a problem shows as an error, not
+ * an endless "Loading chats…".
+ */
+async function withDb<T>(cfg: Config, run: (sql: Sql) => Promise<T>): Promise<T> {
   if (!cfg.overlayChatsDbUrl) throw new Error('overlay chat database not configured');
-  if (!client) {
-    client = postgres(cfg.overlayChatsDbUrl, {
-      max: 1,
-      idle_timeout: 20,
-      connect_timeout: 15,
-      prepare: false,
-      ssl: 'require',
-    });
+  const sql = postgres(cfg.overlayChatsDbUrl, { max: 1, idle_timeout: 5, connect_timeout: 10, prepare: false, ssl: 'require' });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run(sql),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('overlay chat database timed out')), 25_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    void sql.end({ timeout: 1 }).catch(() => undefined);
   }
-  return client;
 }
 
 const isUuid = (v: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
 export async function fetchOverlayChatUsers(cfg: Config): Promise<OverlayChatUser[]> {
-  const sql = db(cfg);
+  return withDb(cfg, async (sql) => {
   const rows = await sql<
     { user_id: string; name: string | null; traffic_class: string | null; chats: number; lines: number; apps: string[] | null; last_activity: Date | null }[]
   >`
@@ -97,28 +108,29 @@ export async function fetchOverlayChatUsers(cfg: Config): Promise<OverlayChatUse
     apps: (r.apps ?? []).filter((a): a is string => typeof a === 'string'),
     lastActivity: r.last_activity ? new Date(r.last_activity).toISOString() : null,
   }));
+  });
 }
 
 export async function fetchOverlayUserChats(cfg: Config, userId: string): Promise<OverlayUserChats> {
   if (!isUuid(userId)) throw new Error('user must be a uuid');
-  const sql = db(cfg);
-  const [profile, chats, drafts, usage] = await Promise.all([
-    sql<{ name: string | null }[]>`SELECT name FROM user_profiles WHERE user_id = ${userId}`,
-    sql<{ source_app: string; title_hash: string; lines: unknown; updated_at: Date; expires_at: Date | null }[]>`
+  const { profile, chats, drafts, usage } = await withDb(cfg, async (sql) => {
+    const profile = await sql<{ name: string | null }[]>`SELECT name FROM user_profiles WHERE user_id = ${userId}`;
+    const chats = await sql<{ source_app: string; title_hash: string; lines: unknown; updated_at: Date; expires_at: Date | null }[]>`
       SELECT source_app, title_hash, lines, updated_at, expires_at
         FROM overlay_chat_memory
        WHERE owner_user_id = ${userId}
        ORDER BY updated_at DESC
-       LIMIT ${MAX_CHATS + 1}`,
-    sql<{ reply: string | null }[]>`
+       LIMIT 201`;
+    const drafts = await sql<{ reply: string | null }[]>`
       SELECT reply FROM overlay_eval_captures
-       WHERE owner_user_id = ${userId} AND reply IS NOT NULL AND reply <> ''`,
-    sql<{ action: string | null; n: number }[]>`
+       WHERE owner_user_id = ${userId} AND reply IS NOT NULL AND reply <> ''`;
+    const usage = await sql<{ action: string | null; n: number }[]>`
       SELECT action, COUNT(*)::int AS n
         FROM overlay_usage_events
        WHERE owner_user_id = ${userId} AND action IN ('draft', 'inserted', 'sent')
-       GROUP BY action`,
-  ]);
+       GROUP BY action`;
+    return { profile, chats, drafts, usage };
+  });
 
   const draftTexts = new Set(drafts.map((d) => norm(d.reply ?? '')).filter((t) => t.length > 0));
 
