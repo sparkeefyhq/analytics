@@ -564,3 +564,16 @@ th.r, td.r { text-align: right; }
 .onboarding-checkpoint .checkpoint-count { color: var(--muted); font-size: 14px; font-weight: 600; }
 .onboarding-friction { margin: 14px 0 0; }
 .onboarding-disclosure { cursor: pointer; }
+
+/* Founder overlay chat reader (11 Nov) */
+.chats-grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: start; }
+.chats-roster { display: flex; flex-direction: column; gap: 6px; max-height: calc(100vh - 220px); overflow-y: auto; position: sticky; top: 8px; }
+.search.sm { margin-bottom: 4px; }
+.roster-row { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); cursor: pointer; }
+.roster-row.on { border-color: var(--purple, #7c5cff); box-shadow: 0 0 0 1px var(--purple, #7c5cff) inset; }
+.rr-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.rr-tag { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.chats-detail { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.msg.ov { align-self: flex-end; background: var(--purple-bg); border: 1px solid var(--purple, #7c5cff); }
+.ov-tag { display: block; font-size: 10px; margin-top: 2px; color: var(--purple, #7c5cff); font-weight: 600; }
+@media (max-width: 760px) { .chats-grid { grid-template-columns: 1fr; } .chats-roster { position: static; max-height: none; } }

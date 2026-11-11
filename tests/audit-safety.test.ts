@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { canSeeConversations } from '../server/auth';
+import { canSeeConversations, canSeeOverlayChats } from '../server/auth';
 import { assemble } from '../server/dataset';
 import { ledgerError, refreshLedger, resetLedger } from '../server/ledger';
 import { computeSnapshot } from '../server/metrics';
@@ -39,6 +39,19 @@ test('conversation access: unset = every member, set = only the named emails', (
   assert.equal(canSeeConversations('founder@x.com'), true);
   assert.equal(canSeeConversations(' LEAD@x.com '), true);
   assert.equal(canSeeConversations('team@x.com'), false);
+});
+
+test('overlay chat reader is founder-only: unset = founder default, never the team', () => {
+  delete process.env.CONTROL_FOUNDER_EMAILS;
+  // Unset still locks it to the founder default — NOT every signed-in member.
+  assert.equal(canSeeOverlayChats('sarthakverma0802@gmail.com'), true);
+  assert.equal(canSeeOverlayChats('rahulpandey.creates@gmail.com'), false);
+  assert.equal(canSeeOverlayChats('anyone@x.com'), false);
+  // Explicit override replaces the default set.
+  process.env.CONTROL_FOUNDER_EMAILS = 'Boss@x.com';
+  assert.equal(canSeeOverlayChats(' boss@x.com '), true);
+  assert.equal(canSeeOverlayChats('sarthakverma0802@gmail.com'), false);
+  delete process.env.CONTROL_FOUNDER_EMAILS;
 });
 
 const page = (until: string, more: boolean) => ({
