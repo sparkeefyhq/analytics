@@ -15,7 +15,7 @@ const dump = JSON.parse(readFileSync(process.argv[2]!, 'utf8')) as {
 };
 const cfg = {
   posthogHost: '', posthogProjectId: '', posthogApiKey: '', posthogProjectApiKey: '', posthogIngestHost: '',
-  backendUrl: '', backendAdminKey: '', teamIds: new Set<string>(), excludedIds: new Set<string>(),
+  backendUrl: '', backendAdminKey: '', overlayChatsDbUrl: '', teamIds: new Set<string>(), excludedIds: new Set<string>(),
   infraMonthlyUsd: 0, revenueMonthlyUsd: 0, costTargetPerMau: 0.4, onboardingBenchmark: 45, latencySlaMs: 3000, failureSlaPct: 3,
   dataStart: '2026-09-11', countFrom: null,
 };
