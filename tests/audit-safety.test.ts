@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { canSeeConversations, canSeeOverlayChats } from '../server/auth';
+import { hiddenUserIds, isHiddenUser } from '../server/overlay-chats';
 import { assemble } from '../server/dataset';
 import { ledgerError, refreshLedger, resetLedger } from '../server/ledger';
 import { computeSnapshot } from '../server/metrics';
@@ -52,6 +53,13 @@ test('overlay chat reader is founder-only: unset = founder default, never the te
   assert.equal(canSeeOverlayChats(' boss@x.com '), true);
   assert.equal(canSeeOverlayChats('sarthakverma0802@gmail.com'), false);
   delete process.env.CONTROL_FOUNDER_EMAILS;
+});
+
+test('overlay chat reader never lists or opens Rahul\'s accounts', () => {
+  assert.equal(isHiddenUser('ce0647db-f294-4d17-b7b0-70063e168fcf'), true);
+  assert.equal(isHiddenUser('6101E2C4-B20C-42A0-8D80-C1B0CC81860C'), true);
+  assert.equal(isHiddenUser('ab6e72de-be98-4f45-8d57-7b8c92ce3af4'), false);
+  assert.deepEqual(hiddenUserIds('x1, X2').slice(2), ['x1', 'x2']);
 });
 
 const page = (until: string, more: boolean) => ({

@@ -49,6 +49,21 @@ export interface OverlayUserChats {
 
 const MAX_CHATS = 200;
 
+/**
+ * 12 Nov (Rahul): his own accounts never appear in the founder chat reader, in the list or by
+ * direct request. Enforced here on the server, so hiding is not just a screen filter.
+ * OVERLAY_CHATS_HIDE_USER_IDS (comma list) adds more.
+ */
+const ALWAYS_HIDDEN = [
+  'ce0647db-f294-4d17-b7b0-70063e168fcf', // Rahul Pandey
+  '6101e2c4-b20c-42a0-8d80-c1b0cc81860c', // Rahul Pandey (older account)
+];
+export function hiddenUserIds(extra: string | undefined = process.env.OVERLAY_CHATS_HIDE_USER_IDS): string[] {
+  const more = (extra ?? '').split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+  return [...new Set([...ALWAYS_HIDDEN, ...more])];
+}
+export const isHiddenUser = (id: string) => hiddenUserIds().includes(id.toLowerCase());
+
 /** Collapse whitespace + case so "ok  Cool" and "ok cool" match. */
 const norm = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
 
@@ -96,6 +111,7 @@ export async function fetchOverlayChatUsers(cfg: Config): Promise<OverlayChatUse
            MAX(m.updated_at) AS last_activity
       FROM user_profiles p
       JOIN overlay_chat_memory m ON m.owner_user_id = p.user_id
+     WHERE p.user_id::text NOT IN ${sql(hiddenUserIds())}
      GROUP BY p.user_id, p.name
      ORDER BY MAX(m.updated_at) DESC NULLS LAST
   `;
@@ -113,6 +129,7 @@ export async function fetchOverlayChatUsers(cfg: Config): Promise<OverlayChatUse
 
 export async function fetchOverlayUserChats(cfg: Config, userId: string): Promise<OverlayUserChats> {
   if (!isUuid(userId)) throw new Error('user must be a uuid');
+  if (isHiddenUser(userId)) throw new Error('not found');
   const { profile, chats, drafts, usage } = await withDb(cfg, async (sql) => {
     const profile = await sql<{ name: string | null }[]>`SELECT name FROM user_profiles WHERE user_id = ${userId}`;
     const chats = await sql<{ source_app: string; title_hash: string; lines: unknown; updated_at: Date; expires_at: Date | null }[]>`

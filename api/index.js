@@ -6632,6 +6632,17 @@ function view(known, get) {
 
 // server/overlay-chats.ts
 var MAX_CHATS = 200;
+var ALWAYS_HIDDEN = [
+  "ce0647db-f294-4d17-b7b0-70063e168fcf",
+  // Rahul Pandey
+  "6101e2c4-b20c-42a0-8d80-c1b0cc81860c"
+  // Rahul Pandey (older account)
+];
+function hiddenUserIds(extra = process.env.OVERLAY_CHATS_HIDE_USER_IDS) {
+  const more = (extra ?? "").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean);
+  return [.../* @__PURE__ */ new Set([...ALWAYS_HIDDEN, ...more])];
+}
+var isHiddenUser = (id) => hiddenUserIds().includes(id.toLowerCase());
 var norm = (text3) => text3.replace(/\s+/g, " ").trim().toLowerCase();
 async function withDb(cfg, run2) {
   if (!cfg.overlayChatsDbUrl) throw new Error("overlay chat database not configured");
@@ -6664,6 +6675,7 @@ async function fetchOverlayChatUsers(cfg) {
            MAX(m.updated_at) AS last_activity
       FROM user_profiles p
       JOIN overlay_chat_memory m ON m.owner_user_id = p.user_id
+     WHERE p.user_id::text NOT IN ${sql(hiddenUserIds())}
      GROUP BY p.user_id, p.name
      ORDER BY MAX(m.updated_at) DESC NULLS LAST
   `;
@@ -6680,6 +6692,7 @@ async function fetchOverlayChatUsers(cfg) {
 }
 async function fetchOverlayUserChats(cfg, userId) {
   if (!isUuid(userId)) throw new Error("user must be a uuid");
+  if (isHiddenUser(userId)) throw new Error("not found");
   const { profile, chats, drafts, usage } = await withDb(cfg, async (sql) => {
     const profile2 = await sql`SELECT name FROM user_profiles WHERE user_id = ${userId}`;
     const chats2 = await sql`
