@@ -3,7 +3,6 @@ import { config } from './config';
 import { getDataset, knownNames } from './dataset';
 import { getLive } from './live';
 import { computeSnapshot } from './metrics';
-import { fetchOverlayChatUsers, fetchOverlayUserChats } from './overlay-chats';
 import { pendingSync } from './posthog-sync';
 import { checkTruth, lastTruth } from './truth';
 import { getUserDetail, isUserId } from './user-detail';
@@ -35,30 +34,9 @@ export async function handle(request: Request): Promise<Response> {
     });
   }
 
-  // Founder-only overlay chat reader. Gated twice: a valid session AND a
-  // founder email. A signed-in non-founder gets 403, never the data.
-  if (path === '/api/overlay-chats/users' && method === 'GET') {
-    const session = await getSession(request);
-    if (!session) return json({ error: 'Sign in required' }, 401);
-    if (!canSeeOverlayChats(session.email)) return json({ error: 'Founder only' }, 403);
-    try {
-      return json({ users: await fetchOverlayChatUsers(config()) });
-    } catch (e) {
-      return json({ error: e instanceof Error ? e.message : 'Could not load chats' }, 502);
-    }
-  }
-  if (path === '/api/overlay-chats' && method === 'GET') {
-    const session = await getSession(request);
-    if (!session) return json({ error: 'Sign in required' }, 401);
-    if (!canSeeOverlayChats(session.email)) return json({ error: 'Founder only' }, 403);
-    const user = url.searchParams.get('user');
-    if (!user || !isUserId(user)) return json({ error: 'user must be a uuid' }, 400);
-    try {
-      return json(await fetchOverlayUserChats(config(), user));
-    } catch (e) {
-      return json({ error: e instanceof Error ? e.message : 'Could not load chats' }, 502);
-    }
-  }
+  // 16 Nov: the founder overlay chat reader (raw chat lines straight from prod) was removed
+  // for security. /api/overlay-chats* now falls through to 404.
+
 
   if (path === '/api/login' && method === 'POST') {
     let body: { email?: unknown; password?: unknown } = {};
