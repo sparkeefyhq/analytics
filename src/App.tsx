@@ -1,9 +1,8 @@
-import { ChevronDown, Download, Layers, LayoutGrid, MessageSquare, Search, TrendingUp, Users } from 'lucide-react';
+import { ChevronDown, Download, Layers, LayoutGrid, Search, TrendingUp, Users } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Audience, Filters, Range, Snapshot, Surface } from '../server/types';
 import { ago, downloadCsv } from './format';
 import { LiveStrip, type LivePerson } from './components/live';
-import { FounderChatsPage } from './pages/FounderChats';
 import { Login } from './pages/Login';
 import { OverlayPage } from './pages/Overlay';
 import { OverviewPage } from './pages/Overview';
@@ -271,7 +270,6 @@ function Shell({ founder, onSignedOut }: { founder: boolean; onSignedOut: () => 
       ['overlay', 'Overlay', Layers],
       ['overview', 'Investor', LayoutGrid],
       ['users', 'Users', Users],
-      ...(founder ? [['chats', 'Chats', MessageSquare] as const] : []),
     ] as const,
     [founder],
   );
@@ -398,7 +396,7 @@ function Shell({ founder, onSignedOut }: { founder: boolean; onSignedOut: () => 
               onWatch={watch}
             />
           )}
-          {route === 'chats' && (founder ? <FounderChatsPage /> : <OverviewPage data={data} loading={loading} filters={filters} />)}
+          {route === 'chats' && <OverviewPage data={data} loading={loading} filters={filters} />}
         </main>
       </div>
     </div>
