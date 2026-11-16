@@ -15,7 +15,8 @@ const PATHS: Record<Route, string> = { overview: '/', overlay: '/overlay', onboa
 const routeOf = (path: string): Route =>
   path.startsWith('/overlay') ? 'overlay' : path.startsWith('/onboarding') ? 'onboarding' : path.startsWith('/users') ? 'users' : path.startsWith('/chats') ? 'chats' : 'overview';
 /** Live: the page re-reads every 15 s while visible (backend rows are at most 15 s old, PostHog rows 60 s). */
-const REFRESH_MS = 15_000;
+// 15 Nov: Supabase egress passed the 5 GB free limit; every load re-reads ~8k rows on the backend (now cached 5 min there).
+const REFRESH_MS = 120_000;
 
 function readFilters(): Filters {
   const q = new URLSearchParams(location.search);

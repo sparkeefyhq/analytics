@@ -5,7 +5,8 @@ import type { Audience } from '../../server/types';
 import { ago } from '../format';
 
 /** How often the page asks "anything new?" while visible. One small Postgres read per ask. */
-const POLL_MS = 3_000;
+// 15 Nov (Supabase egress): 15 s is still live enough for a founder view; 3 s was 20 DB reads a minute per open tab.
+const POLL_MS = 15_000;
 const KEEP = 14;
 const KEEP_PERSON = 40;
 
